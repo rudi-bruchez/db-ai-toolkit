@@ -44,8 +44,16 @@ The preprocessor's default floor is severity 16.
 The preprocessor drops these when they carry no signal and no high severity
 (names as they appear in the `=== COUNTS ===` breakdown):
 `backup` (successful backup messages), `login-ok` (successful logins),
-`checkdb-ok` (CHECKDB found 0 errors), `db-option` (database option changes),
-`startup` (routine startup/recovery-complete lines).
+`checkdb-ok` (CHECKDB found 0 errors), `db-option` (routine database option
+changes), `startup` (routine startup/recovery-complete lines).
+
+Checkpoint, recovery, and access-mode option changes are **kept** as signal
+even though they share the `Setting database option` wording: `target_recovery_time`
+(indirect checkpoint tuning), `RECOVERY` (recovery model), and `SINGLE_USER` /
+`MULTI_USER` / `RESTRICTED_USER` / `OFFLINE` / `ONLINE` / `EMERGENCY` /
+`READ_ONLY` / `READ_WRITE` (access-mode changes that disconnect and block
+sessions). Only benign options (e.g. `AUTO_UPDATE_STATISTICS`) fall into the
+`db-option` noise bucket.
 
 To see dropped entries, re-run `errorlog-parse` with a lower `-severity` or
 `-no-aggregate`, or read the raw file for the timestamp window of interest.

@@ -7,3 +7,4 @@ assertion	signal	(?i)SQL Server Assertion
 io-stall	signal	(?i)I/O requests taking longer than
 paged-out	signal	(?i)has been paged out|significant part of sql server process memory
 corruption	signal	(?i)consistency-based I/O error|torn page|incorrect checksum|\bcorrupt|\bsuspect\b
+db-option-critical	signal	(?i)(database option|option de base de donn\x{00e9}es)[\s\x{00a0}]+(target_recovery_time|recovery|single_user|multi_user|restricted_user|emergency|offline|online|read_only|read_write)\b
