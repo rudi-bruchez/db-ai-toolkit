@@ -1,0 +1,3 @@
+# This directory receives compiled tool binaries (e.g. errorlog-parse) built by
+# scripts/build-tools.ps1. Binaries are gitignored; this file keeps the folder.
+# When the plugin is enabled, files here are on the Bash tool's PATH.

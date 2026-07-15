@@ -427,3 +427,35 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+*~
+*.swp
+*.swo
+
+# IDE / tools
+.vscode/
+.idea/
+
+# Logs / generated
+*.log
+output/
+
+tests/
+temp/
+
+# --- db-ai-toolkit (Go tools + plugins) ---
+# Go build/test artifacts
+*.exe
+tools/**/*.test
+tools/dist/
+# Compiled errorlog-parse injected into each plugin's bin/ by scripts/build-tools.ps1.
+# Binaries are not committed at this stage (built locally / via a release later).
+plugins/*/bin/errorlog-parse
+plugins/*/bin/errorlog-parse.exe
+# ...but keep the bin/ folder itself tracked (overrides the **/[Bb]in/* rule above).
+!plugins/*/bin/.gitkeep

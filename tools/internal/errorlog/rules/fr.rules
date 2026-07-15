@@ -1,0 +1,6 @@
+# category	kind	regexp
+login-fail	signal	(?i)Échec de la connexion
+backup	noise	(?i)journal.*sauvegard|Log was backed up
+checkdb-ok	noise	(?i)CHECKDB.*0 erreur.*0 (erreur|cohérence)
+db-option	noise	(?i)Définition de l'option de base de données
+startup	noise	(?i)Démarrage de la base de données|La récupération est terminée

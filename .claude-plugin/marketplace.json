@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "db-ai-toolkit",
+  "owner": {
+    "name": "Rudi Bruchez",
+    "email": "rudi@babaluga.com"
+  },
+  "metadata": {
+    "description": "AI toolkit for SQL databases: prompts, skills, agents and workflows for SQL Server and PostgreSQL.",
+    "pluginRoot": "./plugins"
+  },
+  "plugins": [
+    {
+      "name": "sqlserver-toolkit",
+      "source": "sqlserver-toolkit",
+      "description": "Diagnostics, performance tuning and query design for SQL Server."
+    },
+    {
+      "name": "postgres-toolkit",
+      "source": "postgres-toolkit",
+      "description": "Diagnostics, performance tuning and query design for PostgreSQL."
+    },
+    {
+      "name": "cross-db-toolkit",
+      "source": "cross-db-toolkit",
+      "description": "Engine-agnostic SQL analysis, rewriting and workload triage."
+    }
+  ]
+}
