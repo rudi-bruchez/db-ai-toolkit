@@ -37,6 +37,33 @@ func TestClassifySignalNoiseSeverity(t *testing.T) {
 	}
 }
 
+func TestSensitiveDbOptionKeptOverNoise(t *testing.T) {
+	rs := mustRules(t)
+	// Checkpoint/recovery/access-mode option changes are diagnostically
+	// important and must survive the db-option noise rule. Non-sensitive
+	// option changes stay noise. Option tokens are English even on a
+	// French-localized instance, so one signal rule covers both.
+	cases := []struct {
+		line     string
+		wantKeep bool
+	}{
+		{"2026-07-15 08:10:27.39 spid253    Setting database option target_recovery_time to 60 for database 'pecheurservices'.", true},
+		{"2026-07-15 05:30:00.59 spid79     Setting database option SINGLE_USER to ON for database 'pecheurservices_deported'.", true},
+		{"2026-07-15 05:38:46.65 spid79     Setting database option RECOVERY to SIMPLE for database 'pecheurservices_deported'.", true},
+		{"2026-07-15 05:38:46.65 spid79     Setting database option MULTI_USER to ON for database 'pecheurservices_deported'.", true},
+		// French phrasing, English option token.
+		{"2026-07-15 08:10:27.39 spid253    Définition de l'option de base de données RECOVERY sur SIMPLE pour la base de données 'x'.", true},
+		// Non-sensitive option stays noise.
+		{"2026-07-15 08:10:27.39 spid253    Setting database option AUTO_UPDATE_STATISTICS to ON for database 'x'.", false},
+	}
+	for _, c := range cases {
+		keep, cat := classifyLine(t, rs, c.line, 16)
+		if keep != c.wantKeep {
+			t.Errorf("Classify(%q) keep=%v cat=%q, want keep=%v", c.line, keep, cat, c.wantKeep)
+		}
+	}
+}
+
 func TestSeverityThresholdBeatsNoise(t *testing.T) {
 	rs := mustRules(t)
 	// Looks like backup noise but carries Gravité 21 -> keep.
