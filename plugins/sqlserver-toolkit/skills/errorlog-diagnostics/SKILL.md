@@ -88,6 +88,24 @@ meaningful entries reach the model.
      `=== COUNTS ===` so the user knows what the digest excluded and can
      re-run with a lower `-severity` if needed.
 
+## Official docs lookup (optional MCP)
+
+This plugin bundles the **Microsoft Learn** MCP server (`.mcp.json`), which the
+user approves once when enabling the plugin. When its tools are available —
+`microsoft_docs_search`, `microsoft_code_sample_search`, `microsoft_docs_fetch`
+(namespaced `mcp__plugin_sqlserver-toolkit_microsoft-learn__…`) — use them to
+**ground** a finding in authoritative documentation before reporting it:
+
+- Confirm the meaning of an error number, state, or `wait_type`.
+- Verify a trace flag, `sp_configure` option, or DBCC syntax before recommending it.
+- Fetch the official page behind an advisory link (e.g. the "Buffer Pool scan"
+  KB) and cite it in the report.
+
+Treat this as **enrichment, not a dependency**. If the MCP tools are not present
+(user declined, or already have the server under another plugin), proceed with
+built-in knowledge and the local `references/error-patterns.md` — never block or
+fail the triage on the MCP being unavailable, exactly as with `errorlog-parse`.
+
 ## Notes
 
 - Never invent entries. Only report what appears in the digest or raw log.

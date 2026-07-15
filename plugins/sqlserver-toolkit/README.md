@@ -47,3 +47,20 @@ type ERRORLOG | errorlog-parse -
 
 Output: a `#`-prefixed header (total / kept / dropped counts and dropped
 categories) followed by the kept entries verbatim.
+
+## Official documentation (Microsoft Learn MCP)
+
+The plugin declares the Microsoft-hosted **Microsoft Learn** MCP server in
+`.mcp.json` (remote HTTP, no install, no API key). When you enable the plugin,
+Claude Code asks you to approve the server once — like any project MCP server;
+the plugin cannot enable it without your consent. Once approved, the
+`errorlog-diagnostics` skill uses it to ground findings in official docs
+(error numbers, trace flags, `sp_configure` options, wait types) and to cite
+authoritative URLs.
+
+It is strictly **optional enrichment**: decline it and the skill falls back to
+built-in knowledge and `references/error-patterns.md` with no loss of function.
+
+> **Already have the Microsoft Learn MCP** (e.g. via a separate `microsoft-docs`
+> plugin or your user config)? Skip approving it here — registering the same
+> remote server twice just loads its tool schemas into context twice.
