@@ -1,0 +1,3 @@
+# check_id	detect_regexp	message	url
+ifi-off	(?i)Instant File Initialization[\s\x{00a0}]*:[\s\x{00a0}]*(disabled|désactivé)	Instant File Initialization is off. Grant "Perform Volume Maintenance Tasks" to the service account for instant file initialization.	https://learn.microsoft.com/sql/relational-databases/databases/database-instant-file-initialization
+spn-fail	(?i)failed to register.*Service Principal Name|échec.*SPN	SPN registration failed: Kerberos authentication will fail. Register the SPN (setspn) or check the service account rights.	https://learn.microsoft.com/sql/database-engine/configure-windows/register-a-service-principal-name-for-kerberos-connections
