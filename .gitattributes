@@ -1,0 +1,12 @@
+# Keep the golden test's fixtures and expected output as LF on every platform.
+# Without this, Windows' core.autocrlf checks expected_text.txt out with CRLF
+# and the byte-exact golden comparison fails on a fresh clone / CI.
+tools/internal/errorlog/testdata/expected_text.txt text eol=lf
+tools/internal/errorlog/testdata/ERRORLOG_synthetic.txt text eol=lf
+
+# Go sources are canonically LF (gofmt).
+*.go text eol=lf
+*.rules text eol=lf
+
+# PowerShell scripts stay CRLF for Windows tooling.
+*.ps1 text eol=crlf
