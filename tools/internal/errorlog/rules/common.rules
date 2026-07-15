@@ -1,0 +1,9 @@
+# category	kind	regexp   (language-independent number rules)
+error-num	signal	(?i)(Error|Erreur)[\s\x{00A0}]*:[\s\x{00A0}]*\d+
+severity-en	severity	(?i)Severity[\s\x{00A0}]*:[\s\x{00A0}]*(\d{1,2})
+severity-fr	severity	(?i)Gravité[\s\x{00A0}]*:[\s\x{00A0}]*(\d{1,2})
+dump	signal	(?i)Stack (Dump|Signature)|SqlDumpExceptionHandler|BugCheck
+assertion	signal	(?i)SQL Server Assertion
+io-stall	signal	(?i)I/O requests taking longer than
+paged-out	signal	(?i)has been paged out|significant part of sql server process memory
+corruption	signal	(?i)consistency-based I/O error|torn page|incorrect checksum|\bcorrupt|\bsuspect\b

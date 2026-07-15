@@ -1,0 +1,2 @@
+# category	min_count	message	url
+backup	500	{count} successful-backup messages dominate this log. Enable trace flag 3226 to stop logging successful backups.	https://www.mssqltips.com/sqlservertip/1457/stop-logging-all-successful-backups-in-your-sql-server-error-logs/
