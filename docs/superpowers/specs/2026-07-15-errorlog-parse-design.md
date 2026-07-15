@@ -150,26 +150,25 @@ backup   500   {count} messages de sauvegarde réussie noient ce log. Activez le
 
 **(b) Checks d'état boot — `rules/checks.rules`**
 
-Vérifient un réglage d'instance sous-optimal détecté (ou absent) dans la séquence
-de boot :
+Vérifient un réglage d'instance sous-optimal **détecté** (présence d'une ligne)
+dans la séquence de boot :
 
 ```text
-check_id <TAB> mode(present|absent) <TAB> detect_regexp <TAB> message <TAB> url
+check_id <TAB> detect_regexp <TAB> message <TAB> url
 ```
 
-- `present` : advisory émis si `detect_regexp` matche dans le boot (ex. IFI
-  désactivé, échec d'enregistrement SPN).
-- `absent` : advisory émis si `detect_regexp` **ne matche pas** (ex. LPIM : pas
-  de ligne « locked pages in the memory manager » ⇒ Lock Pages in Memory inactif).
+- advisory émis si `detect_regexp` matche dans le boot (ex. IFI désactivé, échec
+  d'enregistrement SPN).
 - `detect_regexp` est multilingue (les **valeurs** de réglage sont localisées :
   `activé`/`enabled`, `désactivé`/`disabled`).
+- Les checks basés sur l'**absence** d'une ligne (ex. LPIM inactif) sont hors
+  périmètre v2 (détection d'absence trop fragile selon version/langue) — voir § 11.
 
 Exemples :
 
 ```text
-ifi-off   present  (?i)Instant File Initialization[\s\x{00A0}]*:[\s\x{00A0}]*(disabled|désactivé)   IFI désactivé : accordez « Effectuer les tâches de maintenance de volume » au compte de service pour l'initialisation instantanée des fichiers.   https://learn.microsoft.com/sql/relational-databases/databases/database-instant-file-initialization
-spn-fail  present  (?i)failed to register.*Service Principal Name|échec.*SPN   Enregistrement du SPN en échec : l'authentification Kerberos échouera. Enregistrez le SPN (setspn) ou vérifiez les droits du compte.   https://learn.microsoft.com/sql/database-engine/configure-windows/register-a-service-principal-name-for-kerberos-connections
-lpim-off  absent   (?i)locked pages in the memory manager|pages verrouillées   Lock Pages in Memory inactif : envisagez ce privilège pour éviter le paging du buffer pool (selon contexte/édition).   https://learn.microsoft.com/sql/database-engine/configure-windows/enable-the-lock-pages-in-memory-option-windows
+ifi-off   (?i)Instant File Initialization[\s\x{00A0}]*:[\s\x{00A0}]*(disabled|désactivé)   IFI désactivé : accordez « Effectuer les tâches de maintenance de volume » au compte de service pour l'initialisation instantanée des fichiers.   https://learn.microsoft.com/sql/relational-databases/databases/database-instant-file-initialization
+spn-fail  (?i)failed to register.*Service Principal Name|échec.*SPN   Enregistrement du SPN en échec : l'authentification Kerberos échouera. Enregistrez le SPN (setspn) ou vérifiez les droits du compte.   https://learn.microsoft.com/sql/database-engine/configure-windows/register-a-service-principal-name-for-kerberos-connections
 ```
 
 ## 6. Résumé d'instance
@@ -184,9 +183,9 @@ pas la fenêtre analysée).
 
 **Champs détaillés (Markdown)** : en plus du bloc compact, le résumé Markdown
 ajoute port(s) d'écoute TCP (1433, DAC 1434, endpoints AG), enregistrement du
-SPN, Lock Pages in Memory (LPIM), Instant File Initialization (IFI) et son
-privilège « Effectuer les tâches de maintenance de volume » (Perform Volume
-Maintenance Tasks), listener(s) AG, et toute autre info boot utile.
+SPN, Instant File Initialization (IFI) et son privilège « Effectuer les tâches de
+maintenance de volume » (Perform Volume Maintenance Tasks), listener(s) AG, et
+toute autre info boot utile. (LPIM : hors périmètre v2, voir § 11.)
 
 Les **valeurs** de ces réglages sont localisées (`activé`/`enabled`,
 `désactivé`/`disabled`) : l'extraction doit être multilingue, comme les packs.
@@ -262,8 +261,7 @@ Sortie **Markdown** (`--format md`) : mêmes sections en titres + tableaux
   - `redact` : mapping cohérent et stable.
   - `summary` : extraction des champs de boot (dont valeurs localisées activé/enabled).
   - `advice` : (a) seuil de catégorie + interpolation `{count}` ; (b) checks boot
-    `present`/`absent`, y compris détection multilingue (IFI désactivé, SPN en
-    échec, LPIM absent).
+    (présence), y compris détection multilingue (IFI désactivé, SPN en échec).
 - **Test golden** : fixture UTF-16LE **synthétique** committée dans `testdata/`
   reproduisant la structure réelle (FR+EN, NBSP, backups, une vraie erreur, une
   rafale de logins) mais avec des **données fictives** — jamais les vrais noms
@@ -276,6 +274,9 @@ Sortie **Markdown** (`--format md`) : mêmes sections en titres + tableaux
 - Détection automatique de la langue pour ne charger qu'un pack (on applique
   tout ; plus simple et robuste aux logs mixtes).
 - Corrélation multi-fichiers avancée au-delà de la lecture ordonnée d'un dossier.
+- **Checks boot basés sur l'absence d'une ligne** (ex. Lock Pages in Memory
+  inactif) : reportés — la détection d'absence est fragile selon la version et la
+  langue et risque des faux positifs. Seuls les checks de présence sont en v2.
 
 ## 12. Règles Go & process qualité
 
