@@ -27,8 +27,8 @@ func run() error {
 	noAggregate := flag.Bool("no-aggregate", false, "do not collapse repeated entries")
 	noSummary := flag.Bool("no-summary", false, "omit the instance summary")
 	rulesDir := flag.String("rules", "", "extra directory of *.rules packs")
-	fromStr := flag.String("from", "", "keep entries >= datetime (2006-01-02 or RFC3339)")
-	toStr := flag.String("to", "", "keep entries <= datetime")
+	fromStr := flag.String("from", "", `keep entries >= datetime, e.g. 2006-01-02 or "2006-01-02 15:04[:05]"`)
+	toStr := flag.String("to", "", "keep entries <= datetime (same formats as -from)")
 	flag.Parse()
 
 	if flag.NArg() != 1 {
@@ -68,13 +68,22 @@ func run() error {
 	return nil
 }
 
-// parseWhen accepts an empty string (zero time), a date, or an RFC3339-ish
-// datetime.
+// parseWhen accepts an empty string (zero time), a date (2006-01-02), or a
+// datetime at minute or second precision with a space or 'T' separator, e.g.
+// "2006-01-02 15:04" or "2006-01-02T15:04:05". A trailing fractional second is
+// tolerated, so an ERRORLOG timestamp ("2006-01-02 15:04:05.99") pastes in as
+// given.
 func parseWhen(s string) (time.Time, error) {
 	if s == "" {
 		return time.Time{}, nil
 	}
-	for _, layout := range []string{"2006-01-02", "2006-01-02T15:04:05", "2006-01-02 15:04:05"} {
+	for _, layout := range []string{
+		"2006-01-02",
+		"2006-01-02 15:04",
+		"2006-01-02 15:04:05",
+		"2006-01-02T15:04",
+		"2006-01-02T15:04:05",
+	} {
 		if t, err := time.Parse(layout, s); err == nil {
 			return t, nil
 		}
