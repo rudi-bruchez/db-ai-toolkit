@@ -64,9 +64,9 @@ rules.go     classify  charge les packs ; règles → (keep, catégorie) ; filtr
 summary.go   summary   faits d'instance depuis la séquence de boot
 aggregate.go aggregate collapse des répétitions → message + compte + plage horaire
 redact.go    redact    pseudonymisation cohérente (opt-in)
-advice.go    advice    advisories par catégorie (data-driven)
+advice.go    advice    advisories : (a) volume d'une catégorie de bruit, (b) checks d'état boot
 render.go    render    rendu texte compact (défaut) ou Markdown
-rules/*.rules          packs embarqués : common.rules, en.rules, fr.rules, advice.rules
+rules/*.rules          packs embarqués : common.rules, en.rules, fr.rules, advice.rules, checks.rules
 cmd/errorlog-parse/main.go   flags (stdlib flag) + câblage
 ```
 
@@ -129,17 +129,47 @@ Chargement : packs embarqués (`go:embed rules/*.rules`) + fichiers de
 `--rules <dir>` (ajout/surcharge). `--lang <codes>` restreint aux packs nommés ;
 défaut = tous (nécessaire pour les logs mixtes).
 
-### Advisories par catégorie (`rules/advice.rules`)
+### Advisories (deux sources, data-driven)
+
+Les advisories sont des conseils actionnables émis dans la section `ADVISORIES`
+(présente dans **les deux formats**, texte et Markdown — signal à forte valeur /
+faible coût). Deux sources, toutes deux pilotées par données.
+
+**(a) Volume d'une catégorie de bruit — `rules/advice.rules`**
 
 ```text
 catégorie <TAB> seuil_min <TAB> message ({count} interpolé) <TAB> url
 ```
 
-Quand le nombre d'entrées jetées d'une catégorie ≥ `seuil_min`, le rendu émet un
-advisory. Première entrée :
+Quand le nombre d'entrées jetées d'une catégorie ≥ `seuil_min`, un advisory est
+émis. Première entrée :
 
 ```text
 backup   500   {count} messages de sauvegarde réussie noient ce log. Activez le trace flag 3226 pour cesser de journaliser les sauvegardes réussies.   https://www.mssqltips.com/sqlservertip/1457/stop-logging-all-successful-backups-in-your-sql-server-error-logs/
+```
+
+**(b) Checks d'état boot — `rules/checks.rules`**
+
+Vérifient un réglage d'instance sous-optimal détecté (ou absent) dans la séquence
+de boot :
+
+```text
+check_id <TAB> mode(present|absent) <TAB> detect_regexp <TAB> message <TAB> url
+```
+
+- `present` : advisory émis si `detect_regexp` matche dans le boot (ex. IFI
+  désactivé, échec d'enregistrement SPN).
+- `absent` : advisory émis si `detect_regexp` **ne matche pas** (ex. LPIM : pas
+  de ligne « locked pages in the memory manager » ⇒ Lock Pages in Memory inactif).
+- `detect_regexp` est multilingue (les **valeurs** de réglage sont localisées :
+  `activé`/`enabled`, `désactivé`/`disabled`).
+
+Exemples :
+
+```text
+ifi-off   present  (?i)Instant File Initialization[\s\x{00A0}]*:[\s\x{00A0}]*(disabled|désactivé)   IFI désactivé : accordez « Effectuer les tâches de maintenance de volume » au compte de service pour l'initialisation instantanée des fichiers.   https://learn.microsoft.com/sql/relational-databases/databases/database-instant-file-initialization
+spn-fail  present  (?i)failed to register.*Service Principal Name|échec.*SPN   Enregistrement du SPN en échec : l'authentification Kerberos échouera. Enregistrez le SPN (setspn) ou vérifiez les droits du compte.   https://learn.microsoft.com/sql/database-engine/configure-windows/register-a-service-principal-name-for-kerberos-connections
+lpim-off  absent   (?i)locked pages in the memory manager|pages verrouillées   Lock Pages in Memory inactif : envisagez ce privilège pour éviter le paging du buffer pool (selon contexte/édition).   https://learn.microsoft.com/sql/database-engine/configure-windows/enable-the-lock-pages-in-memory-option-windows
 ```
 
 ## 6. Résumé d'instance
@@ -151,6 +181,17 @@ compte de service, ajustement UTC, chemin du log, **fenêtre temporelle**
 détaillé en Markdown. Omis avec `--no-summary`. Toujours dérivé de la séquence
 de boot du fichier, **indépendamment de `--from/--to`** (il décrit l'instance,
 pas la fenêtre analysée).
+
+**Champs détaillés (Markdown)** : en plus du bloc compact, le résumé Markdown
+ajoute port(s) d'écoute TCP (1433, DAC 1434, endpoints AG), enregistrement du
+SPN, Lock Pages in Memory (LPIM), Instant File Initialization (IFI) et son
+privilège « Effectuer les tâches de maintenance de volume » (Perform Volume
+Maintenance Tasks), listener(s) AG, et toute autre info boot utile.
+
+Les **valeurs** de ces réglages sont localisées (`activé`/`enabled`,
+`désactivé`/`disabled`) : l'extraction doit être multilingue, comme les packs.
+Quand un de ces réglages est sous-optimal, il déclenche en plus un **advisory**
+(voir § 5, checks d'état boot `rules/checks.rules`) visible dans les deux formats.
 
 ## 7. Agrégation
 
@@ -209,7 +250,7 @@ jetées : backup=105575, login-success=…, checkdb-ok=372, …
 ```
 
 Sortie **Markdown** (`--format md`) : mêmes sections en titres + tableaux
-(instance, catégories jetées, événements, légende de rédaction).
+(instance, catégories jetées, événements, légende de rédaction), plus informations additionnelles.
 
 ## 10. Stratégie de tests
 
@@ -219,8 +260,10 @@ Sortie **Markdown** (`--format md`) : mêmes sections en titres + tableaux
   - `rules` : entrées FR, EN et NBSP ; précédence severity/signal/noise/inconnu.
   - `aggregate` : rafale d'entrées identiques → 1 ligne comptée.
   - `redact` : mapping cohérent et stable.
-  - `summary` : extraction des champs de boot.
-  - `advice` : seuil et interpolation `{count}`.
+  - `summary` : extraction des champs de boot (dont valeurs localisées activé/enabled).
+  - `advice` : (a) seuil de catégorie + interpolation `{count}` ; (b) checks boot
+    `present`/`absent`, y compris détection multilingue (IFI désactivé, SPN en
+    échec, LPIM absent).
 - **Test golden** : fixture UTF-16LE **synthétique** committée dans `testdata/`
   reproduisant la structure réelle (FR+EN, NBSP, backups, une vraie erreur, une
   rafale de logins) mais avec des **données fictives** — jamais les vrais noms
@@ -233,3 +276,15 @@ Sortie **Markdown** (`--format md`) : mêmes sections en titres + tableaux
 - Détection automatique de la langue pour ne charger qu'un pack (on applique
   tout ; plus simple et robuste aux logs mixtes).
 - Corrélation multi-fichiers avancée au-delà de la lecture ordonnée d'un dossier.
+
+## 12. Règles Go & process qualité
+
+- **Go idiomatique**, KISS : aucune complexité architecturale inutile pour un
+  exécutable simple et compact. Zéro dépendance externe (stdlib uniquement ;
+  packs de règles en `.rules` texte, pas de YAML).
+- **golang-skills** appliqués pendant l'implémentation (go-code-review,
+  go-linting, go-naming, go-error-handling, go-testing…) ; `golangci-lint`
+  configuré et vert.
+- **Code lisible, sans dette technique** ; `go vet` et `go test ./...` verts.
+- **Revue obligatoire `/code-review` à effort xhigh (Opus)** en fin
+  d'implémentation, avant merge. Les findings sont traités avant de clôturer.
