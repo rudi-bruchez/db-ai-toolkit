@@ -3,6 +3,7 @@ package errorlog
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -36,7 +37,12 @@ func TestGoldenDigest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != string(want) {
+	// Compare line-ending-insensitively: Process always emits LF, but git may
+	// check the golden file out with CRLF on Windows (core.autocrlf), which
+	// would otherwise make this byte comparison fail on a fresh clone / CI.
+	if normalizeEOL(got) != normalizeEOL(string(want)) {
 		t.Errorf("golden mismatch. Re-run with UPDATE_GOLDEN=1 to refresh if intended.\n--- got ---\n%s", got)
 	}
 }
+
+func normalizeEOL(s string) string { return strings.ReplaceAll(s, "\r\n", "\n") }
