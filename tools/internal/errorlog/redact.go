@@ -4,7 +4,6 @@ import (
 	"regexp"
 	"sort"
 	"strconv"
-	"strings"
 )
 
 var (
@@ -46,6 +45,14 @@ func (r *Redactor) register(value, prefix string, counter *int) {
 	r.order = append(r.order, value)
 }
 
+// AddLogin registers value directly as a login entity, bypassing Scan's
+// pattern matching. Use it for values that are already known to be sensitive
+// (e.g. a service account name pulled from a structured summary field) but
+// that would not otherwise match reLogin's quoted "user '...'" form.
+func (r *Redactor) AddLogin(value string) {
+	r.register(value, "LOGIN", &r.nLogin)
+}
+
 // Scan finds entities in s and assigns them stable tokens.
 func (r *Redactor) Scan(s string) {
 	for _, m := range reDBQuoted.FindAllStringSubmatch(s, -1) {
@@ -64,12 +71,17 @@ func (r *Redactor) Scan(s string) {
 
 // Apply replaces every registered value with its token. Longer values are
 // replaced first so a value that is a substring of another is not corrupted.
+// Replacement is boundary-aware: a value only matches when it is not flanked
+// by identifier characters (letters, digits, underscore), so a short value
+// like "sa" redacts the quoted login 'sa' but leaves it untouched inside an
+// ordinary word like "message".
 func (r *Redactor) Apply(s string) string {
 	vals := make([]string, len(r.order))
 	copy(vals, r.order)
 	sort.Slice(vals, func(i, j int) bool { return len(vals[i]) > len(vals[j]) })
 	for _, v := range vals {
-		s = strings.ReplaceAll(s, v, r.tokens[v])
+		re := regexp.MustCompile(`(^|[^A-Za-z0-9_])` + regexp.QuoteMeta(v) + `([^A-Za-z0-9_]|$)`)
+		s = re.ReplaceAllString(s, `${1}`+r.tokens[v]+`${2}`)
 	}
 	return s
 }
