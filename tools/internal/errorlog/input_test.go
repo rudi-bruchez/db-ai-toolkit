@@ -26,10 +26,19 @@ func TestAcquirePlainAndZip(t *testing.T) {
 	zpath := filepath.Join(dir, "ERRORLOG.zip")
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
-	w, _ := zw.Create("ERRORLOG")
-	w.Write(encodeUTF16LE("zipped\r\n"))
-	zw.Close()
-	os.WriteFile(zpath, buf.Bytes(), 0o644)
+	w, err := zw.Create("ERRORLOG")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(encodeUTF16LE("zipped\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(zpath, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	srcs, err = Acquire(zpath)
 	if err != nil || len(srcs) != 1 {
