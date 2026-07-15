@@ -8,9 +8,16 @@ import (
 )
 
 var (
-	reDB    = regexp.MustCompile(`(?i)(?:Database|base de données)[\s\x{00a0}]*:?[\s\x{00a0}]*'?([A-Za-z0-9_]+)'?`)
-	reLogin = regexp.MustCompile(`(?i)(?:user|utilisateur|login)[\s\x{00a0}]+'([^']+)'`)
-	reIP2   = regexp.MustCompile(`\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b`)
+	// reDBQuoted matches an explicitly quoted database name, e.g. database
+	// 'ApiCatalog'. Quoting is required so ordinary prose following the word
+	// "database" (has, is, was, ...) is never mistaken for a name.
+	reDBQuoted = regexp.MustCompile(`(?i)(?:Database|base de données)[\s\x{00a0}]+'([^']+)'`)
+	// reDBColon matches the unquoted "Database: name" form used in backup
+	// summary lines (e.g. "Database: sales,"). The colon disambiguates it
+	// from plain sentences like "The database has already joined...".
+	reDBColon = regexp.MustCompile(`(?i)(?:Database|base de données)[\s\x{00a0}]*:[\s\x{00a0}]*([A-Za-z0-9_]+)`)
+	reLogin   = regexp.MustCompile(`(?i)(?:user|utilisateur|login)[\s\x{00a0}]+'([^']+)'`)
+	reIP2     = regexp.MustCompile(`\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b`)
 )
 
 // Redactor maps sensitive entities to stable tokens (DB_1, LOGIN_1, IP_1) so a
@@ -41,7 +48,10 @@ func (r *Redactor) register(value, prefix string, counter *int) {
 
 // Scan finds entities in s and assigns them stable tokens.
 func (r *Redactor) Scan(s string) {
-	for _, m := range reDB.FindAllStringSubmatch(s, -1) {
+	for _, m := range reDBQuoted.FindAllStringSubmatch(s, -1) {
+		r.register(m[1], "DB", &r.nDB)
+	}
+	for _, m := range reDBColon.FindAllStringSubmatch(s, -1) {
 		r.register(m[1], "DB", &r.nDB)
 	}
 	for _, m := range reLogin.FindAllStringSubmatch(s, -1) {
