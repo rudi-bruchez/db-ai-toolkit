@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "postgres-toolkit",
+  "displayName": "PostgreSQL Toolkit",
+  "version": "0.1.0",
+  "description": "Diagnostics, performance tuning and query design for PostgreSQL.",
+  "author": {
+    "name": "Rudi Bruchez",
+    "email": "rudi@babaluga.com"
+  },
+  "license": "MIT",
+  "keywords": ["postgres", "postgresql", "dba", "performance", "explain", "diagnostics"]
+}
