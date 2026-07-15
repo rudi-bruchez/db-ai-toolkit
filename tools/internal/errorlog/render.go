@@ -37,9 +37,23 @@ func Render(r Report, opts RenderOptions) string {
 func eventLine(e Event) string {
 	const f = "2006-01-02 15:04"
 	if e.Count > 1 {
+		// defensive: aggregate already single-lined this Count>1 text
 		return fmt.Sprintf("[×%d] %s–%s  %s", e.Count, e.First.Format(f), e.Last.Format(f), firstLine(e.Text))
 	}
+	// singleton: keep the full (possibly multi-line) text — continuation
+	// lines carry the diagnostic detail this tool must preserve.
 	return e.Text
+}
+
+// indentContinuation leaves the first line flush and indents every subsequent
+// line by two spaces so multi-line singleton events do not read as separate
+// top-level events in the compact text digest.
+func indentContinuation(s string) string {
+	lines := strings.Split(s, "\n")
+	for i := 1; i < len(lines); i++ {
+		lines[i] = "  " + lines[i]
+	}
+	return strings.Join(lines, "\n")
 }
 
 func sortedCats(m map[string]int) []string {
@@ -79,7 +93,7 @@ func renderText(r Report, opts RenderOptions) string {
 	}
 	b.WriteString("=== EVENTS ===\n")
 	for _, e := range r.Events {
-		b.WriteString(eventLine(e) + "\n")
+		b.WriteString(indentContinuation(eventLine(e)) + "\n")
 	}
 	if len(opts.Legend) > 0 {
 		b.WriteString("=== REDACTION ===\n")
@@ -129,9 +143,13 @@ func renderMarkdown(r Report, opts RenderOptions) string {
 		b.WriteString("\n")
 	}
 	b.WriteString("## Events\n\n")
+	// A fenced code block preserves multi-line singleton detail verbatim and
+	// stops CommonMark from misparsing lines that start with '#', '|', or '-'.
+	b.WriteString("```text\n")
 	for _, e := range r.Events {
-		b.WriteString("- " + eventLine(e) + "\n")
+		b.WriteString(eventLine(e) + "\n")
 	}
+	b.WriteString("```\n")
 	if len(opts.Legend) > 0 {
 		b.WriteString("\n## Redaction legend\n\n")
 		for _, l := range opts.Legend {
