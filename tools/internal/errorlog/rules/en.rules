@@ -1,0 +1,9 @@
+# category	kind	regexp
+login-fail	signal	(?i)Login failed
+deadlock	signal	(?i)deadlock
+ag-error	signal	(?i)availability (group|replica).*(error|fail|offline)
+backup	noise	(?i)Log was backed up|Database backed up|BACKUP (DATABASE|LOG).*successfully
+login-ok	noise	(?i)Login succeeded for user
+checkdb-ok	noise	(?i)CHECKDB.*found 0 .*error
+db-option	noise	(?i)Setting database option .* to
+startup	noise	(?i)Starting up database|is starting up|Server is listening|Recovery is complete
