@@ -103,3 +103,95 @@ func TestRedactRealNamesCaptured(t *testing.T) {
 		t.Errorf("colon db name did not mint a DB token: %q", outColon)
 	}
 }
+
+// TestRedactShortLoginDoesNotCorruptWords guards against Apply's
+// substring-replacement corrupting ordinary text when a short value like
+// "sa" is registered as a login. Before the boundary-aware fix, Apply used
+// strings.ReplaceAll, so redacting the quoted login 'sa' also rewrote every
+// occurrence of the substring "sa" anywhere else in the text (e.g. "message"
+// became "mesLOGIN_1ge", and "sales" was mangled too). If this regresses,
+// this test fails.
+func TestRedactShortLoginDoesNotCorruptWords(t *testing.T) {
+	text := "Login failed for user 'sa'. This is an informational message about the sales database."
+
+	r := NewRedactor()
+	r.Scan(text)
+	out := r.Apply(text)
+
+	if strings.Contains(out, "'sa'") {
+		t.Errorf("quoted login 'sa' was not redacted: %q", out)
+	}
+	if !strings.Contains(out, "LOGIN_") {
+		t.Errorf("no LOGIN token minted: %q", out)
+	}
+	if !strings.Contains(out, "message") {
+		t.Errorf("standalone word %q was corrupted by short-login replacement: %q", "message", out)
+	}
+	if !strings.Contains(out, "sales") {
+		t.Errorf("standalone word %q was corrupted by short-login replacement: %q", "sales", out)
+	}
+}
+
+// TestRedactAddLoginCoversServiceAccount simulates the pipeline path: a bare
+// value such as a service-account name (e.g. "CORP\svc-01") never matches
+// Scan's quoted "user '...'" pattern, so it must be registered directly via
+// AddLogin. This proves AddLogin makes Apply redact that value both when it
+// appears standalone (the summary field) and inside a quoted sentence (a
+// boot event line), and that the Legend records the mapping.
+func TestRedactAddLoginCoversServiceAccount(t *testing.T) {
+	const svcAcct = `CORP\svc-01`
+
+	r := NewRedactor()
+	r.AddLogin(svcAcct)
+
+	outSentence := r.Apply("The service account is '" + svcAcct + "'.")
+	if strings.Contains(outSentence, svcAcct) {
+		t.Errorf("service account leaked in event text: %q", outSentence)
+	}
+	if !strings.Contains(outSentence, "LOGIN_") {
+		t.Errorf("no LOGIN token in event text: %q", outSentence)
+	}
+
+	outField := r.Apply(svcAcct)
+	if strings.Contains(outField, svcAcct) {
+		t.Errorf("service account leaked in summary field: %q", outField)
+	}
+	if !strings.Contains(outField, "LOGIN_") {
+		t.Errorf("no LOGIN token in summary field: %q", outField)
+	}
+
+	legend := r.Legend()
+	found := false
+	for _, l := range legend {
+		if strings.Contains(l, "= "+svcAcct) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("legend does not contain service account mapping: %v", legend)
+	}
+}
+
+// TestRedactIPBoundarySanity proves the boundary-aware Apply still redacts
+// an IP flanked by brackets/spaces, and that a registered short IP is not
+// applied as a corrupting substring match inside an unrelated, unregistered
+// longer IP that shares the same prefix (e.g. 10.0.0.5 vs 10.0.0.50). Only
+// 10.0.0.5 is scanned/registered here, mirroring a real case where the two
+// IPs come from different text — Apply must not turn "10.0.0.50" into
+// something like "IP_10" (the old ReplaceAll behavior).
+func TestRedactIPBoundarySanity(t *testing.T) {
+	r := NewRedactor()
+	r.Scan("[CLIENT : 10.0.0.5]")
+
+	out := r.Apply("[CLIENT : 10.0.0.5] then later [CLIENT : 10.0.0.50]")
+
+	if strings.Contains(out, "10.0.0.5]") {
+		t.Errorf("10.0.0.5 not redacted: %q", out)
+	}
+	if !strings.Contains(out, "IP_") {
+		t.Errorf("no IP token minted: %q", out)
+	}
+	if !strings.Contains(out, "10.0.0.50]") {
+		t.Errorf("unregistered 10.0.0.50 was corrupted by the registered 10.0.0.5 match: %q", out)
+	}
+}

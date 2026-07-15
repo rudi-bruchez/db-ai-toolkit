@@ -32,6 +32,38 @@ func TestProcessEndToEnd(t *testing.T) {
 	}
 }
 
+// TestProcessRedactsServiceAccount is an end-to-end guard for the pipeline
+// wiring that registers the service-account summary value as a login before
+// redaction. Summarize's reSvc pattern extracts a bare value like
+// "CORP\svc-01" (no surrounding quotes to trigger reLogin during Scan), so
+// without pipeline.go calling red.AddLogin(report.Summary.ServiceAcct) the
+// account leaks both in the "Service account" summary row and in the kept
+// boot event line that mentions it. If that wiring regresses, this test
+// fails.
+func TestProcessRedactsServiceAccount(t *testing.T) {
+	const svcAcct = `CORP\svc-01`
+	raw := encodeUTF16LE(
+		"2026-06-12 15:28:18.32 Server     Microsoft SQL Server 2022 (RTM-CU25) - 16.0.4255.1 (X64)\r\n" +
+			"2026-06-12 15:28:19.00 Server     The service account is '" + svcAcct + "'.\r\n" +
+			"2026-06-13 00:00:00.50 spid61     Erreur : 824, Gravité : 24, État : 2.\r\n")
+
+	// ShowLegend is deliberately off: the legend is meant to contain the
+	// value->token mapping, so it is excluded here to keep this a leak check
+	// on the digest body (summary row + event text) rather than the legend.
+	out, err := Process([]Source{{Name: "t", Data: raw}}, Options{
+		MinSeverity: 16, Format: "md", ShowSummary: true, Redact: true, ShowLegend: false,
+	})
+	if err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if strings.Contains(out, svcAcct) {
+		t.Errorf("service account leaked in digest:\n---\n%s", out)
+	}
+	if !strings.Contains(out, "LOGIN_") {
+		t.Errorf("service account was not redacted into a LOGIN token:\n---\n%s", out)
+	}
+}
+
 func backups(n int) string {
 	var b strings.Builder
 	for i := 0; i < n; i++ {

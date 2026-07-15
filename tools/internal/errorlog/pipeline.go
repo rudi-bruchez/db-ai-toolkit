@@ -69,6 +69,9 @@ func Process(sources []Source, opts Options) (string, error) {
 	var legend []string
 	if opts.Redact {
 		red := NewRedactor()
+		if report.Summary.ServiceAcct != "" {
+			red.AddLogin(report.Summary.ServiceAcct)
+		}
 		for i := range report.Events {
 			red.Scan(report.Events[i].Text)
 		}

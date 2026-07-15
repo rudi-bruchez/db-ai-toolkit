@@ -99,7 +99,10 @@ func LoadEmbeddedRules() (*RuleSet, error) {
 }
 
 // LoadDir adds packs from a user-supplied directory (rules/*.rules), letting
-// contributors extend or override the embedded ones without recompiling.
+// contributors extend the embedded rules without recompiling. It only
+// appends rules; it cannot remove or take precedence over a built-in rule,
+// since Classify evaluates rules in registration order and the embedded
+// rules are registered first.
 func (rs *RuleSet) LoadDir(dir string) error {
 	matches, err := filepath.Glob(filepath.Join(dir, "*.rules"))
 	if err != nil {
