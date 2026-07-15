@@ -1,7 +1,8 @@
-// Package errorlog parses SQL Server ERRORLOG files and separates
-// signal (errors, severities, security and integrity events) from the
-// large volume of routine informational noise, so an AI skill can read a
-// compact digest instead of the raw multi-megabyte log.
+// Package errorlog decodes SQL Server ERRORLOG files and parses them into
+// logical entries. Each entry is a timestamped first line together with any
+// continuation lines that followed it (stack dumps, startup parameters, and
+// other multi-line output), so downstream code can work with whole records
+// instead of raw lines.
 package errorlog
 
 import (
@@ -66,6 +67,8 @@ func Parse(text string) []Entry {
 			continue
 		}
 		if cur == nil {
+			// Preamble before the first timestamped line (rare): keep it as
+			// its own entry rather than discarding leading output.
 			cur = &Entry{Lines: []string{line}}
 			continue
 		}
