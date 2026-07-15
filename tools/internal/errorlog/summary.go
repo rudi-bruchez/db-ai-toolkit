@@ -9,7 +9,9 @@ import (
 
 var (
 	reProduct   = regexp.MustCompile(`(Microsoft SQL Server .*?\d+\.\d+\.\d+\.\d+)`)
-	reEdition   = regexp.MustCompile(`(?i)((?:Standard|Enterprise|Developer|Express|Web)\b.*Edition.*)`)
+	reEdition   = regexp.MustCompile(`(?i)((?:Standard|Enterprise|Developer|Express|Web)\b[^\n]*Edition[^\n]*)`)
+	reOS        = regexp.MustCompile(`(?i)on (Windows[^<\n]*)`)
+	reCPU       = regexp.MustCompile(`(?i)detected (\d+ socket[^.\n]*logical processors)`)
 	reRAM       = regexp.MustCompile(`Detected (\d+) MB of RAM`)
 	reAuth      = regexp.MustCompile(`(?i)Authentication mode is (\w+)`)
 	reCollation = regexp.MustCompile(`(?i)Default collation:\s*(\S+)`)
@@ -19,7 +21,7 @@ var (
 	reListener  = regexp.MustCompile(`(?i)listening on virtual network name '([^']+)'`)
 	reSvc       = regexp.MustCompile(`(?i)service account is '([^']+)'`)
 	reLogPath   = regexp.MustCompile(`(?i)Logging SQL Server messages in file '([^']+)'`)
-	reSPN       = regexp.MustCompile(`(?i)(Service Principal Name.*)$`)
+	reSPN       = regexp.MustCompile(`(?i)(Service Principal Name[^\n]*)`)
 )
 
 // InstanceSummary holds instance-level facts extracted from the boot region
@@ -28,6 +30,8 @@ var (
 type InstanceSummary struct {
 	Product     string
 	Edition     string
+	OS          string
+	CPU         string
 	RAMMB       int
 	AuthMode    string
 	Collation   string
@@ -52,6 +56,8 @@ func Summarize(entries []Entry) InstanceSummary {
 	first := firstMatch(reProduct, boot)
 	s.Product = first
 	s.Edition = firstMatch(reEdition, boot)
+	s.OS = firstMatch(reOS, boot)
+	s.CPU = firstMatch(reCPU, boot)
 	if m := reRAM.FindStringSubmatch(boot); m != nil {
 		s.RAMMB, _ = strconv.Atoi(m[1])
 	}
