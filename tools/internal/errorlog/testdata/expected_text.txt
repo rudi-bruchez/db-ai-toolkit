@@ -1,0 +1,44 @@
+=== INSTANCE ===
+Microsoft SQL Server 2022 (RTM) - 16.0.1000.6 Enterprise Edition (64-bit) on Windows Server 2022 Standard 10.0 <X64> (Build 20348: ) (Hypervisor)
+RAM 131072 MB · collation French_CI_AS · auth MIXED · UTC 1:00
+Window: 2026-03-01 02:00 → 2026-03-03 04:30
+=== ADVISORIES ===
+[backup] 600 successful-backup messages dominate this log. Enable trace flag 3226 to stop logging successful backups.
+   → https://www.mssqltips.com/sqlservertip/1457/stop-logging-all-successful-backups-in-your-sql-server-error-logs/
+[ifi-off] Instant File Initialization is off. Grant "Perform Volume Maintenance Tasks" to the service account for instant file initialization.
+   → https://learn.microsoft.com/sql/relational-databases/databases/database-instant-file-initialization
+=== COUNTS ===
+630 entries → 25 kept, 605 dropped
+dropped: backup=600, startup=5
+=== EVENTS ===
+2026-03-01 02:00:00.01 Server      Microsoft SQL Server 2022 (RTM) - 16.0.1000.6 (X64)
+  	Oct  8 2022 05:58:25
+  	Copyright (C) 2022 Microsoft Corporation
+  	Enterprise Edition (64-bit) on Windows Server 2022 Standard 10.0 <X64> (Build 20348: ) (Hypervisor)
+2026-03-01 02:00:00.02 Server      UTC adjustment: 1:00
+2026-03-01 02:00:00.03 Server      (c) Microsoft Corporation.
+2026-03-01 02:00:00.04 Server      All rights reserved.
+2026-03-01 02:00:00.05 Server      Server process ID is 4521.
+2026-03-01 02:00:00.06 Server      System Manufacturer: 'Contoso Compute', System Model: 'ContosoServer Gen10'.
+2026-03-01 02:00:00.07 Server      Authentication mode is MIXED.
+2026-03-01 02:00:00.08 Server      Logging SQL Server messages in file 'D:\SQLLogs\demo01\ERRORLOG'.
+2026-03-01 02:00:00.09 Server      The service account is 'CORP\svc-sqldemo01'. This is an informational message; no user action is required.
+2026-03-01 02:00:00.10 Server      Registry startup parameters:
+  	-d D:\SQLData\demo01\master.mdf
+  	-e D:\SQLLogs\demo01\ERRORLOG
+  	-l D:\SQLData\demo01\mastlog.ldf
+2026-03-01 02:00:00.11 Server      Command Line Startup Parameters:
+  	-s "DEMOSQL01"
+2026-03-01 02:00:00.20 Server      Detected 2 sockets with 8 cores per socket and 16 logical processors per socket, 32 total logical processors; using 32 logical processors based on SQL Server licensing. This is an informational message; no user action is required.
+2026-03-01 02:00:00.30 Server      Detected 131072 MB of RAM. This is an informational message; no user action is required.
+2026-03-01 02:00:00.40 Server      Using conventional memory in the memory manager.
+2026-03-01 02:00:00.50 Server      Default collation: French_CI_AS
+2026-03-01 02:00:00.60 Server      Instant File Initialization: désactivé. Une amélioration des performances de croissance de fichier de données est possible si cette fonctionnalité est activée.
+2026-03-01 02:00:00.70 Server      The SQL Server Network Interface library successfully registered the Service Principal Name (SPN) [ MSSQLSvc/sqldemo01.corp.example.local:1433 ] for the SQL Server service.
+2026-03-01 02:00:00.90 Server      Server local connection provider is ready to accept connection on [ \\.\pipe\SQLLocal\DEMOSQL01 ].
+2026-03-01 02:00:03.00 Server      SQL Server is now ready for client connections. This is an informational message; no user action is required.
+[×3] 2026-03-03 04:10–2026-03-03 04:10  2026-03-03 04:10:15.10 Logon       Login failed for user 'appuser'. Raison : Le mot de passe ne correspond pas à l'identifiant de connexion fourni. Erreur : 18456, Gravité : 14, État : 8. [CLIENT: 203.0.113.45]
+2026-03-03 04:20:11.33 spid55      Erreur : 824, Gravité : 24, État : 2. SQL Server a détecté une erreur d'E/S basée sur la cohérence : somme de contrôle incorrecte (attendue : 0x1a2b3c4d ; réelle : 0xdeadbeef). Ceci s'est produit pendant la lecture de la page (1:1542) dans la base de données ID 8 au décalage 0x0000000c0c4000 dans le fichier 'F:\SQLData\demo_reporting.mdf'.
+  	Message supplémentaire de l'API de niveau supérieur, lors du traitement de la page. Contactez le support technique du fournisseur matériel si le problème persiste après vérification du sous-système disque.
+2026-03-03 04:30:00.00 spid20s     A new instance of the full-text filter daemon host process has been successfully started.
+2026-03-03 04:30:05.00 spid20s     The Database Mirroring endpoint is in disabled or stopped state.
