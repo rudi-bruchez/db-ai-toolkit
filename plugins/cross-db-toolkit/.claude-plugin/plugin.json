@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "cross-db-toolkit",
+  "displayName": "Cross-DB Toolkit",
+  "version": "0.1.0",
+  "description": "Engine-agnostic SQL analysis, rewriting and workload triage for SQL Server and PostgreSQL.",
+  "author": {
+    "name": "Rudi Bruchez",
+    "email": "rudi@babaluga.com"
+  },
+  "license": "MIT",
+  "keywords": ["sql", "query-tuning", "sql-rewrite", "workload", "cross-database"]
+}

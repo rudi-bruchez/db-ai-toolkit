@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "sqlserver-toolkit",
+  "displayName": "SQL Server Toolkit",
+  "version": "0.1.0",
+  "description": "Diagnostics, performance tuning and query design for SQL Server, with a token-saving ERRORLOG preprocessor.",
+  "author": {
+    "name": "Rudi Bruchez",
+    "email": "rudi@babaluga.com"
+  },
+  "license": "MIT",
+  "keywords": ["sql-server", "mssql", "dba", "performance", "errorlog", "diagnostics"]
+}
