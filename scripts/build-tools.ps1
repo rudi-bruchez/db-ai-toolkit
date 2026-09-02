@@ -14,7 +14,7 @@
 
 .EXAMPLE
     ./scripts/build-tools.ps1
-    Build errorlog-parse for this machine and drop it into the SQL Server plugin.
+    Build the tools for this machine and drop them into the SQL Server plugin.
 
 .EXAMPLE
     ./scripts/build-tools.ps1 -All
@@ -32,6 +32,9 @@ $toolsDir = Join-Path $repoRoot 'tools'
 # Map each command to the plugin bin/ directories that should receive it.
 $targets = @{
     'errorlog-parse' = @(
+        (Join-Path $repoRoot 'plugins/sqlserver-toolkit/bin')
+    )
+    'sqlq' = @(
         (Join-Path $repoRoot 'plugins/sqlserver-toolkit/bin')
     )
 }
