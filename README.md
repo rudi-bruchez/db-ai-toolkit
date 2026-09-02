@@ -12,7 +12,7 @@ self-contained plugins plus the Go tools they use.
 
 | Plugin | What it covers |
 |--------|----------------|
-| [`sqlserver-toolkit`](plugins/sqlserver-toolkit/) | SQL Server diagnostics, tuning, query design. Includes the `errorlog-diagnostics` skill and the `errorlog-parse` preprocessor. |
+| [`sqlserver-toolkit`](plugins/sqlserver-toolkit/) | SQL Server diagnostics, tuning, query design. Includes the `errorlog-diagnostics` and `live-query` skills, with the `errorlog-parse` and `sqlq` tools. |
 | [`postgres-toolkit`](plugins/postgres-toolkit/) | PostgreSQL diagnostics, tuning, query design (scaffold). |
 | [`cross-db-toolkit`](plugins/cross-db-toolkit/) | Engine-agnostic SQL analysis, rewriting, workload triage (scaffold). |
 
@@ -46,17 +46,20 @@ For local development you can also point Claude Code at a plugin directly with
 
 ### Build the Go tools
 
-The SQL Server plugin ships a token-saving ERRORLOG preprocessor. Build it
+The SQL Server plugin ships two Go tools: `errorlog-parse`, a token-saving
+ERRORLOG preprocessor, and `sqlq`, a guarded read-only query runner. Build them
 (requires the [Go toolchain](https://go.dev/dl/)):
 
 ```powershell
-./scripts/build-tools.ps1
+./scripts/build-tools.ps1     # Windows
+./scripts/build-tools.sh      # macOS, Linux
 ```
 
-This compiles `tools/cmd/errorlog-parse` into `plugins/sqlserver-toolkit/bin/`,
-which Claude Code adds to the Bash tool PATH when the plugin is enabled. If the
-binary is not built, the skill still works by reading the raw log (at higher
-token cost).
+This compiles `tools/cmd/*` into `plugins/sqlserver-toolkit/bin/`, which Claude
+Code adds to the Bash tool PATH when the plugin is enabled. If `errorlog-parse`
+is not built, its skill still works by reading the raw log (at higher token
+cost). `sqlq` has no such fallback: the `live-query` skill needs it, because the
+read-only guardrails live inside it.
 
 ## Development
 

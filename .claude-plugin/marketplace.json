@@ -13,7 +13,7 @@
     {
       "name": "sqlserver-toolkit",
       "source": "sqlserver-toolkit",
-      "description": "Diagnostics, performance tuning and query design for SQL Server."
+      "description": "Diagnostics, performance tuning and query design for SQL Server, including read-only querying of a live instance."
     },
     {
       "name": "postgres-toolkit",
