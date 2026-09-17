@@ -38,7 +38,7 @@ func env(pairs map[string]string) func(string) string {
 
 func TestDSNIntegratedCarriesNoUser(t *testing.T) {
 	p := Profile{Name: "p", Server: "SRV01", Database: "ERP", Auth: AuthIntegrated}
-	driver, dsn, err := p.DSN(env(nil))
+	driver, dsn, err := p.DSN("")
 	if err != nil {
 		t.Fatalf("DSN: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestDSNSQLAuthReadsPasswordFromEnvironment(t *testing.T) {
 		Name: "p", Server: `SRV02\SQLEXPRESS,1433`, Database: "L",
 		Auth: AuthSQL, User: "svc_claude", PasswordEnv: "MSSQL_LEGACY_PWD",
 	}
-	driver, dsn, err := p.DSN(env(map[string]string{"MSSQL_LEGACY_PWD": "p@ss;word/1"}))
+	driver, dsn, err := p.DSN("p@ss;word/1")
 	if err != nil {
 		t.Fatalf("DSN: %v", err)
 	}
@@ -91,17 +91,18 @@ func TestDSNSQLAuthReadsPasswordFromEnvironment(t *testing.T) {
 	}
 }
 
-func TestDSNSQLAuthFailsWhenEnvVarUnset(t *testing.T) {
-	p := Profile{
-		Name: "p", Server: "S", Auth: AuthSQL,
-		User: "u", PasswordEnv: "MSSQL_ABSENT",
-	}
-	_, _, err := p.DSN(env(nil))
+// DSN no longer knows where a secret came from, so naming the missing variable
+// is the resolver's job (see TestEnvResolverNamesTheMissingVariable). What DSN
+// still owes is a refusal: SQL authentication with an empty password must never
+// produce a connection string.
+func TestDSNSQLAuthRefusesAnEmptySecret(t *testing.T) {
+	p := Profile{Name: "p", Server: "S", Auth: AuthSQL, User: "u", PasswordEnv: "MSSQL_ABSENT"}
+	_, _, err := p.DSN("")
 	if err == nil {
-		t.Fatal("DSN should fail when the password environment variable is unset")
+		t.Fatal("DSN should refuse SQL auth with no password")
 	}
-	if !strings.Contains(err.Error(), "MSSQL_ABSENT") {
-		t.Errorf("error %q should name the missing variable", err)
+	if !strings.Contains(err.Error(), "password") {
+		t.Errorf("error %q should say a password is missing", err)
 	}
 }
 
@@ -110,7 +111,7 @@ func TestDSNEntraSelectsAzureDriver(t *testing.T) {
 		Name: "p", Server: "x.database.windows.net", Database: "D",
 		Auth: AuthEntra, FedAuth: "ActiveDirectoryDefault",
 	}
-	driver, dsn, err := p.DSN(env(nil))
+	driver, dsn, err := p.DSN("")
 	if err != nil {
 		t.Fatalf("DSN: %v", err)
 	}
@@ -125,7 +126,7 @@ func TestDSNEntraSelectsAzureDriver(t *testing.T) {
 
 func TestDSNEntraDefaultsFedAuth(t *testing.T) {
 	p := Profile{Name: "p", Server: "S", Auth: AuthEntra}
-	_, dsn, err := p.DSN(env(nil))
+	_, dsn, err := p.DSN("")
 	if err != nil {
 		t.Fatalf("DSN: %v", err)
 	}
@@ -137,7 +138,7 @@ func TestDSNEntraDefaultsFedAuth(t *testing.T) {
 
 func TestDSNEncryptionDefaults(t *testing.T) {
 	p := Profile{Name: "p", Server: "S", Auth: AuthIntegrated}
-	_, dsn, _ := p.DSN(env(nil))
+	_, dsn, _ := p.DSN("")
 	u, _ := url.Parse(dsn)
 	if got := u.Query().Get("encrypt"); got != "true" {
 		t.Errorf("encrypt = %q; connections must be encrypted unless the profile says otherwise", got)
@@ -149,7 +150,7 @@ func TestDSNEncryptionDefaults(t *testing.T) {
 
 func TestDSNHonoursTrustServerCertificate(t *testing.T) {
 	p := Profile{Name: "p", Server: "S", Auth: AuthIntegrated, TrustServerCertificate: true}
-	_, dsn, _ := p.DSN(env(nil))
+	_, dsn, _ := p.DSN("")
 	u, _ := url.Parse(dsn)
 	if got := u.Query().Get("trustservercertificate"); got != "true" {
 		t.Errorf("trustservercertificate = %q; want true", got)
@@ -158,7 +159,7 @@ func TestDSNHonoursTrustServerCertificate(t *testing.T) {
 
 func TestDSNAppName(t *testing.T) {
 	p := Profile{Name: "p", Server: "S", Auth: AuthIntegrated}
-	_, dsn, _ := p.DSN(env(nil))
+	_, dsn, _ := p.DSN("")
 	u, _ := url.Parse(dsn)
 	if got := u.Query().Get("app name"); got == "" {
 		t.Error(`the connection must identify itself via "app name" so DBAs can spot it in sys.dm_exec_sessions`)

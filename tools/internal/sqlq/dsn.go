@@ -41,12 +41,20 @@ func parseServer(s string) (host, instance, port string) {
 	return strings.TrimSpace(s), instance, port
 }
 
-// DSN builds the driver name and connection URL for a profile. getenv is
-// injected so the password lookup is testable; pass os.Getenv in production.
+// DSN builds the driver name and connection URL for a profile from an
+// already-resolved secret. Pass "" for the modes that carry none.
+//
+// It takes the secret rather than a way of finding one on purpose: the caller
+// resolves exactly once and uses that same string for both the connection and
+// the redaction of any error text. A callback here would leave a second
+// resolution reachable, which on the DPAPI path means a second decryption and a
+// redaction pass holding a different string from the one in the DSN - and a
+// redaction that holds the wrong string redacts nothing.
 //
 // The URL form is used rather than the key=value form because it escapes
-// passwords containing ';' or '/' correctly.
-func (p Profile) DSN(getenv func(string) string) (Driver, string, error) {
+// passwords containing ';' or '/' correctly. Never log u.String(): it carries
+// the password. u.Redacted() is the only safe rendering.
+func (p Profile) DSN(secret string) (Driver, string, error) {
 	host, instance, port := parseServer(p.Server)
 	if host == "" {
 		return "", "", fmt.Errorf("profile %q: empty server", p.Name)
@@ -89,13 +97,10 @@ func (p Profile) DSN(getenv func(string) string) (Driver, string, error) {
 			setIfNotEmpty(q, "krb5-credcachefile", p.Krb5CredCache)
 		}
 	case AuthSQL:
-		password := getenv(p.PasswordEnv)
-		if password == "" {
-			return "", "", fmt.Errorf(
-				"profile %q: environment variable %s is empty or unset; it must hold the SQL login password",
-				p.Name, p.PasswordEnv)
+		if secret == "" {
+			return "", "", fmt.Errorf("profile %q: no password was resolved for the SQL login", p.Name)
 		}
-		u.User = url.UserPassword(p.User, password)
+		u.User = url.UserPassword(p.User, secret)
 	case AuthEntra:
 		driver = DriverAzureAD
 		fedAuth := p.FedAuth
@@ -106,13 +111,7 @@ func (p Profile) DSN(getenv func(string) string) (Driver, string, error) {
 		// Flows such as ActiveDirectoryPassword and
 		// ActiveDirectoryServicePrincipal carry an identity; the rest do not.
 		if p.User != "" {
-			if p.PasswordEnv != "" {
-				secret := getenv(p.PasswordEnv)
-				if secret == "" {
-					return "", "", fmt.Errorf(
-						"profile %q: environment variable %s is empty or unset; fedauth %s needs it",
-						p.Name, p.PasswordEnv, fedAuth)
-				}
+			if secret != "" {
 				u.User = url.UserPassword(p.User, secret)
 			} else {
 				u.User = url.User(p.User)

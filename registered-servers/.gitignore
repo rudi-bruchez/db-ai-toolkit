@@ -1,0 +1,9 @@
+packages/
+
+# Generated output. These files belong in %LOCALAPPDATA%\db-ai-toolkit\;
+# the rules below are a safety net in case a script writes into the repo.
+servers.json
+credentials.json
+approved.json
+*.credentials.json
+out/

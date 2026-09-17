@@ -121,3 +121,37 @@ func TestStatementsIgnoresGoInsideIdentifier(t *testing.T) {
 		t.Fatalf("Statements() = %d statements (%q); want 1", len(got), got)
 	}
 }
+
+// USE writes nothing, so the write guard passes it - and that is the point of
+// having a second check rather than adding it to writeKeywords, where the
+// refusal would come back as "this batch would write", which is false.
+func TestUseIsNotAWriteButIsRefusedAnyway(t *testing.T) {
+	const sql = "USE OtherDatabase;\nSELECT TOP (10) name FROM sys.tables"
+
+	if v := FindWrites(sql); len(v) > 0 {
+		t.Errorf("USE is not a write; the write guard should not be what catches it (got %s)", v[0].Keyword)
+	}
+	changes := FindContextChanges(sql)
+	if len(changes) == 0 {
+		t.Fatal("USE must be refused: it silently makes the reported database wrong and overrides -database")
+	}
+	if changes[0].Keyword != "USE" {
+		t.Errorf("keyword = %q; want USE", changes[0].Keyword)
+	}
+}
+
+func TestFindContextChangesLeavesOrdinaryReadsAlone(t *testing.T) {
+	allowed := []string{
+		// Multi-part names are legitimate cross-database reads and stay allowed.
+		"SELECT * FROM Other.dbo.Customers",
+		"SELECT * FROM [LINKED].[db].[dbo].[T]",
+		// A literal, and a column whose name merely contains the keyword.
+		"SELECT 'USE this' AS hint",
+		"SELECT house_use, warehouse FROM dbo.T",
+	}
+	for _, sql := range allowed {
+		if v := FindContextChanges(sql); len(v) > 0 {
+			t.Errorf("%q was refused on %s, but it changes no context", sql, v[0].Keyword)
+		}
+	}
+}
