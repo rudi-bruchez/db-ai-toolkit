@@ -75,6 +75,53 @@ function Get-ToolkitDataDirectory {
     return (Join-Path $env:LOCALAPPDATA 'db-ai-toolkit')
 }
 
+function Assert-LocalDataDirectory {
+    <#
+    .SYNOPSIS
+        Refuses a data directory that is not on local storage.
+    .DESCRIPTION
+        This is the same decision as %LOCALAPPDATA% over %APPDATA%, applied to the parameter
+        that can override it. A roaming profile syncs; a UNC path or a mapped network drive
+        publishes.
+
+        The blobs stay encrypted either way - the DPAPI key belongs to this Windows account,
+        and nobody else's machine can read them. What a writable share gives away is not the
+        plaintext but the pairing: anyone who can write the file can move one entry's blob
+        into another entry, leaving the destination beside it untouched. Both blobs decrypt
+        under this account, so the swap is invisible to every check there is, and the next
+        sqlq run sends one server's password to the other server. That is the binding defeated
+        by a file copy rather than by an attack on the encryption.
+    .PARAMETER Path
+        The directory about to be written to.
+    #>
+    param([Parameter(Mandatory)][string] $Path)
+
+    $full = [System.IO.Path]::GetFullPath($Path)
+
+    # [uri]::IsUnc rather than a test on leading separators: the separators are the one thing
+    # that cannot be written literally here without something in the toolchain eating one.
+    if (([uri]$full).IsUnc) {
+        throw ("Refusing to use '$full': it is a UNC path. credentials.json belongs on local " +
+               'storage - see Assert-LocalDataDirectory in RegisteredServers.psm1 for why a ' +
+               'share is a problem even though the blobs stay encrypted.')
+    }
+
+    # An undeterminable drive is allowed through: the realistic case is caught above, and
+    # refusing on a drive type that could not be read would break setups over a detail.
+    try {
+        $drive = [System.IO.DriveInfo]::new([System.IO.Path]::GetPathRoot($full))
+        $type = $drive.DriveType
+    } catch {
+        return
+    }
+    if ($type -eq [System.IO.DriveType]::Network) {
+        throw ("Refusing to use '$full': $($drive.Name) is a network drive. credentials.json " +
+               'belongs on local storage - see Assert-LocalDataDirectory in ' +
+               'RegisteredServers.psm1 for why a share is a problem even though the blobs ' +
+               'stay encrypted.')
+    }
+}
+
 function Get-RegisteredServersSearchRoot {
     <#
     .SYNOPSIS
@@ -564,6 +611,7 @@ function Write-SourceChoice {
 Export-ModuleMember -Function @(
     'ConvertTo-RegisteredServerSlug'
     'Get-ToolkitDataDirectory'
+    'Assert-LocalDataDirectory'
     'Resolve-RegisteredServersFile'
     'Get-SourceFingerprint'
     'ConvertFrom-ConnectionString'

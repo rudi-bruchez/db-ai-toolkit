@@ -16,6 +16,12 @@
     otherwise happen silently the moment someone edits a registration in SSMS without renaming
     it.
 
+    That check reads what this script writes, and this script rebuilds it from the XML every
+    run - so an import right after such an edit is exactly what would re-authorize the old
+    password for the new destination, leaving sqlq nothing to refuse. When the destination of
+    an existing credential moves, this stops and says so instead; -AcceptRebind is how the
+    operator says the move was theirs. SSMS carries the same pairing and asks nobody.
+
     Like the export, this regenerates the whole file from the SSMS XML every time. There is no
     incremental state to get out of step. Anything added to credentials.json by hand is erased
     on the next run: RegSrvr*.xml is the only source.
@@ -24,7 +30,12 @@
     An explicit RegSrvr*.xml. Skips discovery.
 
 .PARAMETER DataDirectory
-    Where credentials.json is written. Defaults to %LOCALAPPDATA%\db-ai-toolkit.
+    Where credentials.json is written. Defaults to %LOCALAPPDATA%\db-ai-toolkit. Local storage
+    only: a UNC path or a network drive is refused.
+
+.PARAMETER AcceptRebind
+    Import anyway when a registration has been pointed at a different server or login while
+    keeping its saved password. Without this, that case stops the run instead.
 
 .EXAMPLE
     .\Import-RegisteredServerCredentials.ps1
@@ -32,7 +43,8 @@
 [CmdletBinding()]
 param(
     [string] $RegisteredServersPath,
-    [string] $DataDirectory
+    [string] $DataDirectory,
+    [switch] $AcceptRebind
 )
 
 Set-StrictMode -Version Latest
@@ -43,6 +55,7 @@ Import-Module (Join-Path $PSScriptRoot 'RegisteredServers.psm1') -Force
 $MANAGED_BY = 'registered-servers'
 
 if ([string]::IsNullOrWhiteSpace($DataDirectory)) { $DataDirectory = Get-ToolkitDataDirectory }
+Assert-LocalDataDirectory -Path $DataDirectory
 $credentialsPath = Join-Path $DataDirectory 'credentials.json'
 $serversPath = Join-Path $DataDirectory 'servers.json'
 
@@ -119,6 +132,27 @@ foreach ($id in $kept) {
     }
 }
 
+# The binding sqlq enforces is only ever as good as what gets written here, and this script
+# rebuilds it from the XML every run - so a registration edited to point at a new server
+# arrives with its old password already re-authorized for the new destination, and sqlq has
+# nothing left to refuse. SSMS does the same thing without saying so; this is the one moment
+# a person is watching, so spend it.
+#
+# Nothing has been written at this point. Stopping leaves the previous credentials.json in
+# place, still bound to the old destination, which is exactly the state sqlq refuses - the
+# password stays where it was and goes nowhere new.
+if ($rebound.Count -gt 0 -and -not $AcceptRebind) {
+    Write-Host ''
+    Write-Host 'Stopping: a saved password would follow a registration to a new destination.'
+    foreach ($line in $rebound) { Write-Host "    $line" }
+    Write-Host ''
+    Write-Host '  Nothing was written. If the move is deliberate - the instance was renamed, or'
+    Write-Host '  it moved host - the password is still the right one, so re-run with'
+    Write-Host '  -AcceptRebind. If it is not, the password belongs to the old server: clear it'
+    Write-Host '  in SSMS, or point the registration back, before importing again.'
+    exit 1
+}
+
 Write-JsonFileAtomic -Path $credentialsPath -Value $document
 
 # --- summary ------------------------------------------------------------------------------------
@@ -129,8 +163,8 @@ Write-Host "  $($added.Count) added, $($removed.Count) removed, $($kept.Count) r
 foreach ($id in $added)   { Write-Host "    added:   $id" }
 foreach ($id in $removed) { Write-Host "    removed: $id" }
 foreach ($line in $rebound) {
-    Write-Host "    re-bound: $line"
-    Write-Host "      the previous credential would have been refused; it is replaced."
+    Write-Host "    re-bound on -AcceptRebind: $line"
+    Write-Host "      the saved password now authorizes the new destination."
 }
 foreach ($id in $noSecret) { Write-Host "    no stored password in SSMS, nothing imported: $id" }
 
