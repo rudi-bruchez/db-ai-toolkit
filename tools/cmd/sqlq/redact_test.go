@@ -53,7 +53,7 @@ func writeCredentials(t *testing.T, id, server, login string) string {
 // secret, the DSN really carries it, and the error text comes back without it.
 func TestSecretIsRedactedForEverySecretSource(t *testing.T) {
 	const secret = "Synthetic!Passw0rd-42"
-	const id = "fr-prd/example"
+	const id = "site-prd/example"
 
 	envProfile := sqlq.Profile{
 		Name: "by-env", Server: "SRV01", Database: "ERP",

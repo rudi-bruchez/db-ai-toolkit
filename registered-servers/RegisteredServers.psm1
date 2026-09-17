@@ -323,7 +323,7 @@ function Get-GroupSegment {
     .DESCRIPTION
         Parent already carries the whole path, so no hierarchy has to be rebuilt from the
         ServerGroup elements:
-          /RegisteredServersStore/ServerGroup/DatabaseEngineServerGroup/ServerGroup/FR_.PRD
+          /RegisteredServersStore/ServerGroup/DatabaseEngineServerGroup/ServerGroup/SITE_.PRD
         Splitting on '/ServerGroup/' and dropping the store root and the engine group leaves
         the group names, nested ones included.
     #>
