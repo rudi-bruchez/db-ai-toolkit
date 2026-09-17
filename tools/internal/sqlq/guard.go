@@ -192,3 +192,57 @@ func containsToken(s, token string) bool {
 	}
 	return false
 }
+
+// FindBatchSeparators reports the 1-based lines carrying a GO separator.
+//
+// GO is a client convention, not T-SQL: SSMS and sqlcmd split on it, and a
+// server sent the word itself answers with a syntax error that says nothing
+// about why. Agents produce it spontaneously, having learnt SQL from scripts
+// written for those tools.
+//
+// The text is sanitized first, so a GO inside a string literal or a comment is
+// not mistaken for a separator.
+func FindBatchSeparators(sql string) []int {
+	var lines []int
+	for i, line := range strings.Split(Sanitize(sql), "\n") {
+		if goSeparator.MatchString(line) {
+			lines = append(lines, i+1)
+		}
+	}
+	return lines
+}
+
+// contextKeywords change what the rest of the batch runs against, without
+// writing anything. They are refused separately from writes because the reason
+// differs, and so does the message the caller needs.
+var contextKeywords = map[string]bool{
+	"USE": true,
+}
+
+// FindContextChanges returns every statement that would move the batch to a
+// different execution context.
+//
+// USE is the one that matters. It writes nothing, so the write guard lets it
+// through, and it silently invalidates two things at once: the "database" field
+// of the JSON still names the profile's catalog while the query ran somewhere
+// else, and -database - whose whole purpose is to choose the catalog for this
+// invocation - is overridden from inside the text it was meant to govern.
+//
+// Multi-part names (Other.dbo.T) are deliberately NOT refused: they are
+// legitimate reads, they are explicit about where they point, and refusing them
+// would break ordinary cross-database work. What they do mean is that
+// "database" names the connection's catalog, never a claim about every object
+// the query touched.
+func FindContextChanges(sql string) []WriteViolation {
+	var out []WriteViolation
+	for _, stmt := range Statements(sql) {
+		for _, tok := range tokens(stmt) {
+			upper := strings.ToUpper(tok)
+			if contextKeywords[upper] {
+				out = append(out, WriteViolation{Statement: stmt, Keyword: upper})
+				break
+			}
+		}
+	}
+	return out
+}

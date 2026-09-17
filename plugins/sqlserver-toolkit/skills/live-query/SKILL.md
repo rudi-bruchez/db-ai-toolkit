@@ -23,6 +23,23 @@ JSON object.
 2. **Pick the profile.** If the user named one, use it. If exactly one exists,
    use it and say which. If several exist and the question does not identify
    one, ask — do not guess which instance to touch.
+
+   `-list-profiles` gives names, `auth`, `readonly`, and `environment`. It
+   deliberately does **not** give server or database names: every session starts
+   with this call, and the host names and database names are the estate map. A
+   human who wants them has `%LOCALAPPDATA%\db-ai-toolkit\servers.json`.
+
+   A profile marked `"environment": "prod"` is a production instance. **Before
+   the first query of a session against one, name the profile to the user and
+   wait for an explicit yes.** The damage this prevents is not a write — it is a
+   diagnostic query run against production while you believed you were on the
+   staging copy: production rows in the transcript, read locks on a busy
+   instance, and a conclusion drawn from the wrong environment. Instances here
+   are commonly named PRD / STA / REC / DEV of the same application, in more
+   than one country, so the names are nearly identical by design.
+
+   A profile marked `"unusable"` cannot run here — a DPAPI-backed profile on a
+   non-Windows machine. Say so; do not try it.
 3. **Route the question** using the decision tree below.
 4. **Answer from the JSON.** Quote the values the server returned. If
    `truncated` is `true`, say so and give the real `rowcount`.
@@ -103,6 +120,18 @@ Two flags exist that this skill must not reach for on its own:
   Never fill a gap with a plausible-looking row.
 - **Do not assume the version.** Some catalog objects and columns only exist
   from a given release; check `SELECT @@VERSION` before relying on one.
+- **Do not send `USE`.** It is refused. It writes nothing, so it slips past the write guard,
+  but it changes the database for the rest of the batch — which makes the `database` field of
+  the answer name a catalog the query did not run in, and overrides `-database` from inside the
+  text that flag was meant to govern. Choose the catalog with `-database`, or name it in the
+  object (`Other.dbo.T`), which stays allowed.
+- **Do not send `GO`.** It is a batch separator belonging to SSMS and `sqlcmd`,
+  not T-SQL; `sqlq` refuses a batch containing it. Send one batch per call.
+- **Do not retry after error 18456.** A rejected login is the one failure where
+  trying again causes harm: repeated failures can lock the account out, and a
+  burst of failed administrator logins from a workstation is what credential
+  stuffing looks like in the other team's security log. Report it and stop. The
+  fix is the user's: correct the password in SSMS, then re-run the import.
 
 ## Configuration
 
@@ -124,9 +153,20 @@ Profiles live outside the repository, resolved in this order: `-profiles
 ```
 
 `auth` is `integrated`, `sql` or `entra`. `mode` is `readonly` (the default when
-omitted) or `readwrite`. A profile must never contain a password: name the
-environment variable that holds it in `passwordEnv`. `sqlq` refuses to load a
-file with an inline `password`.
+omitted) or `readwrite`. A profile must never contain a password: name where the
+password lives, with exactly one of
+
+- `passwordEnv` — an environment variable, or
+- `passwordDpapi` — a key into the DPAPI-encrypted store written by
+  `registered-servers/Import-RegisteredServerCredentials.ps1` (Windows only).
+
+`sqlq` refuses to load a file with an inline `password`.
+
+Entries carrying `"managedBy": "registered-servers"` are generated from the SSMS
+registered servers and are rewritten on every export; edits to them are lost.
+Entries without that marker are hand-written and never touched. **Never run the
+import script yourself** — it is the user's to run, and it is the one command in
+this toolkit that handles secrets.
 
 > **The guard in `sqlq` is accident prevention, not security.** A lexical filter
 > can be worked around. The control that matters is the login: give the agent a

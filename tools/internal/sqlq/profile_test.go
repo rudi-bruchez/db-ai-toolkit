@@ -65,14 +65,39 @@ func TestLoadProfilesDefaultsModeToReadOnly(t *testing.T) {
 	}
 }
 
-func TestGetUnknownProfileListsAvailable(t *testing.T) {
+// A miss used to answer with the whole list of profile names. That list is the
+// estate map - host naming, environment tiers, the internal taxonomy - and
+// every session begins by talking to this tool, so a single typo published all
+// of it into an agent transcript. The error now counts and suggests instead.
+func TestGetUnknownProfileDoesNotPublishTheList(t *testing.T) {
 	profiles, _ := LoadProfiles(writeProfiles(t, sampleProfiles))
 	_, err := profiles.Get("nope")
 	if err == nil {
 		t.Fatal("Get(nope) should fail")
 	}
+	for _, name := range profiles.Names() {
+		if strings.Contains(err.Error(), name) {
+			t.Errorf("error %q names profile %q; a miss must not enumerate the estate", err, name)
+		}
+	}
+	if !strings.Contains(err.Error(), "4 defined") {
+		t.Errorf("error %q should say how many profiles exist", err)
+	}
+}
+
+// Suggesting the nearest name keeps a typo cheap to fix without printing the
+// list: a near miss is already known to the person who typed it.
+func TestGetNearMissSuggestsTheNeighbour(t *testing.T) {
+	profiles, _ := LoadProfiles(writeProfiles(t, sampleProfiles))
+	_, err := profiles.Get("prod-erpp")
+	if err == nil {
+		t.Fatal("Get(prod-erpp) should fail")
+	}
 	if !strings.Contains(err.Error(), "prod-erp") {
-		t.Errorf("error %q should list the available profile names", err)
+		t.Errorf("error %q should suggest the obvious neighbour", err)
+	}
+	if strings.Contains(err.Error(), "dev-local") {
+		t.Errorf("error %q suggests an unrelated profile", err)
 	}
 }
 

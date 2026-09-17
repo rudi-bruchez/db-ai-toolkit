@@ -461,3 +461,5 @@ plugins/*/bin/sqlq
 plugins/*/bin/sqlq.exe
 # ...but keep the bin/ folder itself tracked (overrides the **/[Bb]in/* rule above).
 !plugins/*/bin/.gitkeep
+# Working spec, kept local for now.
+registered-servers/TASK.md
