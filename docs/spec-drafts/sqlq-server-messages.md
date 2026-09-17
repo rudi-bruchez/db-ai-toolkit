@@ -27,7 +27,7 @@ C'est ce que cette spec vise, et le critère de réussite est là :
 
 - « Option A : 1 312 lectures logiques, 24 ms ; Option B : 2 113 lectures, 26 ms » — la phrase
   centrale du livrable ;
-- `IMATIS.TAGVALUE_HISTORY` écartée sur « Scan count 3792, logical reads 0 », soit 3 792 seeks
+- `APP.VALUE_HISTORY` écartée sur « Scan count 3792, logical reads 0 », soit 3 792 seeks
   pour zéro ligne.
 
 Sans les messages serveur, la sortie aurait été « 0 ligne, 7 ms » et la conclusion beaucoup plus
@@ -47,7 +47,7 @@ serveur ni lectures logiques.
 | File de messages | canal bufferisé à **15** ; `ReturnMessageEnqueue` bloque quand il est plein |
 | `GO` | **déjà réglé le 2026-09-17** : `FindBatchSeparators` + refus explicite avec le numéro de ligne. Le point 4 de la tâche est clos |
 | Garde d'écriture, littéraux | la requête Query Store filtrant sur `LIKE '%insert %'` passe. **Mesuré**, pas déduit |
-| Garde d'écriture, `_` mot | `TAG_CREATE`, `VALUE_INSERT`, `create_date`, `[DELETE]` passent. **Mesuré** |
+| Garde d'écriture, `_` mot | `ITEM_CREATE`, `ROW_INSERT`, `create_date`, `[DELETE]` passent. **Mesuré** |
 | `MsgRowsAffected` | mis en file **seulement si** `done.Status & doneCount != 0` (`token.go:1064` et `1106`). `SET NOCOUNT ON` du `preamble` supprime ce bit. Voir § 7 |
 | `rowcount` | signifie aujourd'hui *tout ce que le serveur a envoyé*, même quand `rows` est plafonné (`result.go`, commentaire de `RowSet`). Invariant à préserver, voir contrainte 3 |
 | Tests d'intégration | **aucune infrastructure** : `tests/` est vide, aucun `//go:build`, aucun test piloté par l'environnement |
@@ -288,8 +288,8 @@ responsables, tous deux corrects, et tous deux **mesurés aujourd'hui** :
 
 - `Sanitize` blanchit les littéraux avant le scan, donc la requête Query Store filtrant sur
   `LIKE '%insert %' OR '%update %' OR '%merge %'` passe ;
-- `tokens()` traite `_` comme caractère de mot, donc `TAG_CREATE` ≠ `CREATE` — et
-  `VALUE_INSERT`, `create_date`, `[DELETE]` passent également.
+- `tokens()` traite `_` comme caractère de mot, donc `ITEM_CREATE` ≠ `CREATE` — et
+  `ROW_INSERT`, `create_date`, `[DELETE]` passent également.
 
 `guard_test.go` couvre les principes (`SELECT 'DROP TABLE t'`, `SELECT create_date`) mais **pas
 ces deux formes-là** : le littéral multiple en `WHERE`, et le mot-clé en *suffixe* après un

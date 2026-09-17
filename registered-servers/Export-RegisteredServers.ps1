@@ -54,8 +54,8 @@ function Get-ProfileDefaultPath {
 }
 
 function Test-ProdGroup {
-    # The group names on this estate are AU_.PRD, FR_.PRD, FR_.STA... so the test runs on the
-    # slugified segments: 'au-prd' splits to 'au' and 'prd'.
+    # A group name can carry the environment as a suffix, as in 'SITE_.PRD' or 'SITE_.STA',
+    # so the test runs on the slugified segments: 'site-prd' splits to 'site' and 'prd'.
     param([AllowEmptyCollection()][string[]] $GroupSegments)
     foreach ($segment in $GroupSegments) {
         $slug = ConvertTo-RegisteredServerSlug -Text $segment -Subject 'group name'
