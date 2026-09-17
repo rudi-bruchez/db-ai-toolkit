@@ -19,9 +19,11 @@ self-contained plugins plus the Go tools they use.
 ## Repository layout
 
 ```text
+AGENTS.md                         # entry point for coding agents (Claude Code, Codex, ...)
 .claude-plugin/marketplace.json   # marketplace catalog
 plugins/                          # one self-contained plugin per domain
 tools/                            # Go module: CLI tools used by plugins
+registered-servers/               # SSMS registered servers -> sqlq profiles, Windows only
 scripts/build-tools.ps1           # build tools -> plugins/*/bin/
 docs/                             # conventions & authoring style
 ```
