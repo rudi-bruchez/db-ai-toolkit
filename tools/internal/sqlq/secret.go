@@ -46,7 +46,6 @@ type Credential struct {
 // CredentialStore is the file Import-RegisteredServerCredentials.ps1 writes.
 // Only the resolver reads it, and only for the id of the profile in hand.
 type CredentialStore struct {
-	ManagedBy   string                `json:"managedBy"`
 	GeneratedAt string                `json:"generatedAt"`
 	Source      *SourceStamp          `json:"source"`
 	Credentials map[string]Credential `json:"credentials"`
@@ -195,11 +194,16 @@ run Import-RegisteredServerCredentials.ps1.`, p.Name, p.PasswordDpapi, err)
 
 // checkBinding refuses a credential whose profile now points elsewhere.
 func checkBinding(p Profile, bound BoundTo) error {
-	// An empty binding means the store predates this check. Refusing would
-	// break working setups on upgrade; warning is not this function's job, so
-	// it passes and the staleness check covers the rest.
-	if bound.Server == "" && bound.Login == "" {
-		return nil
+	// A missing binding is refused, not waved through. There is no store old
+	// enough to lack one - the importer has written boundTo since the first
+	// version that wrote a store at all - so an entry without one was written
+	// by something else, and deleting two lines of JSON is otherwise all it
+	// takes to turn the check below off.
+	if bound.Server == "" {
+		return fmt.Errorf(
+			"credential %q carries no destination, so there is nothing to check profile %q against. "+
+				"Re-run Import-RegisteredServerCredentials.ps1, which records one for every credential it writes.",
+			p.PasswordDpapi, p.Name)
 	}
 	if strings.EqualFold(bound.Server, p.Server) && strings.EqualFold(bound.Login, p.User) {
 		return nil

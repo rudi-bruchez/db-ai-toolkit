@@ -86,6 +86,30 @@ func TestResolveRefusesACredentialBoundElsewhere(t *testing.T) {
 	}
 }
 
+// The check above is worth exactly as much as the field it reads, so a missing
+// field must not be a pass. Waving an empty binding through was written as
+// tolerance for stores predating the check; no such store was ever released -
+// boundTo has been written since the first version that wrote a store at all -
+// so the only thing the tolerance bought was a way to disable the refusal by
+// deleting two lines of JSON.
+func TestResolveRefusesACredentialWithNoBinding(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "credentials.json")
+	body := `{"credentials": {"g/s": {"blob": "YmxvYg==", "boundTo": {"server": "", "login": ""}}}}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, _ := testResolver(t, path, "s3cr3t")
+
+	_, err := r.Resolve(Profile{
+		Name: "p", Server: "SRV01", Auth: AuthSQL, User: "svc", PasswordDpapi: "g/s"})
+	if err == nil {
+		t.Fatal("a credential with no destination must be refused, not sent to whatever the profile names")
+	}
+	if !strings.Contains(err.Error(), "Import-RegisteredServerCredentials") {
+		t.Errorf("error %q should say how to get a binding back", err)
+	}
+}
+
 // Case differences are not a rebinding: SQL Server host names and login names
 // are not case-sensitive, and refusing on case would break working setups.
 func TestResolveAcceptsACaseDifferentBinding(t *testing.T) {

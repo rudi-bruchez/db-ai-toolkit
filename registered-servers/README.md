@@ -155,7 +155,15 @@ re-run the import.
 **A credential refuses to be used** — the server or login of a registration changed while its
 name and group stayed the same, so the stored credential no longer matches where the profile
 now points. This refusal is deliberate: it stops a password being sent to a server it does not
-belong to. Re-run the import.
+belong to.
+
+Re-running the import does **not** quietly clear it. The import sees the same change and stops
+too, because rebuilding the record from the edited registration is precisely how an old password
+would come to authorize a new destination — and that decision is the operator's, not a script's.
+It prints what moved and what it was bound to before. If the move is deliberate, an instance
+renamed or rehosted, the password is still the right one: re-run with `-AcceptRebind`. If it is
+not, the password belongs to the old server — clear it in SSMS, or point the registration back,
+before importing again.
 
 ## Non-Windows
 

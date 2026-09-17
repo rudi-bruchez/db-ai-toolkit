@@ -188,6 +188,7 @@ function Compare-GeneratedProfile {
 # ---------------------------------------------------------------------------------------------
 
 if ([string]::IsNullOrWhiteSpace($DataDirectory)) { $DataDirectory = Get-ToolkitDataDirectory }
+Assert-LocalDataDirectory -Path $DataDirectory
 if ([string]::IsNullOrWhiteSpace($ProfilePath)) { $ProfilePath = Get-ProfileDefaultPath }
 
 $serversPath = Join-Path $DataDirectory 'servers.json'
