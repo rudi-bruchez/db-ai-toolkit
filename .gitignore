@@ -446,6 +446,10 @@ Thumbs.db
 output/
 
 tests/
+# ...but not this one. The rule above matches any directory called tests, anywhere, and a
+# test suite that is silently never committed is worse than no test suite: it passes locally
+# forever while CI and every other clone run nothing.
+!registered-servers/tests/
 temp/
 
 # --- db-ai-toolkit (Go tools + plugins) ---

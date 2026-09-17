@@ -125,6 +125,25 @@ error redaction.
 Profiles generated here are marked `"managedBy": "registered-servers"`. Anything in
 `mssql-profiles.json` without that marker is yours and is never modified or deleted.
 
+## Tests
+
+```powershell
+Install-Module Pester -Scope CurrentUser   # once, Pester 5 or later
+Invoke-Pester registered-servers/tests
+```
+
+Twelve tests, each driving the real scripts in a child process against a synthetic
+registered-servers file and a temporary data directory — your own `RegSrvr*.xml` is never read
+and `%LOCALAPPDATA%` is never written. What they cover is deliberately narrow: the destination
+recorded beside each credential, the refusal to write outside local storage, the promise that
+no blob reaches the inventory, and group-qualified ids. Those are the properties two separate
+reviews found broken, which is the definition of something that should be checked by a test
+rather than by eye.
+
+They have been checked the only way a test is worth anything: by breaking the code on purpose
+and confirming they go red. One assertion passed a disabled refusal — it named the two servers,
+and so does the message printed *after* a successful rebind — and was tightened until it failed.
+
 ## Keeping it in sync
 
 Both scripts regenerate their output in full from the SSMS file every time they run. Add,
