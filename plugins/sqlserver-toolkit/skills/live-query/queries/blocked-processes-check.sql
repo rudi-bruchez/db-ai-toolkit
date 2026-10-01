@@ -19,7 +19,7 @@
     What OK does NOT say:
       - that a report was ever produced or written. No file is read; the
         target's disk space and folder permissions are not checked, nor are
-        MAX_DISPATCH_LATENCY (INFINITE keeps reports in memory) and the
+        MAX_DISPATCH_LATENCY (INFINITE keeps reports in memory) or the
         event retention mode (events can be lost under load).
       - that nothing else captures the event. Only Extended Events sessions
         are read: a server-side SQL Trace (sys.traces) or an event
@@ -57,7 +57,8 @@
     protected view. Azure SQL Database has no server-scoped sessions: the
     query fails there, or answers UNKNOWN for a permission no grant can fix.
 
-    Runs on SQL Server 2012 and later. FOR XML PATH rather than STRING_AGG.
+    Written for SQL Server 2012 and later (FOR XML PATH, not STRING_AGG).
+    Validated on SQL Server 2019 only.
 */
 DECLARE @perf int = HAS_PERMS_BY_NAME(NULL, NULL, N'VIEW SERVER PERFORMANCE STATE');
 DECLARE @required_permission nvarchar(40) =
