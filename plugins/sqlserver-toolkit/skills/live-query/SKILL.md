@@ -53,7 +53,7 @@ JSON object.
 | Why a view returns wrong or missing rows | `-file queries/view-diagnose.sql -param name=<view>`, then work the view checklist in `references/review-checklists.md` |
 | Is this procedure well written | `-file queries/proc-source.sql -param name=<proc>`, then the procedure checklist |
 | Are there badly built triggers | `-file queries/triggers-inventory.sql`, then the trigger checklist |
-| Is the blocked process trace in place, will blocking be captured | `-file queries/blocked-processes-check.sql`. Answer from `instance_state`, not from the rows, and read the file's header first: what OK does not promise, and how to cover an availability group |
+| Is the blocked process trace configured and running | `-file queries/blocked-processes-check.sql`. Answer from `instance_state`, not from the rows, and read the file's header first: OK means configured and running, not that reports are being written; only Extended Events are checked; a "pending" reason is not a cue to run `RECONFIGURE`; and how to cover an availability group |
 | Why is this query slow | Run it with `-plan`, then hand the `plan` field to the `sqlserver-query-plans` plugin. Do not analyse showplan XML by hand here. |
 | Anything else | Write the query yourself, but keep the output discipline below |
 

@@ -1,13 +1,15 @@
-/*  Is everything in place for this instance to record blocked process reports?
+/*  Is the blocked process trace configured and running on this instance?
 
     No parameter. Read-only. One row per event session that captures
     sqlserver.blocked_process_report (at most 20), or one row with NULL
     session columns when there is none or when the login cannot see them.
 
     READ instance_state, NOT THE ROWS.
-      OK      - at the time of the check: the threshold is in use, a session
-                captures the event without a filter, is running, starts with
-                the instance, and has an event_file target defined and active.
+      OK      - at the time of the check: the threshold is at least 5 seconds,
+                both configured and in use (1 to 4 is accepted by the engine
+                but generates no report), a session captures the event
+                without a filter, is running, starts with the instance, and
+                has an event_file target defined and active.
       NOT_OK  - something on that list is missing. A row with a session_name is
                 a session to repair, never a reason to add a second session.
       UNKNOWN - neither yes nor no: a permission is missing, the threshold
@@ -16,7 +18,13 @@
 
     What OK does NOT say:
       - that a report was ever produced or written. No file is read; the
-        target's disk space and folder permissions are not checked.
+        target's disk space and folder permissions are not checked, nor are
+        MAX_DISPATCH_LATENCY (INFINITE keeps reports in memory) and the
+        event retention mode (events can be lost under load).
+      - that nothing else captures the event. Only Extended Events sessions
+        are read: a server-side SQL Trace (sys.traces) or an event
+        notification on BLOCKED_PROCESS_REPORT is not seen, and "no session"
+        does not rule them out.
       - that every block will be reported. The threshold is a minimum duration,
         and the monitor runs about every five seconds, best effort.
       - that a session with MAX_DURATION (SQL Server 2025, Managed Instance)
@@ -28,6 +36,10 @@
         but does not prove it complete - a node that lost the cluster only sees
         itself, and without VIEW ANY DEFINITION the list is empty. Two profiles
         returning the same server_name are one instance.
+
+    Before acting on a "pending" reason: RECONFIGURE applies every option
+    whose value differs from value_in_use, not only the threshold. List
+    sys.configurations WHERE value <> value_in_use first.
 
     The views are read one after the other, not as one snapshot. If sessions
     are being created or stopped during the check, run it again.
@@ -42,8 +54,8 @@
     Permissions: VIEW SERVER PERFORMANCE STATE where it exists (2022+,
     Managed Instance; VIEW SERVER STATE implies it), VIEW SERVER STATE before.
     Without it, the first branch answers UNKNOWN without touching any
-    protected view. Azure SQL Database has no server-scoped sessions: this
-    query fails there with an error, which is the intended outcome.
+    protected view. Azure SQL Database has no server-scoped sessions: the
+    query fails there, or answers UNKNOWN for a permission no grant can fix.
 
     Runs on SQL Server 2012 and later. FOR XML PATH rather than STRING_AGG.
 */
@@ -90,19 +102,25 @@ BEGIN
     thr AS (
         SELECT cfg.threshold_value,
                cfg.threshold_value_in_use,
+               -- 1 to 4 is accepted by the engine but produces no report:
+               -- below 5 counts as off.
                CASE WHEN cfg.threshold_value IS NULL OR cfg.threshold_value_in_use IS NULL
                          THEN N'UNKNOWN'
-                    WHEN cfg.threshold_value_in_use = 0 OR cfg.threshold_value = 0
+                    WHEN cfg.threshold_value_in_use < 5 OR cfg.threshold_value < 5
                          THEN N'NOT_OK'
                     ELSE N'OK' END                                  AS threshold_state,
                CASE WHEN cfg.threshold_value IS NULL OR cfg.threshold_value_in_use IS NULL
                          THEN N'threshold unknown'
                     WHEN cfg.threshold_value_in_use = 0 AND cfg.threshold_value = 0
                          THEN N'threshold=0'
-                    WHEN cfg.threshold_value_in_use = 0
+                    WHEN cfg.threshold_value_in_use < 5 AND cfg.threshold_value < 5
+                         THEN N'threshold below 5 s (no reports generated)'
+                    WHEN cfg.threshold_value_in_use < 5
                          THEN N'threshold set but not in use (RECONFIGURE pending)'
                     WHEN cfg.threshold_value = 0
                          THEN N'threshold disable pending (next RECONFIGURE turns reports off)'
+                    WHEN cfg.threshold_value < 5
+                         THEN N'threshold below 5 s pending (next RECONFIGURE turns reports off)'
                END                                                  AS threshold_reason
         FROM cfg
     ),

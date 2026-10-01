@@ -547,6 +547,10 @@ Q=plugins/sqlserver-toolkit/skills/live-query/queries/blocked-processes-check.sq
   remonte à l'utilisateur avant d'être faite.
 - **Nettoyage après erreur** : si un cas échoue, est refusé ou interrompu, le step 6
   (restauration) s'exécute quand même avant de rendre la main.
+- **Avant chaque `RECONFIGURE`** : relire `sys.configurations WHERE value <> value_in_use`. Toute
+  option en attente autre que les deux options testées arrête la série : `RECONFIGURE`
+  l'appliquerait aussi, et la vérification du step 1 ne couvre pas une option préparée pendant
+  les tests (revue des risques, H2).
 
 Instructions de pose de référence (une par appel) :
 
@@ -583,9 +587,10 @@ Conditions d'arrêt, **avant toute écriture** :
 - une configuration en attente (`value <> value_in_use`), quelle qu'elle soit : un
   `RECONFIGURE` l'appliquerait. Montrer la liste à l'utilisateur et attendre sa décision ;
 - une session `bpr_test_*` préexistante : collision de noms, demander ;
-- `candidate_count > 0` : une trace existe déjà. Les cas à assertion d'instance ne sont pas
-  exécutables sans l'accord de l'utilisateur pour la suspendre ; sinon, ne valider que les
-  assertions de session et le consigner.
+- `candidate_count > 0` : une trace existe déjà. Ne jamais l'arrêter ni la modifier : la
+  restauration ne porte que sur les objets créés et ne la relancerait pas (revue des risques,
+  H5). Les cas à assertion d'instance ne sont alors pas exécutables ; ne valider que les
+  assertions de session et le consigner, ou changer d'instance.
 
 Ce premier `-file` est aussi le cas **V0** : aucune erreur, colonnes et types conformes à la
 tâche 2 (champ `columns` du JSON), `event_predicate` de type `NVARCHAR` de taille 3000.
@@ -653,8 +658,9 @@ instance fournie.
 
 Dans cet ordre, chaque instruction sous accord : arrêter et supprimer chaque session du
 registre ; supprimer logins et droits du registre ; remettre le seuil puis
-`show advanced options` à leurs valeurs du step 1 (avec `RECONFIGURE`, possible sans risque
-puisque le step 1 a vérifié qu'aucune autre configuration n'était en attente). Puis relancer
+`show advanced options` à leurs valeurs du step 1, avec `RECONFIGURE` après la relecture des
+options en attente exigée par les règles communes. Si la valeur courante du seuil n'est plus
+celle qu'a posée le dernier cas, quelqu'un d'autre l'a changée : ne pas l'écraser, demander. Puis relancer
 les requêtes du step 1 et comparer **valeur par valeur** à l'état initial : options, sessions
 `bpr_test_*` (aucune), verdict de la requête.
 

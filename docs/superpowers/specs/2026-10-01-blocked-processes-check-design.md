@@ -106,7 +106,7 @@ puis `NOT_OK`, puis par nom de session.
 | `event_in_running_session` | l'événement figure dans `sys.dm_xe_session_events` pour cette session en cours |
 | `event_predicate` | prédicat défini sur l'événement, NULL si aucun |
 | `file_target_defined` | la définition a une cible `event_file` |
-| `file_target_running` | la session en cours a une cible `event_file` (`sys.dm_xe_session_targets`) |
+| `file_target_running` | la session en cours a une cible `event_file` (`sys.dm_xe_session_object_columns`, jamais `sys.dm_xe_session_targets`, qui force une écriture) |
 | `targets` | noms des cibles définies, triés, séparés par `, ` |
 
 ### Règles
@@ -119,9 +119,20 @@ peut pas être `OK` si le seuil ne l'est pas) :
 | droit absent (§5) | `UNKNOWN` | `missing <required_permission>` — seule règle évaluée, la ligne est unique |
 | ligne de configuration absente ou valeur NULL | `UNKNOWN` | `threshold unknown` |
 | `value_in_use = 0`, `value = 0` | `NOT_OK` | `threshold=0` |
-| `value_in_use = 0`, `value > 0` | `NOT_OK` | `threshold set but not in use (RECONFIGURE pending)` |
-| `value_in_use > 0`, `value = 0` | `NOT_OK` | `threshold disable pending (next RECONFIGURE turns reports off)` |
-| `value_in_use > 0`, `value > 0` | — | aucune (des valeurs différentes ne changent pas l'activation ; les deux sont affichées) |
+| `value_in_use < 5`, `value` entre 1 et 4 | `NOT_OK` | `threshold below 5 s (no reports generated)` |
+| `value_in_use < 5`, `value >= 5` | `NOT_OK` | `threshold set but not in use (RECONFIGURE pending)` |
+| `value_in_use >= 5`, `value = 0` | `NOT_OK` | `threshold disable pending (next RECONFIGURE turns reports off)` |
+| `value_in_use >= 5`, `value` entre 1 et 4 | `NOT_OK` | `threshold below 5 s pending (next RECONFIGURE turns reports off)` |
+| `value_in_use >= 5`, `value >= 5` | — | aucune (des valeurs différentes ne changent pas l'activation ; les deux sont affichées) |
+
+Un seuil de 1 à 4 secondes est accepté par le moteur (`sys.configurations` : minimum 0) mais ne
+produit aucun rapport : « If you configure the threshold to a value from 1 to 4, the system
+doesn't generate blocked process reports » (Microsoft, règle de stratégie *Increase or disable
+blocked process threshold*). Il est donc traité comme 0. Ajouté après la revue des risques (H1).
+
+`RECONFIGURE` applique **toutes** les options en attente, pas seulement le seuil. La requête ne
+les liste pas : avant tout `RECONFIGURE`, relire `sys.configurations WHERE value <> value_in_use`
+(revue des risques, H2). L'en-tête de la requête le dit.
 
 Une collecte qui s'arrêtera au prochain `RECONFIGURE` de n'importe qui est classée `NOT_OK` :
 elle marche ce jour, mais elle ne durera pas, ce qui est exactement l'échec que la requête existe
