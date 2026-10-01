@@ -30,12 +30,17 @@ C'est cette requête qu'on livre ici, en lecture seule, pour qu'elle soit la mê
 
 ## 2. Ce que `OK` veut dire
 
-**`OK` = au moment du contrôle, cette instance collecte les rapports de processus bloqués dans
-un fichier, et continuera après un redémarrage.** C'est une observation ponctuelle, locale à
-l'instance.
+**`OK` = au moment du contrôle, tout ce qui est nécessaire pour que cette instance écrive les
+rapports de processus bloqués dans un fichier est en place et en marche, et le sera encore après
+un redémarrage** : seuil en vigueur, session qui capture l'événement sans filtre, démarrée, à
+démarrage automatique, avec une cible `event_file` définie et active. C'est une observation
+ponctuelle et **non atomique** (les vues sont lues l'une après l'autre ; si des sessions
+changent pendant le contrôle, on le relance), locale à l'instance.
 
 `OK` ne dit **pas** :
 
+- qu'un rapport a été produit ou écrit : aucun fichier n'est lu, et l'espace ou les droits du
+  répertoire de la cible ne sont pas vérifiés ;
 - que tous les blocages seront rapportés. Le seuil fixe une durée minimale ; le moniteur tourne
   toutes les cinq secondes environ et au mieux (documentation de l'option
   `blocked process threshold`). La valeur effective est affichée, la requête ne juge pas si
@@ -153,7 +158,15 @@ une session démarrée ; la règle coûte une jointure.
 - **Côté exécution**, `sys.dm_xe_session_events` est joint par
   `event_session_address = sys.dm_xe_sessions.address`, et l'événement est qualifié par
   `event_name` **et** `event_package_guid` résolu dans `sys.dm_xe_packages` (`name = 'sqlserver'`).
-- **Définition ↔ exécution** par le nom de session, unique pour les sessions serveur.
+- **Définition ↔ exécution** par le nom de session, unique pour les sessions serveur, comparé
+  en `Latin1_General_BIN2` des deux côtés : une comparaison exacte qui ne dépend pas de la base
+  ouverte par le profil (`DATABASE_DEFAULT` en dépendrait, et pourrait confondre `A` et `a` sur
+  un serveur sensible à la casse).
+- **Cible active** lue dans `sys.dm_xe_session_object_columns` (`object_type = 'target'`,
+  `object_name = 'event_file'`, package résolu à `package0`), **pas** dans
+  `sys.dm_xe_session_targets`, dont la lecture force une vidange des données collectées vers le
+  disque (remarque de la documentation Microsoft). La requête n'a ainsi aucun effet sur la
+  collecte qu'elle contrôle.
 - **NULL ne mène jamais à `OK`** : toute comparaison sur une valeur absente aboutit à `UNKNOWN`
   par une branche explicite, pas par le `ELSE`.
 - **Agrégations de texte** par `FOR XML PATH('')`, `TYPE).value('.', 'nvarchar(max)')`, pour
@@ -180,11 +193,17 @@ D'où le test, sans lecture de version :
 compris, vaut « droit non établi ».
 
 Le danger est le faux négatif silencieux : une vue catalogue qui renverrait zéro ligne faute de
-droit ferait conclure `no session`. Le verdict ne dépend donc jamais des vues protégées quand le
-droit manque : la ligne `UNKNOWN` est construite sans elles, et les lignes de candidates sont
-filtrées par `has_permission = 1`. Si une vue protégée lève une erreur malgré tout, `sqlq` sort
-en code 2 avec le numéro : bruyant, donc sans danger. Ce qui se passe réellement sans le droit
-(zéro ligne ou erreur) est mesuré en §8, pas supposé.
+droit ferait conclure `no session`. **Contrat : sans le droit, la requête rend la ligne unique
+`UNKNOWN`, sans erreur.** Un filtre `WHERE` dans une CTE ne le garantit pas (les vues restent
+dans l'instruction) ; le batch est donc un `IF` : la branche sans droit est un `SELECT` qui ne
+référence **aucune** vue protégée, la branche avec droit est la requête complète. Les deux ont
+les mêmes colonnes ; une seule s'exécute, donc un seul jeu de résultats. Le batch reste unique,
+sans `EXEC` ni SQL dynamique. Le comportement réel est mesuré en §8 ; une erreur reste bruyante
+(`sqlq` code 2) et ne devient jamais `no session`, mais elle serait un écart au contrat, à
+corriger.
+
+`ag_replicas` lit `sys.availability_replicas`, qui demande un autre droit (`VIEW ANY
+DEFINITION`) : sans lui, la liste revient vide. Cela n'affecte pas le verdict local (§6).
 
 ## 6. Groupes de disponibilité
 
@@ -192,15 +211,19 @@ La session ne suit pas le groupe ; chaque instance hébergeant un réplica doit 
 Une connexion ne prouve rien sur une autre instance, donc **le verdict de la requête reste
 local** et la couverture d'un AG se fait dans le skill :
 
-- la couverture est complète quand **chaque nom de `ag_replicas`** est apparu comme
-  `server_name` d'un contrôle `OK` ;
+- la couverture se mesure contre **la liste des réplicas confirmée par l'utilisateur**.
+  `ag_replicas` est un inventaire observé qui aide à la construire, pas une preuve qu'elle est
+  complète : quand l'instance ne joint plus le cluster WSFC, la vue ne rend que le réplica local
+  (documentation de `sys.availability_replicas`). La couverture est complète quand chaque
+  réplica de la liste confirmée est apparu comme `server_name` d'un contrôle `OK`, et qu'aucun
+  `ag_replicas` observé ne nomme un réplica absent de cette liste ;
 - deux profils qui renvoient le même `server_name` (deux chemins, par exemple un listener et
   une connexion directe) comptent pour **une** instance ;
 - un réplica sans profil, inaccessible ou non contrôlé laisse la couverture **incomplète**, et
   c'est ce qui est annoncé ;
-- `is_hadr_enabled = 1` avec `ag_replicas` NULL ou vide rend la couverture **inconnue**, jamais
-  complète : une liste vide peut venir d'un droit de visibilité manquant sur
-  `sys.availability_replicas` (mesuré en §8), pas d'une absence de réplicas ;
+- `is_hadr_enabled = 1` avec `ag_replicas` NULL ou vide ne dit rien de la couverture : une liste
+  vide peut venir d'un droit de visibilité manquant, pas d'une absence de réplicas. Le verdict
+  local reste valide ;
 - chaque profil de production garde son approbation explicite avant la première requête.
 
 La correspondance nom de réplica ↔ profil n'est pas visible par l'agent (`-list-profiles` ne
@@ -224,32 +247,24 @@ Les règles de lecture voyagent avec le fichier, dans son en-tête : la signific
 
 1. **Garde** : `TestBundledQueriesPassTheReadOnlyGuard` couvre le fichier sans changement. Il
    prouve que la requête passe le garde, rien de plus.
-2. **Comportement, sur l'instance de dev** fournie par l'utilisateur. Chaque état est posé par
-   l'utilisateur, ou par l'agent avec son accord explicite sur l'instruction exacte. Les
-   préconditions sont vérifiées avant chaque mesure.
-
-   | état posé | attendu |
-   |---|---|
-   | seuil 0/0, aucune session | `NOT_OK`, `threshold=0; no session` |
-   | seuil `value` 10, `value_in_use` **0** (sans `RECONFIGURE`) | `NOT_OK`, `threshold set but not in use…` |
-   | seuil 10/10, session avec `event_file`, `STARTUP_STATE = OFF`, arrêtée | `NOT_OK`, `startup_state=OFF; not running` |
-   | même session démarrée | `NOT_OK`, `startup_state=OFF` |
-   | `STARTUP_STATE = ON`, démarrée | `OK` |
-   | seuil `value` 0, `value_in_use` **10** | `NOT_OK`, `threshold disable pending…` |
-   | session à cible `ring_buffer` seule, démarrée, ON | `NOT_OK`, `no file target` |
-   | session sans cible | `NOT_OK`, `no file target` |
-   | prédicat sur l'événement | `UNKNOWN`, `event filtered by predicate` |
-   | session à plusieurs cibles | une seule ligne pour la session |
-   | nom de session autre que celui du script de pose | détectée |
-   | nom de session contenant `&` et un caractère non ASCII | rendu intact |
-   | deux sessions, une seule conforme | `instance_state = OK`, ligne `OK` en premier |
-   | 21 sessions candidates, la conforme nommée en dernier | `instance_state = OK`, `details_incomplete = 1`, la ligne `OK` présente |
-   | login sans le droit requis | ligne unique `UNKNOWN`, `missing <droit>` |
-   | login avec `VIEW SERVER PERFORMANCE STATE` seul (2022+) | verdict normal, pas `UNKNOWN` |
-   | login avec le droit mais `DENY` explicite | `UNKNOWN` |
-   | login de lecture habituel, instance en AG | `ag_replicas` renseigné (sinon : droit de visibilité à documenter) |
-
-   Les sessions de test sont supprimées après mesure, avec le même accord.
+2. **Comportement, sur l'instance de dev** fournie par l'utilisateur. Le protocole détaillé, cas
+   par cas, est dans le plan (tâche 4). Ses règles :
+   - chaque écriture est posée par l'utilisateur, ou par l'agent avec son accord explicite sur
+     l'instruction exacte ;
+   - l'instance ne porte **aucune** session candidate préexistante ; sinon les cas à assertion
+     d'instance ne sont pas exécutables sans nouvel accord ;
+   - chaque cas part d'un état défini en entier (seuil, ensemble exact des sessions), et ses
+     objets sont supprimés avant le cas suivant, sauf transitions annoncées ;
+   - chaque cas affirme séparément `instance_state`, `session_state`, `reasons`, le nombre de
+     lignes et leur ordre ;
+   - l'état initial (`show advanced options`, seuil, sessions) est relevé avant toute écriture et
+     restauré à l'identique, y compris après un échec ; une configuration en attente
+     préexistante arrête la validation avant le premier `RECONFIGURE` ;
+   - les objets créés sont tenus dans un registre, et c'est ce registre qui est nettoyé, pas un
+     préfixe ;
+   - la collation (deux noms ne différant que par la casse) n'est testée que sur un serveur
+     sensible à la casse ; Managed Instance, SQL Server 2012 et les AG ne sont déclarés testés
+     que s'ils l'ont été.
 
 3. **Consignation** : un document versionné `docs/validation/2026-10-01-blocked-processes-check.md`,
    sans nom réel d'instance, de profil, de base ni de chemin : version du moteur, préconditions,
@@ -274,6 +289,21 @@ couverts.
 | 8 | invariants SQL | **retenu** en entier (§4, invariants) |
 | 9 | protocole de validation | **retenu**, sauf les fixtures de classement hors moteur : il n'existe pas de moteur SQL hors instance dans ce dépôt, et une fixture qui reproduit la logique ne la teste pas. Démarrage / arrêt pendant le contrôle : couvert par la définition « observation ponctuelle » (§2), pas par un test |
 | 10 | « disparaît », sortie textuelle | **retenu** : phrase corrigée (§1), états structurés séparés des raisons |
+
+### Relecture du plan (`plans/2026-10-01-blocked-processes-check-codex.md`)
+
+| # | constat | traitement |
+|---|---|---|
+| 1 | `DATABASE_DEFAULT` change l'identité des sessions | **retenu** : comparaison en `Latin1_General_BIN2` (§4) |
+| 2 | une liste AG non vide n'est pas complète | **retenu** : couverture mesurée contre la liste confirmée par l'utilisateur (§6) |
+| 3 | les cas de validation se contaminent | **retenu** : état complet par cas, assertions par colonne (§8, plan tâche 4) |
+| 4 | le nettoyage ne restaure pas tout | **retenu** : relevé initial, arrêt sur configuration en attente, registre des objets (§8) |
+| 5 | la sentinelle sans droit n'est pas garantie par un filtre | **retenu** : branche `IF` sans vue protégée, contrat écrit (§5) |
+| 6 | cible active ≠ preuve de collecte | **retenu** : `OK` borné aux prérequis observés (§2), cible active qualifiée par `package0` |
+| 7 | lectures non atomiques | **retenu** en documentation : observation non atomique, relancer si les sessions changent (§2). Pas de matérialisation, qui demanderait d'écrire |
+| 8 | lire `sys.dm_xe_session_targets` force une vidange | **retenu**, au-delà de la correction proposée : la vue n'est plus lue (§4) |
+| 9 | Managed Instance et 2012 non validés | **retenu** : déclarés non testés tant qu'ils ne l'ont pas été (§8) |
+| 10 | vérifications insuffisantes | **retenu** : type de sortie vérifié dans `columns` du JSON, `go test ./...` complet, lecture des lignes voisines du skill |
 
 ## 10. Hors portée
 
