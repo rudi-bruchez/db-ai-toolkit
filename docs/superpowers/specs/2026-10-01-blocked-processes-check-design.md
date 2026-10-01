@@ -32,7 +32,7 @@ C'est cette requête qu'on livre ici, en lecture seule, pour qu'elle soit la mê
 
 **`OK` = au moment du contrôle, tout ce qui est nécessaire pour que cette instance écrive les
 rapports de processus bloqués dans un fichier est en place et en marche, et le sera encore après
-un redémarrage** : seuil en vigueur, session qui capture l'événement sans filtre, démarrée, à
+un redémarrage** : seuil d'au moins 5 secondes, configuré et en vigueur (§4, règles), session qui capture l'événement sans filtre, démarrée, à
 démarrage automatique, avec une cible `event_file` définie et active. C'est une observation
 ponctuelle et **non atomique** (les vues sont lues l'une après l'autre ; si des sessions
 changent pendant le contrôle, on le relance), locale à l'instance.
@@ -43,8 +43,15 @@ changent pendant le contrôle, on le relance), locale à l'instance.
   répertoire de la cible ne sont pas vérifiés ;
 - que tous les blocages seront rapportés. Le seuil fixe une durée minimale ; le moniteur tourne
   toutes les cinq secondes environ et au mieux (documentation de l'option
-  `blocked process threshold`). La valeur effective est affichée, la requête ne juge pas si
-  elle convient ;
+  `blocked process threshold`). En dessous de 5 secondes, aucun rapport n'est produit et
+  la requête répond `NOT_OK` ; au-dessus, la valeur est affichée sans jugement sur son
+  adéquation ;
+- que les rapports atteignent le fichier à temps : ni `MAX_DISPATCH_LATENCY` (`INFINITE`
+  garde les rapports en mémoire) ni le mode de rétention des événements (pertes possibles
+  sous charge) ne sont lus (revue des risques, H3) ;
+- que rien d'autre ne capture l'événement : seules les sessions Extended Events sont lues.
+  Une trace SQL côté serveur (`sys.traces`) ou une notification d'événement n'est pas vue,
+  et `no session` ne les exclut pas (revue des risques, H4) ;
 - que le partenaire d'un groupe de disponibilité est tracé (§6) ;
 - qu'une session à durée limitée (`MAX_DURATION`, SQL Server 2025 et Managed Instance à jour)
   tournera encore demain. La colonne n'existe pas sur les versions antérieures et la requête
@@ -128,7 +135,7 @@ peut pas être `OK` si le seuil ne l'est pas) :
 Un seuil de 1 à 4 secondes est accepté par le moteur (`sys.configurations` : minimum 0) mais ne
 produit aucun rapport : « If you configure the threshold to a value from 1 to 4, the system
 doesn't generate blocked process reports » (Microsoft, règle de stratégie *Increase or disable
-blocked process threshold*). Il est donc traité comme 0. Ajouté après la revue des risques (H1).
+blocked process threshold*). Il est donc traité comme 0. Ajouté après la revue des risques (H1), `docs/reviews/2026-10-01-blocked-processes-check-harm-review.md` ; les renvois « revue des risques, Hn » de ce document y pointent.
 
 `RECONFIGURE` applique **toutes** les options en attente, pas seulement le seuil. La requête ne
 les liste pas : avant tout `RECONFIGURE`, relire `sys.configurations WHERE value <> value_in_use`

@@ -57,7 +57,7 @@ The running `event_file` target is detected through `sys.dm_xe_session_object_co
 `sys.dm_xe_session_targets`. T3 → T4 and S1 show that this detection follows the session's
 state: 0 when stopped or absent, 1 when started.
 
-T7 to T10 were added after the harm review (finding H1: a threshold of 1 to 4 seconds, which
+T7 to T10 were added after the harm review (`docs/reviews/2026-10-01-blocked-processes-check-harm-review.md`, finding H1: a threshold of 1 to 4 seconds, which
 the engine accepts — `sys.configurations` minimum 0 — but which generates no report, used to be
 reported `OK`). They ran on the same instance, together with T1, T2, T5 and T6 again against the
 same conforming session, after the fix: all passed. Before every `RECONFIGURE` of that run, the
