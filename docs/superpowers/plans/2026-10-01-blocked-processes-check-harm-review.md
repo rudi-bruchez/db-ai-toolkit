@@ -196,3 +196,15 @@ H5 to H9 can be follow-ups. H4's check of `sys.traces` belongs in task B.
 Extended Events session with a file target were found, not that blocking reports are being
 written. Check the threshold value and the target yourself before relying on it."
 (Once H1 is fixed: "a threshold of at least 5 s".)
+
+## Status after the fix pass (2026-10-01)
+
+| finding | outcome |
+|---|---|
+| H1 | fixed in the query and the spec; below 5 s counts as off. New cases T7–T10 pass, and T1, T2, T5, T6 were rerun |
+| H2 | header and spec say it; the plan re-checks pending options before every RECONFIGURE and no longer calls restoration safe |
+| H3 | `SKILL.md` row and header reworded: configured and running, not written; dispatch latency and event loss named |
+| H4 | header says only Extended Events are read; the `sys.traces` and event-notification check is handed to task B |
+| H5 | the plan forbids stopping or altering a pre-existing trace |
+| H6, H7 | follow-ups in Todoist |
+| H8, H9 | fixed |
