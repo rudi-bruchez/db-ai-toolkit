@@ -33,6 +33,10 @@ All observations come from `sqlq -file` on the query, after the precondition was
 | T4 | T3, started | `NOT_OK`; `startup_state=OFF` | identical; `file_target_running = 1` | pass |
 | T5 | T4, `STARTUP_STATE = ON` | instance and session `OK`; `reasons` NULL; target defined and running; event in running session | identical | pass |
 | T6 | T5, threshold value 0, in use 10 | `NOT_OK`; `threshold disable pending (next RECONFIGURE turns reports off)` | identical | pass |
+| T7 | 3/3, one conforming session | instance and session `NOT_OK`; `threshold below 5 s (no reports generated)` | identical | pass |
+| T8 | 5/5, same session | `OK`; `reasons` NULL | identical | pass |
+| T9 | value 3, in use 10 | `NOT_OK`; `threshold below 5 s pending (next RECONFIGURE turns reports off)` | identical | pass |
+| T10 | value 10, in use 3 | `NOT_OK`; `threshold set but not in use (RECONFIGURE pending)` | identical | pass |
 | S1 | `ring_buffer` only | `NOT_OK`; `no file target`; `targets = ring_buffer`; `file_target_running = 0` | identical | pass |
 | S2 | no target | `NOT_OK`; `no file target`; `targets` NULL | identical | pass |
 | S3 | event_file, predicate `database_id = 1` | instance and session `UNKNOWN`; `event filtered by predicate`; predicate shown | identical; predicate `([sqlserver].[database_id]=(1))` | pass |
@@ -52,6 +56,12 @@ its text.
 The running `event_file` target is detected through `sys.dm_xe_session_object_columns`, not
 `sys.dm_xe_session_targets`. T3 → T4 and S1 show that this detection follows the session's
 state: 0 when stopped or absent, 1 when started.
+
+T7 to T10 were added after the harm review (finding H1: a threshold of 1 to 4 seconds, which
+the engine accepts — `sys.configurations` minimum 0 — but which generates no report, used to be
+reported `OK`). They ran on the same instance, together with T1, T2, T5 and T6 again against the
+same conforming session, after the fix: all passed. Before every `RECONFIGURE` of that run, the
+options other than the two under test were re-read for a pending value; there was none.
 
 ## Not executed
 
@@ -76,11 +86,11 @@ state: 0 when stopped or absent, 1 when started.
 ## Restoration (step 6)
 
 Every session and the test login created during the run were dropped from a registry kept
-while they were created. Both options were set back to 0 with `RECONFIGURE`. The queries of
+while they were created. Both options were set back to their step-1 values (0 on this instance) with `RECONFIGURE`. The queries of
 step 1 were run again and matched the initial state value by value: both options 0/0, no
 pending configuration, no `bpr_test_*` session, no `bpr_test_*` principal. The query's verdict
 was again `NOT_OK`, `threshold=0; no session`.
 
 **Left for the user:** dropping a session does not delete its files. The `.xel` files named
-`bpr_test_a*` and `bpr_test*` remain in the instance's error log directory and need to be
+`bpr_test_a*`, `bpr_test*` and `bpr_test_h1*` remain in the instance's error log directory and need to be
 deleted by hand.
