@@ -54,6 +54,7 @@ JSON object.
 | Is this procedure well written | `-file queries/proc-source.sql -param name=<proc>`, then the procedure checklist |
 | Are there badly built triggers | `-file queries/triggers-inventory.sql`, then the trigger checklist |
 | Is the blocked process trace configured and running | `-file queries/blocked-processes-check.sql`. Answer from `instance_state`, not from the rows, and read the file's header first: OK means configured and running, not that reports are being written; only Extended Events are checked; a "pending" reason is not a cue to run `RECONFIGURE`; and how to cover an availability group |
+| Which indexes are missing in this database | `-file queries/missing-indexes.sql -database <db> -maxrows 70`, then follow `references/missing-index-reading.md`. Read the file's header first. Never paste a suggestion as `CREATE INDEX`, never recommend dropping an index from this result |
 | Why is this query slow | Run it with `-plan`, then hand the `plan` field to the `sqlserver-query-plans` plugin. Do not analyse showplan XML by hand here. |
 | Anything else | Write the query yourself, but keep the output discipline below |
 
@@ -119,6 +120,12 @@ Two flags exist that this skill must not reach for on its own:
   Use `OBJECT_DEFINITION()` instead of `sp_helptext`.
 - **Do not invent results.** If the query failed, say what the server returned.
   Never fill a gap with a plausible-looking row.
+- **Do not turn a missing-index suggestion into DDL.** Never paste a suggestion
+  as `CREATE INDEX`; never conclude "no index is missing" from an empty result;
+  never recommend dropping an index from `missing-indexes.sql`, whose counters
+  cover one replica and a window shorter than the instance uptime; never add a
+  key column to a unique index or a primary key. See
+  `references/missing-index-reading.md`.
 - **Do not assume the version.** Some catalog objects and columns only exist
   from a given release; check `SELECT @@VERSION` before relying on one.
 - **Do not send `USE`.** It is refused. It writes nothing, so it slips past the write guard,
