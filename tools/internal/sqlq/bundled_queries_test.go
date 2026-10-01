@@ -21,7 +21,7 @@ func TestBundledQueriesPassTheReadOnlyGuard(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(paths) == 0 {
-		t.Skipf("no bundled queries under %s; nothing to check", bundledQueriesDir)
+		t.Fatalf("no bundled queries under %s: the library moved or the path is wrong", bundledQueriesDir)
 	}
 	for _, path := range paths {
 		t.Run(filepath.Base(path), func(t *testing.T) {

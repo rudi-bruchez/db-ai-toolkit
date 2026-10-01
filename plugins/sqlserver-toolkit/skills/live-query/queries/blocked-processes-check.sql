@@ -32,7 +32,9 @@
       - anything about another instance. In an availability group every
         replica needs its own session. Coverage is measured against the list
         of replicas the user confirms: complete when each of them has come back
-        as the server_name of an OK check. ag_replicas helps build that list
+        as the server_name of an OK check, and no ag_replicas observed on any
+        of those checks names a replica missing from the list (reconcile it
+        with the user first). ag_replicas helps build that list
         but does not prove it complete - a node that lost the cluster only sees
         itself, and without VIEW ANY DEFINITION the list is empty. Two profiles
         returning the same server_name are one instance.
