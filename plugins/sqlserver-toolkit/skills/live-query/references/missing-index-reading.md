@@ -38,22 +38,29 @@ table): every nonclustered index carries it.
    inequality column are one index. Suggestions with the same equality set but different
    inequality columns are not automatically one index: only one of those columns can be used
    to seek.
-2. For each group, compare it with each existing index's leading key columns:
-   - **the existing leading keys are a subset of the equality set** (an index on `[a]`, a
+2. For each group, compare it with each existing rowstore index that is not clustered and not
+   hash (`index_type` `NONCLUSTERED`). Let N be the size of the equality set:
+   - **every key column of the existing index is in the equality set** (an index on `[a]`, a
      suggestion on `[a], [b]`): widen that index by appending the other equality columns, then
      the inequality column, to its key, and the included columns to its `INCLUDE`;
-   - **the equality set is a subset of the existing leading keys**, in any order: the key
-     already serves the equalities; add what is missing to `INCLUDE`;
-   - an inequality column is served only if it comes right after the equality columns in the
-     existing key.
+   - **the first N key columns of the existing index are exactly the equality set**, in any
+     order: the key already serves the equalities; add what is missing to `INCLUDE`. An
+     unrelated key column among the first N (`[a], [x], [b]` for `{a, b}`) breaks the seek:
+     this case does not apply;
+   - an inequality column is served only if it is key column N + 1 of the existing index.
 3. Prefer widening to creating, with these limits:
    - a unique index or a primary key (`is_unique`, `is_primary_key` true) is widened through
      `INCLUDE` only. Adding a key column changes what is unique;
+   - a clustered index is never widened. `INCLUDE` does not exist for it, its leaf already
+     holds every column, and a change to its key rebuilds every nonclustered index of the
+     table. A suggestion its key does not serve calls for a nonclustered index;
    - a filtered index (`has_filter` true) covers only the rows of its filter; if
      `filter_definition` is null, the filter is unreadable and coverage is unknown;
    - a disabled index (`is_disabled` true) covers nothing.
 4. Memory-optimized table (`memory_optimized` true): ignore the suggestion's
-   `included_columns`.
+   `included_columns`. A hash index (`index_type` `NONCLUSTERED HASH`) seeks only on an
+   equality on every one of its key columns; the prefix rules above do not apply to it, and an
+   inequality column needs a memory-optimized nonclustered index instead.
 
 ## 4. Weigh the writes
 

@@ -34,6 +34,9 @@ func TestMissingIndexesQueryContract(t *testing.T) {
 		{`\bUS\.DATABASE_ID = DB_ID\(\)`, "usage restricted to the current database"},
 		{`>= 500\b`, "the collection cap threshold"},
 		{`\bOPTION \(RECOMPILE, MAXDOP 1\)`, "the query hints of the source scripts"},
+		{`\bORDER BY TABLE_RANK, KIND_ORDER, SEQ OPTION\b`, "table blocks in order, context first"},
+		{`\bLEFT JOIN SYS\.DM_DB_INDEX_USAGE_STATS\b`, "an index with no usage row is still shown"},
+		{`\bDATEDIFF\(SECOND, SI\.SQLSERVER_START_TIME, GETDATE\(\)\) AS FLOAT\) / 86400\.0`, "uptime in elapsed seconds: minute boundaries pass 23:59:01 as one day"},
 	}
 	for _, m := range mustMatch {
 		if !regexp.MustCompile(m.pattern).MatchString(norm) {

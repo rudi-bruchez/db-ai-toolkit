@@ -249,7 +249,7 @@ FROM (
         CAST(NULL AS bigint)                AS unique_compiles,
         CONVERT(varchar(19), si.sqlserver_start_time, 126)
                                             AS instance_start_time,
-        CAST(DATEDIFF(minute, si.sqlserver_start_time, GETDATE()) AS float) / 1440.0
+        CAST(DATEDIFF(second, si.sqlserver_start_time, GETDATE()) AS float) / 86400.0
                                             AS instance_uptime_days,
         CAST(db.is_auto_close_on AS bit)    AS is_auto_close_on,
         CAST(CASE WHEN db.replica_id IS NULL THEN 0 ELSE 1 END AS bit)
