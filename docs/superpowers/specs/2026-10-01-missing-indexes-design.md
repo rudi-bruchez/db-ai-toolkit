@@ -106,7 +106,8 @@ plafonnée ».
 
 Le type est imposé par un `CAST` explicite. Il compte : `sqlq` rend `decimal` et `numeric` en
 chaînes JSON (`normalise`, `tools/cmd/sqlq/main.go`), et une chaîne `"0.4"` ne se compare pas à
-1. Aucune colonne n'est donc `decimal`.
+1. Aucune colonne n'est donc `decimal`. Un `bit` sort en JSON `true` / `false` (`go-mssqldb`) :
+dans ce document, « `= 1` » pour un `bit` se lit `true`.
 
 Colonnes communes :
 
@@ -151,7 +152,7 @@ Ligne `context` (NULL ailleurs) :
 | colonne | type | contenu |
 |---|---|---|
 | `instance_start_time` | `varchar(19)` | `sqlserver_start_time` |
-| `instance_uptime_days` | `float` | jours depuis le démarrage, borne haute de la fenêtre d'observation |
+| `instance_uptime_days` | `float` | jours depuis le démarrage, **non arrondi** (un arrondi ferait passer 23 h 20 pour 1,0), borne haute de la fenêtre d'observation |
 | `is_auto_close_on` | `bit` | `sys.databases`, base courante |
 | `database_in_ag` | `bit` | `sys.databases.replica_id IS NOT NULL` |
 | `suggestion_groups_on_instance` | `int` | groupes de suggestions, toutes bases |
