@@ -73,7 +73,7 @@ replica only, over a window of at most `instance_uptime_days`.
 One consolidated proposal per table: which index to widen and how, or which index to create,
 and which suggestions it serves. The order of the equality columns is for someone who knows
 their selectivity to choose; the result does not carry it. Quote `instance_uptime_days` as an
-upper bound, and say that index maintenance clears a table's suggestions.
+upper bound, and say that index maintenance (a rebuild at least) clears a table's suggestions.
 
 A proposal is not finished when the index is created. Say how it will be checked afterwards:
 the new index's usage counters, and, where the Query Store is enabled, whether the queries that
