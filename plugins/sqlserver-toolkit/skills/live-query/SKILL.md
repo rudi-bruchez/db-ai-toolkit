@@ -206,6 +206,12 @@ message}`. Quote the error number and line — that is what makes a SQL Server
 error diagnosable. `error` keeps the first SQL error; later ones are in
 `messages` as `error <n>: <text>`, and the sets read before the error are kept.
 
+When the database cannot be queried from here (976, 978: an availability group
+replica that is not readable; 942, 952, 922, 927: offline, changing state,
+recovering, restoring; 4060: the database could not be opened at login),
+`message` is one short fixed sentence saying what to do instead, in place of
+the server's text. Act on it; do not retry.
+
 Exit codes: `0` success, `1` usage or configuration, `2` any failure after
 the query started (SQL error, timeout or transport), `3` refused by the write
 guard, `4` could not connect (opening the connection failed); a failure of the

@@ -1002,6 +1002,16 @@ func readSingleString(rows *sql.Rows) (*string, error) {
 func toSQLError(err error) *sqlq.SQLError {
 	var e mssql.Error
 	if errors.As(err, &e) {
+		if cause, ok := unavailableCause(e); ok {
+			return &sqlq.SQLError{
+				Number:    cause.Number,
+				Severity:  cause.Class,
+				State:     cause.State,
+				Line:      cause.LineNo,
+				Procedure: cause.ProcName,
+				Message:   unavailableDatabase[cause.Number],
+			}
+		}
 		return &sqlq.SQLError{
 			Number:    e.Number,
 			Severity:  e.Class,
@@ -1012,6 +1022,47 @@ func toSQLError(err error) *sqlq.SQLError {
 		}
 	}
 	return &sqlq.SQLError{Message: err.Error()}
+}
+
+// unavailableDatabase replaces the server's text for errors that all mean the
+// same thing: this database cannot be queried from here, now. The server's
+// text is long, often localised, and says nothing the number does not; an
+// agent reading it spends tokens to reach the sentence below. The database is
+// the connection's (the database field of the result), or one the batch names
+// on the line given.
+//
+// 979 and 982 are left out: they answer read-intent connections, and sqlq
+// never sets ApplicationIntent.
+var unavailableDatabase = map[int32]string{
+	976: "Database is in an availability group and not readable on this replica (no read access, " +
+		"or data movement suspended). Do not retry: query the primary, through its profile or the listener.",
+	978: "Database is in an availability group and this replica accepts read-intent connections only, " +
+		"which sqlq does not make. Do not retry: query the primary, through its profile or the listener.",
+	942: "Database is offline. Do not retry: report it.",
+	952: "Database is changing state. Do not retry now: report it.",
+	922: "Database is being recovered. Do not retry now: report it.",
+	927: "Database is being restored. Do not retry now: report it.",
+	4060: "The login was accepted but the database could not be opened: it does not exist, this login " +
+		"has no access to it, or it is unavailable. The password is not the problem. Do not retry: " +
+		"check the profile's database or -database.",
+}
+
+// unavailableCause finds, in the whole chain the server sent, the error that
+// says the database cannot be used. The driver reports the last error of the
+// chain as the error, and a database that cannot be opened at login arrives
+// as 4060 followed by 18456: read as 18456, it would send the agent to fix a
+// password that is correct.
+func unavailableCause(e mssql.Error) (mssql.Error, bool) {
+	chain := e.All
+	if len(chain) == 0 {
+		chain = []mssql.Error{e}
+	}
+	for _, c := range chain {
+		if _, ok := unavailableDatabase[c.Number]; ok {
+			return c, true
+		}
+	}
+	return mssql.Error{}, false
 }
 
 func resolveProfilesPath(flagValue string) string {
