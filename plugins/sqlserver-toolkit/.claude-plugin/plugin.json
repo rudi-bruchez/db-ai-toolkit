@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "sqlserver-toolkit",
   "displayName": "SQL Server Toolkit",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Diagnostics, performance tuning and query design for SQL Server: read-only querying of a live instance, plus a token-saving ERRORLOG preprocessor.",
   "author": {
     "name": "Rudi Bruchez",
