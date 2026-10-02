@@ -52,7 +52,9 @@
     are deleted when its metadata changes (a column added or dropped, an
     index created) and when ALTER INDEX runs on any of its indexes - nightly
     index maintenance included, so a table rebuilt every night is
-    under-represented in the ranking. None are made for trivial plans, and
+    under-represented in the ranking. Observed on SQL Server 2022: REBUILD
+    cleared them, REORGANIZE left them in place; Microsoft documents
+    ALTER INDEX as a whole. None are made for trivial plans, and
     an eager index spool suppresses the request it stands for.
 
     What a suggestion is not. The order of equality_columns means nothing:
@@ -94,7 +96,7 @@
     docs/validation/2026-10-01-missing-indexes.md.
 
     Written for SQL Server 2012 and later and Azure SQL Managed Instance.
-    Tested on SQL Server 2019 only. Azure SQL Database: not tested.
+    Tested on SQL Server 2022 only. Azure SQL Database: not tested.
 
     Dates are returned as text without a time zone, in the server's local
     time: sqlq renders a datetime with a false Z suffix.
