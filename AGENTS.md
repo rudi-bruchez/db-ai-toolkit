@@ -46,6 +46,11 @@ On failure `error` carries `{number, severity, state, line, procedure, message}`
 error number and line: that is what makes a SQL Server error diagnosable. Usage errors, `-help`
 included, come back in this same shape: there is never a second format to parse.
 
+When the database cannot be queried from here (976, 978: an availability group replica that is
+not readable; 942, 952, 922, 927: offline, changing state, recovering, restoring; 4060: the
+database could not be opened at login), `message` is one short fixed sentence saying what to
+do instead, in place of the server's text. Act on it; do not retry.
+
 `database` names the catalog the **connection** opened in. It is not a claim about every object
 the query touched — a multi-part name can legitimately read elsewhere.
 
