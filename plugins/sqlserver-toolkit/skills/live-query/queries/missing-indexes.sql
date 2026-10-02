@@ -81,8 +81,9 @@
     THIS RESULT DOES NOT JUSTIFY DROPPING ANY INDEX.
 
     No DDL column, on purpose: never paste a suggestion as CREATE INDEX.
-    Widen an existing index where one fits; a unique index or primary key is
-    widened through INCLUDE only. The reading protocol is
+    Widen an existing index where one fits; a nonclustered unique index or
+    primary key is widened through INCLUDE only, and a clustered index is
+    never widened. The reading protocol is
     references/missing-index-reading.md.
 
     Excluded on purpose: is_ms_shipped objects, hypothetical indexes
