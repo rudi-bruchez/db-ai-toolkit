@@ -35,10 +35,10 @@ Treat `equality_columns` as a set: the DMV's order means nothing. In a key, equa
 come first, then at most one useful inequality column; everything after the first inequality
 column can only filter, not seek.
 
-Before comparing, add the clustered key (read on the clustered row of the same table) to each
-nonclustered index: at the end of the key of a nonunique one, in the `INCLUDE` of a unique one.
-Drop clustered key columns from a suggestion's `included_columns`: every nonclustered index
-already carries them.
+Every nonclustered index carries the clustered key (read on the clustered row of the same
+table): after its declared key if it is nonunique, in its leaf if it is unique. Drop clustered
+key columns from a suggestion's `included_columns`. The rules below compare the **declared**
+key (`key_columns`); the clustered key counts only where they say so.
 
 1. Group the table's suggestions. Suggestions with the same equality set and the same
    inequality column are one index. Suggestions with the same equality set but different
@@ -46,18 +46,20 @@ already carries them.
    to seek.
 2. For each group, compare it with each existing rowstore index that is not clustered and not
    hash (`index_type` `NONCLUSTERED`). Let N be the size of the equality set:
-   - **every key column of the existing index is in the equality set** (an index on `[a]`, a
-     suggestion on `[a], [b]`): widen that index by appending the other equality columns, then
-     the inequality column, to its key, and the included columns to its `INCLUDE`. Appending
+   - **every declared key column of the existing index is in the equality set** (an index on
+     `[a]`, a suggestion on `[a], [b]`): widen that index by appending the other equality
+     columns, then the inequality column, to its key, and the included columns to its
+     `INCLUDE`. Appending
      key columns pushes the implicit clustered key further right: a query that seeks or sorts
      on the old key followed by the clustered key loses that seek. If the index's `user_seeks`
      are not negligible, propose a new index instead, or say that the widening must be checked
      against the queries that use it;
-   - **the first N key columns of the existing index are exactly the equality set**, in any
-     order: the key already serves the equalities; add what is missing to `INCLUDE`. An
-     unrelated key column among the first N (`[a], [x], [b]` for `{a, b}`) breaks the seek:
-     this case does not apply;
-   - an inequality column is served only if it is key column N + 1 of the existing index.
+   - **the first N columns of the existing key are exactly the equality set**, in any order,
+     counting the clustered key after the declared key of a nonunique index: the key already
+     serves the equalities; add what is missing to `INCLUDE`. An unrelated key column among
+     the first N (`[a], [x], [b]` for `{a, b}`) breaks the seek: this case does not apply;
+   - an inequality column is served only if it is column N + 1 of that same key, counted the
+     same way.
 3. Prefer widening to creating, with these limits:
    - a unique index or a primary key (`is_unique`, `is_primary_key` true) is widened through
      `INCLUDE` only. Adding a key column changes what is unique;
