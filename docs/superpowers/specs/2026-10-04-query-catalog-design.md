@@ -1,7 +1,8 @@
 # Design : catalogue de requêtes `sqlq`, avec tsql-scripts comme source
 
 Date : 2026-10-04
-Version : 2, après la relecture du panel (`docs/reviews/2026-10-04-query-catalog-design-panel/`).
+Version : 2.1, après la relecture du panel de la spec (`docs/reviews/2026-10-04-query-catalog-design-panel/`)
+et celle du plan (`docs/reviews/2026-10-04-query-catalog-plan-panel/`).
 Statut : en attente de plan d'implémentation.
 Remplace : `2026-09-02-query-catalog-design.md`, jamais implémenté. Ses décisions sont
 reprises ici quand elles tiennent, et modifiées là où le §14 le dit.
@@ -161,7 +162,9 @@ langage naturel.
 ### Localisation
 
 - `bundled` : relativement à l'exécutable, `<dir(os.Executable())>/../skills/live-query/queries/`.
-  `-queries <dir>` force le chemin (tests, développement hors plugin).
+  `-queries <dir>` force le chemin (tests, développement hors plugin). Répertoire introuvable :
+  message `bundled queries not found`, pour qu'un binaire construit hors du plugin ne fasse
+  pas croire à un canon vide.
 - `personal` : `~/.config/db-ai-toolkit/queries/`. Absent : la source est vide.
 - `tsql-scripts` : `-tsql-scripts <dir>`, sinon `$DB_AI_TOOLKIT_TSQL_SCRIPTS`. Aucun défaut
   deviné. Non configuré ou introuvable : la source est vide, et `-list-queries` ajoute un
@@ -277,8 +280,9 @@ DECLARE @hostname sysname = N'%';
   header`), ou plus d'un marqueur. Un marqueur mal placé ou mal orthographié se voit donc,
   au lieu de faire disparaître le script.
 - Clés, séparées par des espaces : `name=` (obligatoire), `params=` (liste séparée par des
-  virgules, facultative), `heavy` (sans valeur, facultative). Une clé inconnue rend l'entrée
-  `rejected` : une faute de frappe dans `heavy` ne doit pas passer pour son absence.
+  virgules, facultative, sans doublon), `heavy` (sans valeur, facultative). Une clé inconnue
+  rend l'entrée `rejected` : une faute de frappe dans `heavy` ne doit pas passer pour son
+  absence. Un paramètre listé deux fois aussi.
 - Le résumé est la ligne de commentaire de l'en-tête la plus proche au-dessus du marqueur
   dont le contenu, après `--`, est non vide, n'est pas fait que de tirets et ne commence pas
   par `http://` ou `https://`. Il n'y en a pas : `rejected` (`no summary above the marker`).
@@ -387,6 +391,8 @@ DECLARE @p <type> = <expression> ;
 - rien d'autre sur la ligne, avant ni après, hors espaces ; un commentaire de fin de ligne
   est déjà blanchi et ne compte pas ;
 - le `;` final est obligatoire et sur la même ligne ;
+- les parenthèses de `<expression>` s'équilibrent sans jamais passer sous zéro
+  (`(1 + 2))` est refusé) ;
 - `<expression>` est non vide dans le texte d'origine (dans le texte nettoyé, `''` n'est
   plus que des espaces), ne contient ni `;` ni virgule de profondeur de parenthèses
   nulle (ce qui exclut `DECLARE @a int = 1, @b int = 2;`), et ses parenthèses sont
@@ -394,7 +400,9 @@ DECLARE @p <type> = <expression> ;
 - `<type>` est l'un des types de la table ci-dessous.
 
 La portion remplacée est `<expression>`, aux positions du texte nettoyé reportées sur le
-texte d'origine. `Sanitize` travaille en runes, la réécriture aussi.
+texte d'origine. `Sanitize` travaille en runes, la réécriture aussi. Les remplacements
+s'appliquent de la position la plus haute à la plus basse, quel que soit l'ordre de
+`params=`, pour qu'un remplacement ne décale jamais le suivant.
 
 Ces conditions écartent les cas trouvés par les relecteurs : un initialiseur sur plusieurs
 lignes (`CASE` sur deux lignes, ou `N'%'` suivi d'une ligne `+ N'Orders%';`), une instruction
@@ -408,14 +416,15 @@ convient pas : code 1, message nommant le paramètre et son type.
 
 | Type déclaré | Valeur acceptée | Liée comme |
 |---|---|---|
-| `nvarchar(n)`, `nchar(n)`, `sysname` (n = 128) | au plus n caractères | `string` |
+| `nvarchar(n)`, `nchar(n)`, `sysname` (n = 128) | au plus n unités UTF-16 (un emoji en compte deux) | `string` |
 | `nvarchar(max)` | toute chaîne | `string` |
 | `varchar(n)`, `char(n)` | au plus n caractères, ASCII seulement | `string` |
 | `varchar(max)` | ASCII seulement | `string` |
 | `tinyint`, `smallint`, `int`, `bigint` | entier décimal dans l'intervalle du type | `int64` |
 | `bit` | `0`, `1`, `true`, `false` | `bool` |
 | `date` | `AAAA-MM-JJ` | date civile du driver |
-| `datetime`, `datetime2(n)`, `smalldatetime` | `AAAA-MM-JJ`, `AAAA-MM-JJTHH:MM[:SS]` | date et heure civiles du driver, sans fuseau |
+| `datetime`, `datetime2(n)` | `AAAA-MM-JJ`, `AAAA-MM-JJTHH:MM[:SS]` | date et heure civiles du driver, sans fuseau |
+| `smalldatetime` | `AAAA-MM-JJ`, `AAAA-MM-JJTHH:MM` (pas de secondes : le type arrondit à la minute) | date et heure civiles du driver |
 
 - Les longueurs se vérifient parce que SQL Server tronque sans erreur une chaîne trop
   longue affectée à une variable : `COLUMNSTORE_ARCHIVE` dans `@compressionType varchar(10)`
@@ -441,8 +450,8 @@ Le dernier cas est celui où tout semble avoir marché alors que la réponse est
 résultat pour `SRV-APP01` calculé sur une autre valeur. La position d'affectation se juge
 sur les jetons du texte nettoyé, pour chaque occurrence de `@p` hors de sa déclaration :
 
-- `@p` suivi d'un opérateur composé (`+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`) :
-  affectation, partout ;
+- `@p` suivi d'un opérateur composé (`+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`), de
+  `OUT` ou de `OUTPUT` : affectation, partout ;
 - `@p` suivi de `=` à une profondeur de parenthèses non nulle : comparaison
   (`IIF(@online = 1, …)`), acceptée ;
 - `@p` suivi de `=` à profondeur nulle, quand le jeton qui précède `@p` est l'un de
@@ -501,7 +510,7 @@ Exemple sur des fichiers réels, le premier avec le marqueur proposé au §8 :
    "params":[],"scope":"generic","source":"bundled","path":"tables-largest.sql",
    "verified":null,"dirty_reads":false,"heavy":false},
   {"name":"sessions-from-host","summary":"Get sessions from a specific host",
-   "params":[{"name":"hostname","type":"sysname","default":"N'%'"}],
+   "params":[{"name":"hostname","type":"sysname"}],
    "scope":"generic","source":"tsql-scripts","path":"diagnostics/sessions/sessions-from-host.sql",
    "verified":null,"dirty_reads":true,"heavy":false},
   {"name":"waits-statistics","source":"tsql-scripts",
@@ -511,8 +520,11 @@ Exemple sur des fichiers réels, le premier avec le marqueur proposé au §8 :
  "messages":[]}
 ```
 
-- `params` d'une entrée tsql-scripts donne le type et le texte du défaut tel qu'écrit dans
-  le fichier ; d'une entrée `bundled` ou `personal`, le nom seul (`{"name":"cutoff"}`).
+- `params` d'une entrée tsql-scripts donne le nom et le type ; d'une entrée `bundled` ou
+  `personal`, le nom seul (`{"name":"cutoff"}`). Le défaut n'est pas publié : dans le
+  corpus, des défauts portent un chemin local (`N'C:\temp\blocked_processes*.xel'`) ou du
+  SQL (`DATEADD(hour, -@LookbackHours, GETDATE())`). L'agent le lit dans l'en-tête du fichier,
+  qu'il lit de toute façon avant la première exécution.
 - `path` est relatif à la racine de sa source. Le chemin absolu du clone ou du répertoire
   personnel n'est jamais imprimé.
 - `dirty_reads` : `true` si les jetons du texte nettoyé contiennent `NOLOCK`,
@@ -544,7 +556,9 @@ sur stdout.
 
 `-list-queries` est lu à chaque session et part chez le fournisseur du modèle, comme
 `-list-profiles`. Ce qu'il imprime est donc limité par construction : pas de chemin absolu,
-pas de serveur ni de base dans `verified`, pas d'extrait de SQL dans `rejected`, et les
+pas de serveur ni de base dans `verified`, pas d'extrait de SQL dans `rejected`, pas de
+valeur par défaut de paramètre, pas de texte d'erreur système (qui porte des chemins) dans
+`messages`, et les
 répertoires de profil absents de la vue sans `-profile`. Restent les résumés et les noms de
 fichiers, écrits par l'auteur : la règle pour lui, consignée dans le `CLAUDE.md` de
 tsql-scripts et dans le skill, est de ne mettre ni client, ni hôte, ni base dans le résumé
