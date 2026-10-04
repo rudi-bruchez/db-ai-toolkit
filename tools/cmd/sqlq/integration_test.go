@@ -98,3 +98,23 @@ func TestManyMessagesDoNotHang(t *testing.T) {
 		t.Errorf("code %d, %d messages, %d extra sets, error %+v", code, len(res.Messages), len(res.MoreResults), res.Error)
 	}
 }
+
+func TestSetCutShortByErrorIsIncomplete(t *testing.T) {
+	p, resolve := testProfile(t)
+	res, code := execute(p, "SELECT 1 AS a; SELECT n, 10/(4-n) AS x FROM (VALUES(1),(2),(3),(4),(5)) v(n); "+
+		"SELECT 3 AS c; RAISERROR('late', 16, 1); SELECT 1/0 AS d;", nil, options{maxRows: 50, timeoutSec: 120}, resolve)
+	if code != exitSQL || res.Error == nil || res.Error.Number != 8134 {
+		t.Fatalf("want exit 2 with error 8134, got %d %+v", code, res.Error)
+	}
+	if res.Incomplete || len(res.MoreResults) != 3 {
+		t.Fatalf("first set complete, 3 more: incomplete=%v more=%+v", res.Incomplete, res.MoreResults)
+	}
+	got := []bool{res.MoreResults[0].Incomplete, res.MoreResults[1].Incomplete, res.MoreResults[2].Incomplete}
+	if got[0] != true || got[1] != false || got[2] != true {
+		t.Errorf("incomplete per set = %v, want [true false true]", got)
+	}
+	// An error after a closed set (the RAISERROR after c) must not mark it.
+	if joined := strings.Join(res.Messages, "\n"); !strings.Contains(joined, "late") || !strings.Contains(joined, "error 8134") {
+		t.Errorf("later errors must be in messages: %q", res.Messages)
+	}
+}

@@ -31,6 +31,8 @@ type Result struct {
 	Rows      []Row    `json:"rows"`
 	RowCount  int      `json:"rowcount"`
 	Truncated bool     `json:"truncated"`
+	// Incomplete means an error cut this set short: its rows are not all of it.
+	Incomplete bool `json:"incomplete"`
 	// MoreResults holds every result set after the first, always an array.
 	MoreResults []ResultSet `json:"more_results"`
 	Messages    []string    `json:"messages"`
@@ -68,6 +70,8 @@ type ResultSet struct {
 	Rows      []Row    `json:"rows"`
 	RowCount  int      `json:"rowcount"`
 	Truncated bool     `json:"truncated"`
+	// Incomplete means an error cut this set short: its rows are not all of it.
+	Incomplete bool `json:"incomplete"`
 }
 
 // MarshalJSON keeps an empty set's columns and rows as arrays, like Result's.
