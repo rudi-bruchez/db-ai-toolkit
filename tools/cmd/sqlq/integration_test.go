@@ -118,3 +118,21 @@ func TestSetCutShortByErrorIsIncomplete(t *testing.T) {
 		t.Errorf("later errors must be in messages: %q", res.Messages)
 	}
 }
+
+func TestOverrideBindsTypedValuesOnServer(t *testing.T) {
+	p, resolve := testProfile(t)
+	src := "-- When\n-- sqlq: name=when params=d,n\nSET DATEFORMAT ydm;\nDECLARE @d datetime = '2000-01-01';\nDECLARE @n varchar(10) = 'x';\nSELECT CONVERT(char(10), @d, 23) AS d, @n AS n;\n"
+	ps, err := sqlq.AnalyseOverrides(src, []string{"d", "n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := sqlq.Entry{Name: "when", Source: sqlq.SourceTsqlScripts, SQL: src, Overrides: ps}
+	text, args, _, err := prepareSaved(e, paramList{"d=2026-10-04", "n=ROW"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, code := execute(p, text, args, options{maxRows: 5, timeoutSec: 120}, resolve)
+	if code != exitOK || len(res.Rows) != 1 || res.Rows[0]["d"] != "2026-10-04" || res.Rows[0]["n"] != "ROW" {
+		t.Errorf("code %d rows %+v error %+v", code, res.Rows, res.Error)
+	}
+}

@@ -38,6 +38,8 @@ type Result struct {
 	Messages    []string    `json:"messages"`
 	Plan        *string     `json:"plan"`
 	Error       *SQLError   `json:"error"`
+	// Saved is set on a -saved run only.
+	Saved *SavedRun `json:"saved,omitempty"`
 }
 
 // Row is one result row, keyed by column name.
@@ -110,4 +112,28 @@ func (rs *RowSet) Add(row Row) {
 		return
 	}
 	rs.Rows = append(rs.Rows, row)
+}
+
+// SavedRun says which catalogue entry ran and with what, so the agent cannot
+// report a value other than the one sent. Verified is the state before the run.
+type SavedRun struct {
+	Name     string            `json:"name"`
+	Source   Source            `json:"source"`
+	Path     string            `json:"path"`
+	Params   map[string]string `json:"params"`
+	Defaults []string          `json:"defaults"`
+	Verified *Verified         `json:"verified"`
+}
+
+// MarshalJSON keeps params an object and defaults an array, never null.
+func (r SavedRun) MarshalJSON() ([]byte, error) {
+	type alias SavedRun
+	out := alias(r)
+	if out.Params == nil {
+		out.Params = map[string]string{}
+	}
+	if out.Defaults == nil {
+		out.Defaults = []string{}
+	}
+	return json.Marshal(out)
 }
