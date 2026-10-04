@@ -83,7 +83,7 @@ func TestMarkerOutsideHeaderIsRejected(t *testing.T) {
 
 func TestUnknownMarkerKeyIsRejected(t *testing.T) {
 	_, _, err := ParseMarkedHeader("-- S\n-- sqlq: name=a-b haevy\nSELECT 1;")
-	if err == nil || !strings.Contains(err.Error(), `"haevy"`) {
+	if err == nil || !strings.Contains(err.Error(), "unknown marker key at position 2") || strings.Contains(err.Error(), "haevy") {
 		t.Errorf("err = %v", err)
 	}
 	_, _, err = ParseMarkedHeader("-- S\n-- sqlq: params=a\nSELECT 1;")
@@ -120,5 +120,63 @@ func TestHeaderAcceptsCRLF(t *testing.T) {
 	h, found, err := ParseMarkedHeader(src)
 	if !found || err != nil || h.Summary != "Get sessions from a specific host" || h.Marker.Name != "sessions-from-host" {
 		t.Errorf("CRLF: %+v found=%v err=%v", h, found, err)
+	}
+}
+
+func TestMarkerAttemptWithoutColonOrASCIISpaceIsRejected(t *testing.T) {
+	for _, src := range []string{
+		"-- S\n-- sqlq name=x-y\nSELECT 1;",
+		"-- S\n--\u00a0sqlq: name=x-y\nSELECT 1;",
+		"-- S\n-- sqlq\u2003: name=x-y\nSELECT 1;",
+	} {
+		if _, found, err := ParseMarkedHeader(src); !found || err == nil {
+			t.Errorf("%q: found=%v err=%v, want a rejected marker", src, found, err)
+		}
+	}
+	for _, src := range []string{
+		"-- S\nSELECT 'TSQLQuery -- sqlqx';",
+		"-- sqlqueries are elsewhere\nSELECT 1;",
+		"-- S\nSELECT 1; -- sqlq: name=x-y",
+	} {
+		if _, found, err := ParseMarkedHeader(src); found {
+			t.Errorf("%q: found=%v err=%v, not a marker attempt", src, found, err)
+		}
+	}
+}
+
+func TestLoneCRSplitsHeaderLines(t *testing.T) {
+	h, found, err := ParseMarkedHeader("-- Summary\r-- sqlq: name=a-b\rSELECT 1;\r")
+	if !found || err != nil || h.Marker.Line != 2 || h.Summary != "Summary" {
+		t.Errorf("lone CR: %+v found=%v err=%v", h, found, err)
+	}
+}
+
+func TestHeavyLineMustSayYesOrNo(t *testing.T) {
+	for line, heavy := range map[string]bool{"Heavy: yes": true, "  HEAVY :  Yes ": true, "Heavy: no": false} {
+		h, err := ParseBlockHeader("/* S.\n\n" + line + "\n*/\nSELECT 1;")
+		if err != nil || h.Heavy != heavy {
+			t.Errorf("%q: heavy=%v err=%v", line, h.Heavy, err)
+		}
+	}
+	for _, line := range []string{"Heavy: yes.", "Heavy: oui", "Heavy:"} {
+		if _, err := ParseBlockHeader("/* S.\n\n" + line + "\n*/\nSELECT 1;"); err == nil {
+			t.Errorf("%q accepted: a typo must not pass for its absence", line)
+		}
+	}
+}
+
+func TestMarkerReasonsDoNotQuoteTheAuthor(t *testing.T) {
+	for src, want := range map[string]string{
+		`-- S` + "\n" + `-- sqlq: name=bk C:\Users\rudi\acme\secret.xel` + "\nSELECT 1;": "unknown marker key at position 2",
+		"-- S\n-- sqlq: name=a-b params=SRV-ACME-PROD01\nSELECT 1;":                      "invalid parameter name at position 1",
+		"-- S\n-- sqlq: name=a-b params=ok,acme/prod\nSELECT 1;":                         "invalid parameter name at position 2",
+	} {
+		_, _, err := ParseMarkedHeader(src)
+		if err == nil || !strings.HasPrefix(err.Error(), want) {
+			t.Errorf("%q: err = %v, want %q", src, err, want)
+		}
+		if err != nil && (strings.Contains(err.Error(), "acme") || strings.Contains(err.Error(), "ACME")) {
+			t.Errorf("reason quotes the author: %v", err)
+		}
 	}
 }
