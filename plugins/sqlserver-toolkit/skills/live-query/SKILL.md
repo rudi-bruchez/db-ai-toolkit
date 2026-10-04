@@ -143,10 +143,13 @@ sqlq -profile <name> -query "<sql>" -save-query orders-late -summary "Orders pas
 Two flags move the catalogue's sources, for development and for a local clone:
 `-queries <dir>` replaces the bundled directory (found next to the binary by
 default), and `-tsql-scripts <dir>` names the tsql-scripts clone instead of
-`$DB_AI_TOOLKIT_TSQL_SCRIPTS`. When the bundled directory is not found,
+`$DB_AI_TOOLKIT_TSQL_SCRIPTS`. When the bundled directory is not found, unreadable or empty,
 `-saved` and `-save-query` refuse with exit code `1` (`bundled queries not
 found`): without the canon, a name cannot be checked against it. Pass
-`-queries <plugin>/skills/live-query/queries` in that case.
+`-queries <plugin>/skills/live-query/queries` in that case. `-save-query` also refuses a run made with
+`-database` or `-dirty-reads` (the saved file would not record them): save from
+a profile whose database is the right one, and write the isolation level into
+the query.
 
 Every run prints one JSON object, on success and on failure alike:
 

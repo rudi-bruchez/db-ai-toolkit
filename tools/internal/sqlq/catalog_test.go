@@ -555,3 +555,12 @@ func TestCatalogReadsEachFileOnce(t *testing.T) {
 		}
 	}
 }
+
+func TestMarkerParseRejectionPublishesTheStem(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "a1-stem.sql"), []byte("-- Summary\n-- sqlq: name=x bogus\nSELECT 1;\n"), 0o600)
+	c := LoadCatalog(CatalogConfig{TsqlScriptsDir: dir})
+	if len(c.Entries) != 1 || c.Entries[0].Name != "a1-stem" || c.Entries[0].Rejected == "" {
+		t.Errorf("entries = %+v", c.Entries)
+	}
+}
