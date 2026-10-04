@@ -240,7 +240,9 @@ SELECT ...
 
 1. Le fichier ouvre (après d'éventuelles lignes vides) par un bloc `/* … */`. Sinon :
    `rejected` (`no header comment`).
-2. La première ligne non vide du bloc est le résumé.
+2. Le premier paragraphe du bloc (ses lignes non vides consécutives, jointes par une
+   espace) est le résumé. `missing-indexes.sql` ouvre sur une phrase de deux lignes, qu'une
+   règle « première ligne » couperait au milieu.
 3. Les paramètres se déduisent du SQL (§9). Une ligne `Parameter:` ou `Parameters:` est
    facultative ; quand elle est présente, elle doit nommer exactement les paramètres
    déduits, sinon `rejected`. Les fichiers livrés qui disent `No parameter.` restent valides.
@@ -385,7 +387,8 @@ DECLARE @p <type> = <expression> ;
 - rien d'autre sur la ligne, avant ni après, hors espaces ; un commentaire de fin de ligne
   est déjà blanchi et ne compte pas ;
 - le `;` final est obligatoire et sur la même ligne ;
-- `<expression>` est non vide, ne contient ni `;` ni virgule de profondeur de parenthèses
+- `<expression>` est non vide dans le texte d'origine (dans le texte nettoyé, `''` n'est
+  plus que des espaces), ne contient ni `;` ni virgule de profondeur de parenthèses
   nulle (ce qui exclut `DECLARE @a int = 1, @b int = 2;`), et ses parenthèses sont
   équilibrées ;
 - `<type>` est l'un des types de la table ci-dessous.
