@@ -162,10 +162,16 @@ func sanitizeBatches(sql string) string {
 func FindWrites(sql string) []WriteViolation {
 	var out []WriteViolation
 	for _, stmt := range Statements(sql) {
-		for _, tok := range tokens(stmt) {
+		toks := tokens(stmt)
+		for i, tok := range toks {
 			upper := strings.ToUpper(tok)
 			if writeKeywords[upper] {
 				out = append(out, WriteViolation{Statement: stmt, Keyword: upper})
+				break
+			}
+			// NEXT VALUE FOR advances a sequence: a SELECT that writes.
+			if upper == "NEXT" && i+2 < len(toks) && strings.EqualFold(toks[i+1], "VALUE") && strings.EqualFold(toks[i+2], "FOR") {
+				out = append(out, WriteViolation{Statement: stmt, Keyword: "NEXT VALUE FOR"})
 				break
 			}
 		}

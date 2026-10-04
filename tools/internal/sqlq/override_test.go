@@ -354,3 +354,16 @@ func TestOverrideSeesWhatTheServerSees(t *testing.T) {
 		}
 	}
 }
+
+func TestOverrideRefusalQuotesNoIdentifier(t *testing.T) {
+	for _, src := range []string{
+		"DECLARE @p int = 1;\nSELECT @sqlq_secret_path;",
+		"DECLARE @p int = 1;\nSELECT @straße_secret;",
+		"DECLARE @p int = secret_word 1;",
+	} {
+		_, err := AnalyseOverrides(src, []string{"p"})
+		if err == nil || strings.Contains(err.Error(), "secret") {
+			t.Errorf("%q: err = %v", src, err)
+		}
+	}
+}

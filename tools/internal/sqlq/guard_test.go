@@ -179,3 +179,12 @@ func TestFindWritesCutsTextLikeTheServer(t *testing.T) {
 		}
 	}
 }
+
+func TestFindWritesRefusesNextValueFor(t *testing.T) {
+	if v := FindWrites("SELECT NEXT VALUE FOR dbo.order_numbers AS n;"); len(v) == 0 || v[0].Keyword != "NEXT VALUE FOR" {
+		t.Errorf("NEXT VALUE FOR accepted: %+v", v)
+	}
+	if v := FindWrites("SELECT next_value, [value] FROM t FOR XML PATH"); len(v) != 0 {
+		t.Errorf("false refusal: %+v", v)
+	}
+}

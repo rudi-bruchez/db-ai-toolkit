@@ -224,3 +224,20 @@ func TestSaveRefusesADirtyReadsRun(t *testing.T) {
 		t.Errorf("err = %v", err)
 	}
 }
+
+func TestSaveRefusesASymlinkedProfileDir(t *testing.T) {
+	q := saveEnv(t)
+	outside := t.TempDir()
+	os.MkdirAll(filepath.Join(q, "profiles"), 0o700)
+	if err := os.Symlink(outside, filepath.Join(q, "profiles", "dev")); err != nil {
+		t.Skip(err)
+	}
+	o := options{saveQuery: "orders-late", summary: "S.", queriesDir: t.TempDir()}
+	path := filepath.Join(q, "profiles", "dev", "orders-late.sql")
+	if err := writeSavedQuery(o, sqlq.Profile{Name: "dev"}, []string{"dev"}, path, "/* S.\n*/\nSELECT 1;\n"); err == nil {
+		t.Error("saved through a symlinked profile directory")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "orders-late.sql")); !os.IsNotExist(err) {
+		t.Errorf("a file was written outside the personal root: %v", err)
+	}
+}

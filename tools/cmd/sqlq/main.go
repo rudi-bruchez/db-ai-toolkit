@@ -328,6 +328,17 @@ func writeSavedQuery(o options, profile sqlq.Profile, profileNames []string, pat
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return osErr(err)
 	}
+	// MkdirAll and OpenFile follow a symlinked profile directory out of the
+	// personal root; the catalogue would still read the file back through it.
+	if dir, err := filepath.Rel(cfg.PersonalDir, filepath.Dir(path)); err == nil {
+		at := cfg.PersonalDir
+		for _, seg := range strings.Split(dir, string(filepath.Separator)) {
+			at = filepath.Join(at, seg)
+			if st, err := os.Lstat(at); err != nil || st.Mode()&fs.ModeSymlink != 0 {
+				return fmt.Errorf("%s: a directory on the way is a symbolic link, nothing saved", rel)
+			}
+		}
+	}
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return osErr(err) // includes "file exists": nothing of ours to remove

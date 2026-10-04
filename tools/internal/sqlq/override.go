@@ -62,12 +62,12 @@ func AnalyseOverrides(sql string, names []string) ([]OverrideParam, error) {
 	toks := Lex(Sanitize(sql))
 	for _, t := range toks {
 		if strings.HasPrefix(strings.ToLower(t.Text), "@sqlq_") {
-			return nil, fmt.Errorf("identifier %s at line %d uses the reserved @sqlq_ prefix", t.Text, t.Line)
+			return nil, fmt.Errorf("an identifier at line %d uses the reserved @sqlq_ prefix", t.Line)
 		}
 		// SQL Server folds @ｐ onto @p and @strasse onto @straße under a
 		// width-insensitive collation: a name match cannot be decided here.
 		if strings.Contains(t.Text, "@") && !isASCII(t.Text) {
-			return nil, fmt.Errorf("identifier %s at line %d is not ASCII", t.Text, t.Line)
+			return nil, fmt.Errorf("an identifier at line %d is not ASCII", t.Line)
 		}
 	}
 	var out []OverrideParam
@@ -359,7 +359,7 @@ func checkOneExpression(rs []rune, expr []Token, start, end int) error {
 			case len(t.Text) == 1 && strings.Contains("+-*/%&|^", t.Text) && !expect && !afterDot:
 				expect, callable, nPrefix = true, false, false
 			default:
-				return fmt.Errorf("%q in the initializer is not supported", t.Text)
+				return fmt.Errorf("a token at line %d in the initializer is not supported", t.Line)
 			}
 			i, k = t.End, k+1
 			continue
