@@ -141,6 +141,11 @@ func ProfileDir(personalDir, profile string, all []string) (string, error) {
 	return filepath.Join(append([]string{personalDir, "profiles"}, segs...)...), nil
 }
 
+// MsgBundledNotFound is the catalogue message for a missing canon. Without the
+// canon no collision with a bundled name can be seen, so -saved and -save-query
+// refuse to run on such a catalogue rather than let another file stand in.
+const MsgBundledNotFound = "bundled queries not found"
+
 // LoadCatalog reads every source of the view and resolves name collisions.
 func LoadCatalog(cfg CatalogConfig) Catalog {
 	var c Catalog
@@ -148,7 +153,7 @@ func LoadCatalog(cfg CatalogConfig) Catalog {
 		if st, err := os.Stat(cfg.BundledDir); err != nil || !st.IsDir() {
 			// Without this, a binary built outside the plugin lists no canon and
 			// the agent concludes there is none.
-			c.Messages = append(c.Messages, "bundled queries not found")
+			c.Messages = append(c.Messages, MsgBundledNotFound)
 		} else {
 			c.loadBlockDir(cfg, cfg.BundledDir, "", SourceBundled, "generic")
 		}

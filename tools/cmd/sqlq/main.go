@@ -196,6 +196,7 @@ func run(o options) int {
 	var named []any
 	var saved *sqlq.SavedRun
 	var entryHash, registryMsg string
+	var catalogMsgs []string
 	if o.saved != "" {
 		if !sqlq.ValidQueryName(o.saved) {
 			return fail(exitUsage, fmt.Errorf("query name %q must match ^[a-z][a-z0-9-]{1,48}$", o.saved))
@@ -203,6 +204,10 @@ func run(o options) int {
 		cfg := catalogConfig(o, profiles.Names())
 		cfg.Registry, registryMsg = sqlq.LoadRegistry(registryPath())
 		cat := sqlq.LoadCatalog(cfg)
+		if err := needCanon(cat); err != nil {
+			return fail(exitUsage, err)
+		}
+		catalogMsgs = cat.Messages
 		e, ok := cat.Find(o.saved)
 		if !ok {
 			return fail(exitUsage, missingQueryError(cat, cfg, o.saved))
@@ -238,6 +243,9 @@ func run(o options) int {
 
 	result, code := execute(profile, sqlText, named, o, resolver.Resolve)
 	result.Saved = saved
+	// What the catalogue said about its sources (a missing clone, a disabled
+	// personal layer) bears on which file ran: the agent must see it here too.
+	result.Messages = append(result.Messages, catalogMsgs...)
 	if registryMsg != "" {
 		result.Messages = append(result.Messages, registryMsg)
 	}
@@ -277,7 +285,11 @@ func checkSave(o options, profile sqlq.Profile, profileNames []string, sqlText s
 	}
 	cfg := catalogConfig(o, profileNames)
 	cfg.Profile = profile.Name
-	for _, e := range sqlq.LoadCatalog(cfg).Entries {
+	cat := sqlq.LoadCatalog(cfg)
+	if err := needCanon(cat); err != nil {
+		return "", "", err
+	}
+	for _, e := range cat.Entries {
 		// Rejected entries count too: the name is taken by a file on disk.
 		if e.Name == o.saveQuery {
 			return "", "", fmt.Errorf("name %q is already used by %s:%s", o.saveQuery, e.Source, e.Path)
@@ -418,10 +430,26 @@ func missingQueryError(cat sqlq.Catalog, cfg sqlq.CatalogConfig, name string) er
 		}
 		return nil
 	})
-	if bound != "" {
-		return fmt.Errorf("query %q is bound to profile directory %q and cannot run on profile %q", name, bound, cfg.Profile)
+	var also string
+	if len(cat.Messages) > 0 {
+		also = " (catalogue: " + strings.Join(cat.Messages, "; ") + ")"
 	}
-	return fmt.Errorf("no query named %q (use -list-queries -profile %s)", name, cfg.Profile)
+	if bound != "" {
+		return fmt.Errorf("query %q is bound to profile directory %q and cannot run on profile %q%s", name, bound, cfg.Profile, also)
+	}
+	return fmt.Errorf("no query named %q (use -list-queries -profile %s)%s", name, cfg.Profile, also)
+}
+
+// needCanon refuses a catalogue without the bundled queries: in it a personal
+// or tsql-scripts file holding a bundled name is not seen as a collision, and
+// would run, or be saved, in the canon's place.
+func needCanon(cat sqlq.Catalog) error {
+	for _, m := range cat.Messages {
+		if m == sqlq.MsgBundledNotFound {
+			return errors.New("bundled queries not found, so a name cannot be checked against them; pass -queries <plugin>/skills/live-query/queries")
+		}
+	}
+	return nil
 }
 
 // prepareSaved turns a catalogue entry and the -param values into the text to
