@@ -17,9 +17,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/url"
 	"os"
+	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -81,6 +84,10 @@ func defineFlags(fs *flag.FlagSet) *options {
 	fs.BoolVar(&o.allowWrite, "allow-write", false, "permit writing statements; the profile must also be in readwrite mode")
 	fs.BoolVar(&o.dirtyReads, "dirty-reads", false, "run at READ UNCOMMITTED: avoids waiting on locks, but permits dirty reads and missing or duplicated rows")
 	fs.Var(&o.params, "param", "SQL parameter as name=value; repeatable")
+	fs.BoolVar(&o.listQueries, "list-queries", false, "print the query catalogue as JSON and exit; -profile adds that profile's saved queries")
+	fs.StringVar(&o.saved, "saved", "", "run the catalogue query of that name")
+	fs.StringVar(&o.queriesDir, "queries", "", "directory of the bundled queries (default: next to the binary)")
+	fs.StringVar(&o.tsqlScriptsDir, "tsql-scripts", "", "local clone of tsql-scripts (default $DB_AI_TOOLKIT_TSQL_SCRIPTS)")
 	return o
 }
 
@@ -143,9 +150,17 @@ type options struct {
 	allowWrite   bool
 	dirtyReads   bool
 	params       paramList
+
+	listQueries    bool
+	saved          string
+	queriesDir     string
+	tsqlScriptsDir string
 }
 
 func run(o options) int {
+	if o.listQueries {
+		return listQueries(o)
+	}
 	profiles, err := sqlq.LoadProfiles(resolveProfilesPath(o.profilesPath))
 	if err != nil {
 		return fail(exitUsage, err)
@@ -169,18 +184,40 @@ func run(o options) int {
 		profile.Database = o.database
 	}
 
-	sqlText, err := readQuery(o.query, o.file)
+	sqlText, err := readQuery(o.query, o.file, o.saved)
 	if err != nil {
 		return fail(exitUsage, err)
 	}
 
+	var named []any
+	var saved *sqlq.SavedRun
+	var entryHash, registryMsg string
+	if o.saved != "" {
+		if !sqlq.ValidQueryName(o.saved) {
+			return fail(exitUsage, fmt.Errorf("query name %q must match ^[a-z][a-z0-9-]{1,48}$", o.saved))
+		}
+		cfg := catalogConfig(o, profiles.Names())
+		cfg.Registry, registryMsg = sqlq.LoadRegistry(registryPath())
+		cat := sqlq.LoadCatalog(cfg)
+		e, ok := cat.Find(o.saved)
+		if !ok {
+			return fail(exitUsage, missingQueryError(cat, cfg, o.saved))
+		}
+		sqlText, named, saved, err = prepareSaved(e, o.params)
+		if err != nil {
+			return fail(exitUsage, err)
+		}
+		entryHash = e.Hash
+	} else {
+		named, err = namedArgs(o.params)
+		if err != nil {
+			return fail(exitUsage, err)
+		}
+	}
+
+	// The guard runs on the text actually sent, rewritten overrides included.
 	if code, err := guard(sqlText, profile, o.allowWrite); err != nil {
 		return fail(code, err)
-	}
-
-	named, err := namedArgs(o.params)
-	if err != nil {
-		return fail(exitUsage, err)
 	}
 
 	resolver := sqlq.NewResolver(os.Getenv, resolveCredentialsPath(), func(msg string) {
@@ -188,8 +225,184 @@ func run(o options) int {
 	})
 
 	result, code := execute(profile, sqlText, named, o, resolver.Resolve)
+	result.Saved = saved
+	if registryMsg != "" {
+		result.Messages = append(result.Messages, registryMsg)
+	}
+	if code == exitOK && entryHash != "" {
+		recordRun(&result, entryHash, profile)
+	}
 	_ = emit(result)
 	return code
+}
+
+// recordRun notes a successful run in the registry. A failure to record is
+// reported, not fatal: the query did run, and the cost is a later "verified": null.
+func recordRun(result *sqlq.Result, hash string, profile sqlq.Profile) {
+	err := sqlq.RecordVerified(registryPath(), hash, sqlq.Verified{
+		Date: time.Now().Format("2006-01-02"), Profile: profile.Name})
+	if err != nil {
+		result.Messages = append(result.Messages, "verification not recorded: "+err.Error())
+	}
+}
+
+// listQueries prints the catalogue. It needs no profile file unless -profile
+// is given, so the catalogue can be inspected on a machine with none.
+func listQueries(o options) int {
+	profiles, perr := sqlq.LoadProfiles(resolveProfilesPath(o.profilesPath))
+	if o.profileName != "" {
+		if perr != nil {
+			return fail(exitUsage, perr)
+		}
+		if _, err := profiles.Get(o.profileName); err != nil {
+			return fail(exitUsage, err)
+		}
+	}
+	cfg := catalogConfig(o, profiles.Names())
+	reg, msg := sqlq.LoadRegistry(registryPath())
+	cfg.Registry = reg
+	cat := sqlq.LoadCatalog(cfg)
+	if msg != "" {
+		cat.Messages = append(cat.Messages, msg)
+	}
+	return emit(cat)
+}
+
+func catalogConfig(o options, profileNames []string) sqlq.CatalogConfig {
+	cfg := sqlq.CatalogConfig{
+		BundledDir:     o.queriesDir,
+		PersonalDir:    envOr("DB_AI_TOOLKIT_QUERIES", sqlq.DefaultQueriesDir()),
+		TsqlScriptsDir: o.tsqlScriptsDir,
+		Profile:        o.profileName,
+		ProfileNames:   profileNames,
+	}
+	if cfg.BundledDir == "" {
+		cfg.BundledDir = bundledQueriesDir()
+	}
+	if cfg.TsqlScriptsDir == "" {
+		cfg.TsqlScriptsDir = os.Getenv("DB_AI_TOOLKIT_TSQL_SCRIPTS")
+	}
+	return cfg
+}
+
+// envOr reads a development and test entry point: DB_AI_TOOLKIT_QUERIES and
+// DB_AI_TOOLKIT_REGISTRY move the personal layer and the registry elsewhere.
+func envOr(name, fallback string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func registryPath() string { return envOr("DB_AI_TOOLKIT_REGISTRY", sqlq.DefaultRegistryPath()) }
+
+// bundledQueriesDir finds the skill's queries relative to the binary, which the
+// plugin installs in its bin/ directory.
+func bundledQueriesDir() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	return filepath.Join(filepath.Dir(exe), "..", "skills", "live-query", "queries")
+}
+
+// missingQueryError explains why a name did not resolve in this profile's view.
+// The name has been validated by ValidQueryName before it reaches a path.
+func missingQueryError(cat sqlq.Catalog, cfg sqlq.CatalogConfig, name string) error {
+	for _, e := range cat.Entries {
+		if e.Name == name && e.Rejected != "" {
+			return fmt.Errorf("query %q (%s:%s) is rejected: %s", name, e.Source, e.Path, e.Rejected)
+		}
+	}
+	var bound string
+	root := filepath.Join(cfg.PersonalDir, "profiles")
+	filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && d.Name() == name+".sql" && bound == "" {
+			rel, _ := filepath.Rel(root, filepath.Dir(p))
+			bound = filepath.ToSlash(rel)
+		}
+		return nil
+	})
+	if bound != "" {
+		return fmt.Errorf("query %q is bound to profile directory %q and cannot run on profile %q", name, bound, cfg.Profile)
+	}
+	return fmt.Errorf("no query named %q (use -list-queries -profile %s)", name, cfg.Profile)
+}
+
+// prepareSaved turns a catalogue entry and the -param values into the text to
+// send and the arguments to bind, refusing before any connection everything
+// that would make the run differ from what the agent will report.
+func prepareSaved(e sqlq.Entry, params paramList) (string, []any, *sqlq.SavedRun, error) {
+	run := &sqlq.SavedRun{Name: e.Name, Source: e.Source, Path: e.Path, Params: map[string]string{}, Defaults: []string{}, Verified: e.Verified}
+	passed := map[string]string{}
+	for _, p := range params {
+		name, value, _ := strings.Cut(p, "=")
+		name = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(name), "@"))
+		if _, dup := passed[name]; dup {
+			return "", nil, nil, fmt.Errorf("-param %q given more than once", name)
+		}
+		passed[name] = value
+	}
+	if e.Source == sqlq.SourceTsqlScripts {
+		known := map[string]sqlq.OverrideParam{}
+		for _, o := range e.Overrides {
+			known[o.Name] = o
+		}
+		var args []any
+		use := map[string]bool{}
+		for name, value := range passed {
+			o, ok := known[name]
+			if !ok {
+				return "", nil, nil, fmt.Errorf("query %q has no parameter %q (declared: %s)", e.Name, name, overrideNames(e.Overrides))
+			}
+			v, err := sqlq.BindValue(o.Type, value)
+			if err != nil {
+				return "", nil, nil, fmt.Errorf("-param %s: %w", name, err)
+			}
+			args = append(args, sql.Named("sqlq_"+name, v))
+			use[name] = true
+			run.Params[name] = value
+		}
+		for _, o := range e.Overrides {
+			if !use[o.Name] {
+				run.Defaults = append(run.Defaults, o.Name)
+			}
+		}
+		sort.Slice(args, func(i, j int) bool { return args[i].(sql.NamedArg).Name < args[j].(sql.NamedArg).Name })
+		return sqlq.Rewrite(e.SQL, e.Overrides, use), args, run, nil
+	}
+	want := map[string]bool{}
+	for _, q := range e.QueryParams {
+		want[q] = true
+		if _, ok := passed[q]; !ok {
+			return "", nil, nil, fmt.Errorf("parameter %q required by query %q", q, e.Name)
+		}
+	}
+	var args []any
+	for _, q := range e.QueryParams {
+		args = append(args, sql.Named(q, passed[q]))
+		run.Params[q] = passed[q]
+	}
+	for name := range passed {
+		if !want[name] {
+			return "", nil, nil, fmt.Errorf("query %q has no parameter %q", e.Name, name)
+		}
+	}
+	return e.SQL, args, run, nil
+}
+
+func overrideNames(ps []sqlq.OverrideParam) string {
+	var names []string
+	for _, p := range ps {
+		names = append(names, p.Name)
+	}
+	if len(names) == 0 {
+		return "none"
+	}
+	return strings.Join(names, ", ")
 }
 
 // guard applies sqlq's three refusals in their historical order and returns the
@@ -484,21 +697,28 @@ func resolveProfilesPath(flagValue string) string {
 	return sqlq.DefaultProfilePath()
 }
 
-func readQuery(query, file string) (string, error) {
+func readQuery(query, file, saved string) (string, error) {
+	given := 0
+	for _, s := range []string{query, file, saved} {
+		if s != "" {
+			given++
+		}
+	}
 	switch {
-	case query != "" && file != "":
-		return "", fmt.Errorf("give either -query or -file, not both")
+	case given > 1:
+		return "", fmt.Errorf("give exactly one of -query, -file or -saved")
+	case given == 0:
+		return "", fmt.Errorf("one of -query, -file or -saved is required")
+	case saved != "":
+		return "", nil // the text comes from the catalogue
 	case query != "":
 		return query, nil
-	case file != "":
-		raw, err := os.ReadFile(file)
-		if err != nil {
-			return "", fmt.Errorf("reading -file: %w", err)
-		}
-		return string(raw), nil
-	default:
-		return "", fmt.Errorf("one of -query or -file is required")
 	}
+	raw, err := os.ReadFile(file)
+	if err != nil {
+		return "", fmt.Errorf("reading -file: %w", err)
+	}
+	return string(raw), nil
 }
 
 func namedArgs(params paramList) ([]any, error) {
