@@ -1,0 +1,3 @@
+/* Mine.
+*/
+SELECT 3;

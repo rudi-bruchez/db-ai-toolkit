@@ -22,7 +22,17 @@ sqlq -profile <name> -query "<sql>" -plan              # capture the actual exec
 sqlq -profile <name> -query "<sql>" -maxrows 100       # default 50
 sqlq -profile <name> -query "<sql>" -timeout 120       # default 30 seconds
 sqlq -profile <name> -query "<sql>" -database Other    # override the profile's database
+sqlq -list-queries -profile <name>                     # the query catalogue for this profile
+sqlq -profile <name> -saved tables-largest -maxrows 20 # run a catalogue entry by name
+sqlq -profile <name> -query "<sql>" -save-query orders-late -summary "Orders past their promised date."
 ```
+
+Prefer a catalogue entry to writing SQL; read its header before its first run; a `rejected`
+entry is reported, never rewritten ad hoc. Pass `-maxrows` to every catalogue entry. Say so
+before running an entry whose `verified` is `null`; never rely on a `dirty_reads: true` entry
+for a question about whether data is correct; on a `prod` profile, announce a `heavy: true`
+entry and wait for a yes. Offer `-save-query` after a useful ad-hoc query, and never save
+without an explicit yes.
 
 Every run prints one JSON object, on success and on failure alike:
 
@@ -99,6 +109,8 @@ database names and the group taxonomy are the estate map. A human who needs them
 - **Never `SELECT *`** against a user table. Name the columns you need.
 - **Never paste a large result verbatim.** Summarise, then show the rows carrying the answer.
 - **Pass values with `-param`, never by string concatenation.**
+- **Read `more_results`.** It carries every result set after the first; read them all before
+  concluding. A set with `incomplete: true` was cut short by an error and is not whole.
 
 ### The guard is accident prevention, not security
 

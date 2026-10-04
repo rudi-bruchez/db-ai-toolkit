@@ -17,12 +17,16 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/url"
 	"os"
+	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/golang-sql/sqlexp"
 	mssql "github.com/microsoft/go-mssqldb"
 	_ "github.com/microsoft/go-mssqldb/azuread"
 
@@ -80,6 +84,12 @@ func defineFlags(fs *flag.FlagSet) *options {
 	fs.BoolVar(&o.allowWrite, "allow-write", false, "permit writing statements; the profile must also be in readwrite mode")
 	fs.BoolVar(&o.dirtyReads, "dirty-reads", false, "run at READ UNCOMMITTED: avoids waiting on locks, but permits dirty reads and missing or duplicated rows")
 	fs.Var(&o.params, "param", "SQL parameter as name=value; repeatable")
+	fs.BoolVar(&o.listQueries, "list-queries", false, "print the query catalogue as JSON and exit; -profile adds that profile's saved queries")
+	fs.StringVar(&o.saved, "saved", "", "run the catalogue query of that name")
+	fs.StringVar(&o.queriesDir, "queries", "", "directory of the bundled queries (default: next to the binary)")
+	fs.StringVar(&o.tsqlScriptsDir, "tsql-scripts", "", "local clone of tsql-scripts (default $DB_AI_TOOLKIT_TSQL_SCRIPTS)")
+	fs.StringVar(&o.saveQuery, "save-query", "", "after a successful -query or -file run, save it under that name for this profile")
+	fs.StringVar(&o.summary, "summary", "", "one-line summary written into the header by -save-query (required with it)")
 	return o
 }
 
@@ -142,9 +152,22 @@ type options struct {
 	allowWrite   bool
 	dirtyReads   bool
 	params       paramList
+
+	listQueries    bool
+	saved          string
+	queriesDir     string
+	tsqlScriptsDir string
+	saveQuery      string
+	summary        string
 }
 
 func run(o options) int {
+	if err := flagConflicts(o); err != nil {
+		return fail(exitUsage, err)
+	}
+	if o.listQueries {
+		return listQueries(o)
+	}
 	profiles, err := sqlq.LoadProfiles(resolveProfilesPath(o.profilesPath))
 	if err != nil {
 		return fail(exitUsage, err)
@@ -168,56 +191,53 @@ func run(o options) int {
 		profile.Database = o.database
 	}
 
-	sqlText, err := readQuery(o.query, o.file)
+	sqlText, err := readQuery(o.query, o.file, o.saved)
 	if err != nil {
 		return fail(exitUsage, err)
 	}
 
-	// Writing takes two independent yeses: the profile must permit it, and
-	// this invocation must intend it. A profile is a persistent property of a
-	// file somebody edited once; -allow-write is a statement about right now.
-	if violations := sqlq.FindWrites(sqlText); len(violations) > 0 {
-		switch {
-		case profile.ReadOnly():
-			return fail(exitRefused, fmt.Errorf(
-				"profile %q is read-only and this batch would write: statement %q uses %s",
-				profile.Name, truncate(violations[0].Statement, 120), violations[0].Keyword))
-		case !o.allowWrite:
-			return fail(exitRefused, fmt.Errorf(
-				"this batch would write (statement %q uses %s) and profile %q permits it, but "+
-					"-allow-write was not given; pass it only once the user has confirmed the write",
-				truncate(violations[0].Statement, 120), violations[0].Keyword, profile.Name))
+	var named []any
+	var saved *sqlq.SavedRun
+	var entryHash, registryMsg string
+	var catalogMsgs []string
+	if o.saved != "" {
+		if !sqlq.ValidQueryName(o.saved) {
+			return fail(exitUsage, fmt.Errorf("query name %q must match ^[a-z][a-z0-9-]{1,48}$", o.saved))
+		}
+		cfg := catalogConfig(o, profiles.Names())
+		cfg.Registry, registryMsg = sqlq.LoadRegistry(registryPath())
+		cat := sqlq.LoadCatalog(cfg)
+		if err := needCanon(cat); err != nil {
+			return fail(exitUsage, err)
+		}
+		catalogMsgs = cat.Messages
+		e, ok := cat.Find(o.saved)
+		if !ok {
+			return fail(exitUsage, missingQueryError(cat, cfg, o.saved))
+		}
+		sqlText, named, saved, err = prepareSaved(e, o.params)
+		if err != nil {
+			return fail(exitUsage, err)
+		}
+		entryHash = e.Hash
+	} else {
+		named, err = namedArgs(o.params)
+		if err != nil {
+			return fail(exitUsage, err)
 		}
 	}
 
-	// USE writes nothing, so the write guard passes it - and it silently makes
-	// two of this tool's own statements false at once: the "database" field of
-	// the answer still names the profile's catalog, and -database is overridden
-	// from inside the text it was meant to govern.
-	if changes := sqlq.FindContextChanges(sqlText); len(changes) > 0 {
-		return fail(exitRefused, fmt.Errorf(
-			"%s changes the database for the rest of the batch, so the reported database "+
-				"would no longer be the one queried: statement %q. Select the database with "+
-				"-database, or name it in the object (Other.dbo.T).",
-			changes[0].Keyword, truncate(changes[0].Statement, 120)))
+	// The guard runs on the text actually sent, rewritten overrides included.
+	if code, err := guard(sqlText, profile, o.allowWrite); err != nil {
+		return fail(code, err)
 	}
 
-	// GO is a client batch separator, not T-SQL. The guard above already knows
-	// how to see it - it splits statements on it - but the execution path sends
-	// the text through untouched, so the server answers with a syntax error
-	// that explains nothing. Refuse rather than split: a correct splitter has to
-	// respect string literals, both comment forms and bracketed identifiers,
-	// which is real work for a need (several read-only batches at once) that
-	// does not arise.
-	if lines := sqlq.FindBatchSeparators(sqlText); len(lines) > 0 {
-		return fail(exitUsage, fmt.Errorf(
-			"GO is a client batch separator, not T-SQL (line %d). Send one batch per call.",
-			lines[0]))
-	}
-
-	named, err := namedArgs(o.params)
-	if err != nil {
-		return fail(exitUsage, err)
+	var savePath, saveContent string
+	if o.saveQuery != "" {
+		savePath, saveContent, err = checkSave(o, profile, profiles.Names(), sqlText)
+		if err != nil {
+			return fail(exitUsage, err)
+		}
 	}
 
 	resolver := sqlq.NewResolver(os.Getenv, resolveCredentialsPath(), func(msg string) {
@@ -225,8 +245,363 @@ func run(o options) int {
 	})
 
 	result, code := execute(profile, sqlText, named, o, resolver.Resolve)
+	result.Saved = saved
+	// What the catalogue said about its sources (a missing clone, a disabled
+	// personal layer) bears on which file ran: the agent must see it here too.
+	result.Messages = append(result.Messages, catalogMsgs...)
+	if registryMsg != "" {
+		result.Messages = append(result.Messages, registryMsg)
+	}
+	if code == exitOK && entryHash != "" {
+		recordRun(&result, entryHash, profile)
+	}
+	if code == exitOK && savePath != "" {
+		if err := writeSavedQuery(o, profile, profiles.Names(), savePath, saveContent); err != nil {
+			result.Error = &sqlq.SQLError{Message: "query ran but was not saved: " + err.Error()}
+			_ = emit(result)
+			return exitUsage
+		}
+		recordRun(&result, sqlq.ContentHash([]byte(saveContent)), profile)
+	}
 	_ = emit(result)
 	return code
+}
+
+// checkSave refuses, before anything runs, every save that could not end in a
+// valid catalogue entry, and returns where to write and what.
+func checkSave(o options, profile sqlq.Profile, profileNames []string, sqlText string) (string, string, error) {
+	if o.saved != "" {
+		return "", "", errors.New("-save-query saves a -query or -file run, not a -saved one")
+	}
+	if !sqlq.ValidQueryName(o.saveQuery) {
+		return "", "", fmt.Errorf("query name %q must match ^[a-z][a-z0-9-]{1,48}$", o.saveQuery)
+	}
+	if len(sqlq.FindWrites(sqlText)) > 0 {
+		return "", "", errors.New("the catalogue holds reads only: this batch would write")
+	}
+	if o.summary == "" {
+		return "", "", errors.New("-save-query needs -summary")
+	}
+	// The saved file carries the SQL only: a later -saved run would run in
+	// the profile's database, at the default isolation, and not reproduce this one.
+	if o.database != "" {
+		return "", "", errors.New("-save-query cannot keep a -database run: the saved file would not record it; save it from a profile whose database is the one wanted, or qualify the names in the query")
+	}
+	if o.dirtyReads {
+		return "", "", errors.New("-save-query cannot keep a -dirty-reads run: the saved file would not record it; add SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED to the query instead")
+	}
+	content, err := sqlq.SavedFileContent(o.summary, sqlText)
+	if err != nil {
+		return "", "", err
+	}
+	cfg := catalogConfig(o, profileNames)
+	cfg.Profile = profile.Name
+	cat := sqlq.LoadCatalog(cfg)
+	if err := needCanon(cat); err != nil {
+		return "", "", err
+	}
+	for _, e := range cat.Entries {
+		// Rejected entries count too: the name is taken by a file on disk.
+		if e.Name == o.saveQuery {
+			return "", "", fmt.Errorf("name %q is already used by %s:%s", o.saveQuery, e.Source, e.Path)
+		}
+	}
+	dir, err := sqlq.ProfileDir(cfg.PersonalDir, profile.Name, profileNames)
+	if err != nil {
+		return "", "", err
+	}
+	return filepath.Join(dir, o.saveQuery+".sql"), content, nil
+}
+
+// writeSavedQuery creates the file, never over an existing one, and rereads it
+// through the catalogue; a file this run created and the catalogue rejects is
+// removed. Its errors name the file relative to the personal directory: the
+// absolute path, which an OS error carries, would publish the home directory.
+func writeSavedQuery(o options, profile sqlq.Profile, profileNames []string, path, content string) error {
+	cfg := catalogConfig(o, profileNames)
+	cfg.Profile = profile.Name
+	rel := path
+	if r, err := filepath.Rel(cfg.PersonalDir, path); err == nil {
+		rel = filepath.ToSlash(r)
+	}
+	osErr := func(err error) error {
+		var pe *fs.PathError
+		if errors.As(err, &pe) {
+			return fmt.Errorf("%s: %w", rel, pe.Err)
+		}
+		return fmt.Errorf("%s: %w", rel, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return osErr(err)
+	}
+	// MkdirAll and OpenFile follow a symlinked profile directory out of the
+	// personal root; the catalogue would still read the file back through it.
+	if dir, err := filepath.Rel(cfg.PersonalDir, filepath.Dir(path)); err == nil {
+		at := cfg.PersonalDir
+		for _, seg := range strings.Split(dir, string(filepath.Separator)) {
+			at = filepath.Join(at, seg)
+			if st, err := os.Lstat(at); err != nil || st.Mode()&fs.ModeSymlink != 0 {
+				return fmt.Errorf("%s: a directory on the way is a symbolic link, nothing saved", rel)
+			}
+		}
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return osErr(err) // includes "file exists": nothing of ours to remove
+	}
+	_, werr := f.WriteString(content)
+	if err := errors.Join(werr, f.Close()); err != nil {
+		os.Remove(path)
+		return osErr(err)
+	}
+	e, ok := sqlq.LoadCatalog(cfg).Find(o.saveQuery)
+	if !ok || e.Source != sqlq.SourcePersonal {
+		os.Remove(path)
+		return fmt.Errorf("%s does not read back as a valid catalogue entry, and was removed", rel)
+	}
+	return nil
+}
+
+// recordRun notes a successful run in the registry. A failure to record is
+// reported, not fatal: the query did run, and the cost is a later "verified": null.
+func recordRun(result *sqlq.Result, hash string, profile sqlq.Profile) {
+	err := sqlq.RecordVerified(registryPath(), hash, sqlq.Verified{
+		Date: time.Now().Format("2006-01-02"), Profile: profile.Name})
+	if err != nil {
+		result.Messages = append(result.Messages, "verification not recorded: "+err.Error())
+	}
+}
+
+// listQueries prints the catalogue. It needs no profile file unless -profile
+// is given, so the catalogue can be inspected on a machine with none.
+func listQueries(o options) int {
+	profiles, perr := sqlq.LoadProfiles(resolveProfilesPath(o.profilesPath))
+	if o.profileName != "" {
+		if perr != nil {
+			return fail(exitUsage, perr)
+		}
+		if _, err := profiles.Get(o.profileName); err != nil {
+			return fail(exitUsage, err)
+		}
+	}
+	cfg := catalogConfig(o, profiles.Names())
+	reg, msg := sqlq.LoadRegistry(registryPath())
+	cfg.Registry = reg
+	cat := sqlq.LoadCatalog(cfg)
+	if msg != "" {
+		cat.Messages = append(cat.Messages, msg)
+	}
+	return emit(cat)
+}
+
+func catalogConfig(o options, profileNames []string) sqlq.CatalogConfig {
+	cfg := sqlq.CatalogConfig{
+		BundledDir:     o.queriesDir,
+		PersonalDir:    envOr("DB_AI_TOOLKIT_QUERIES", sqlq.DefaultQueriesDir()),
+		TsqlScriptsDir: o.tsqlScriptsDir,
+		Profile:        o.profileName,
+		ProfileNames:   profileNames,
+	}
+	if cfg.BundledDir == "" {
+		cfg.BundledDir = bundledQueriesDir()
+	}
+	if cfg.TsqlScriptsDir == "" {
+		cfg.TsqlScriptsDir = os.Getenv("DB_AI_TOOLKIT_TSQL_SCRIPTS")
+	}
+	return cfg
+}
+
+// envOr reads a development and test entry point: DB_AI_TOOLKIT_QUERIES and
+// DB_AI_TOOLKIT_REGISTRY move the personal layer and the registry elsewhere.
+func envOr(name, fallback string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func registryPath() string { return envOr("DB_AI_TOOLKIT_REGISTRY", sqlq.DefaultRegistryPath()) }
+
+// bundledQueriesDir finds the skill's queries relative to the binary, which the
+// plugin installs in its bin/ directory.
+func bundledQueriesDir() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	return filepath.Join(filepath.Dir(exe), "..", "skills", "live-query", "queries")
+}
+
+// missingQueryError explains why a name did not resolve in this profile's view.
+// The name has been validated by ValidQueryName before it reaches a path.
+func missingQueryError(cat sqlq.Catalog, cfg sqlq.CatalogConfig, name string) error {
+	for _, e := range cat.Entries {
+		if e.Name == name && e.Rejected != "" {
+			return fmt.Errorf("query %q (%s:%s) is rejected: %s", name, e.Source, e.Path, e.Rejected)
+		}
+	}
+	var bound string
+	root := filepath.Join(cfg.PersonalDir, "profiles")
+	filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && d.Name() == name+".sql" && bound == "" {
+			rel, _ := filepath.Rel(root, filepath.Dir(p))
+			bound = filepath.ToSlash(rel)
+		}
+		return nil
+	})
+	var also string
+	if len(cat.Messages) > 0 {
+		also = " (catalogue: " + strings.Join(cat.Messages, "; ") + ")"
+	}
+	if bound != "" {
+		return fmt.Errorf("query %q is bound to profile directory %q and cannot run on profile %q%s", name, bound, cfg.Profile, also)
+	}
+	return fmt.Errorf("no query named %q (use -list-queries -profile %s)%s", name, cfg.Profile, also)
+}
+
+// flagConflicts refuses flags that would be silently ignored.
+func flagConflicts(o options) error {
+	if o.summary != "" && o.saveQuery == "" {
+		return errors.New("-summary only goes with -save-query: nothing would be saved")
+	}
+	return nil
+}
+
+// needCanon refuses a catalogue without the bundled queries: in it a personal
+// or tsql-scripts file holding a bundled name is not seen as a collision, and
+// would run, or be saved, in the canon's place.
+func needCanon(cat sqlq.Catalog) error {
+	for _, e := range cat.Entries {
+		if e.Source == sqlq.SourceBundled {
+			return nil
+		}
+	}
+	// Missing, unreadable or empty: the same blindness to bundled names.
+	return errors.New("bundled queries not found, so a name cannot be checked against them; pass -queries <plugin>/skills/live-query/queries")
+}
+
+// prepareSaved turns a catalogue entry and the -param values into the text to
+// send and the arguments to bind, refusing before any connection everything
+// that would make the run differ from what the agent will report.
+func prepareSaved(e sqlq.Entry, params paramList) (string, []any, *sqlq.SavedRun, error) {
+	run := &sqlq.SavedRun{Name: e.Name, Source: e.Source, Path: e.Path, Params: map[string]string{}, Defaults: []string{}, Verified: e.Verified}
+	passed := map[string]string{}
+	for _, p := range params {
+		name, value, _ := strings.Cut(p, "=")
+		name = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(name), "@"))
+		if _, dup := passed[name]; dup {
+			return "", nil, nil, fmt.Errorf("-param %q given more than once", name)
+		}
+		passed[name] = value
+	}
+	if e.Source == sqlq.SourceTsqlScripts {
+		known := map[string]sqlq.OverrideParam{}
+		for _, o := range e.Overrides {
+			known[o.Name] = o
+		}
+		var args []any
+		use := map[string]bool{}
+		for name, value := range passed {
+			o, ok := known[name]
+			if !ok {
+				return "", nil, nil, fmt.Errorf("query %q has no parameter %q (declared: %s)", e.Name, name, overrideNames(e.Overrides))
+			}
+			v, err := sqlq.BindValue(o.Type, value)
+			if err != nil {
+				return "", nil, nil, fmt.Errorf("-param %s: %w", name, err)
+			}
+			args = append(args, sql.Named("sqlq_"+name, v))
+			use[name] = true
+			run.Params[name] = value
+		}
+		for _, o := range e.Overrides {
+			if !use[o.Name] {
+				run.Defaults = append(run.Defaults, o.Name)
+			}
+		}
+		sort.Slice(args, func(i, j int) bool { return args[i].(sql.NamedArg).Name < args[j].(sql.NamedArg).Name })
+		return sqlq.Rewrite(e.SQL, e.Overrides, use), args, run, nil
+	}
+	want := map[string]bool{}
+	for _, q := range e.QueryParams {
+		want[q] = true
+		if _, ok := passed[q]; !ok {
+			return "", nil, nil, fmt.Errorf("parameter %q required by query %q", q, e.Name)
+		}
+	}
+	var args []any
+	for _, q := range e.QueryParams {
+		args = append(args, sql.Named(q, passed[q]))
+		run.Params[q] = passed[q]
+	}
+	for name := range passed {
+		if !want[name] {
+			return "", nil, nil, fmt.Errorf("query %q has no parameter %q", e.Name, name)
+		}
+	}
+	return e.SQL, args, run, nil
+}
+
+func overrideNames(ps []sqlq.OverrideParam) string {
+	var names []string
+	for _, p := range ps {
+		names = append(names, p.Name)
+	}
+	if len(names) == 0 {
+		return "none"
+	}
+	return strings.Join(names, ", ")
+}
+
+// guard applies sqlq's three refusals in their historical order and returns the
+// exit code and message of the first that applies. The messages quote the
+// statement: they answer the caller of a batch it just wrote, never the catalogue.
+//
+// Writing takes two independent yeses: the profile must permit it, and this
+// invocation must intend it. A profile is a persistent property of a file
+// somebody edited once; -allow-write is a statement about right now.
+//
+// USE writes nothing, so the write guard passes it - and it silently makes two
+// of this tool's own statements false at once: the "database" field of the
+// answer still names the profile's catalog, and -database is overridden from
+// inside the text it was meant to govern.
+//
+// GO is a client batch separator, not T-SQL. The guard already knows how to see
+// it - it splits statements on it - but the execution path sends the text
+// through untouched, so the server answers with a syntax error that explains
+// nothing. Refuse rather than split: a correct splitter has to respect string
+// literals, both comment forms and bracketed identifiers, which is real work
+// for a need (several read-only batches at once) that does not arise.
+func guard(sqlText string, profile sqlq.Profile, allowWrite bool) (int, error) {
+	for _, r := range sqlq.Refusals(sqlText) {
+		switch r.Kind {
+		case sqlq.RefusalWrite:
+			switch {
+			case profile.ReadOnly():
+				return exitRefused, fmt.Errorf(
+					"profile %q is read-only and this batch would write: statement %q uses %s",
+					profile.Name, truncate(r.Statement, 120), r.Keyword)
+			case !allowWrite:
+				return exitRefused, fmt.Errorf(
+					"this batch would write (statement %q uses %s) and profile %q permits it, but "+
+						"-allow-write was not given; pass it only once the user has confirmed the write",
+					truncate(r.Statement, 120), r.Keyword, profile.Name)
+			}
+		case sqlq.RefusalContext:
+			return exitRefused, fmt.Errorf(
+				"%s changes the database for the rest of the batch, so the reported database "+
+					"would no longer be the one queried: statement %q. Select the database with "+
+					"-database, or name it in the object (Other.dbo.T).",
+				r.Keyword, truncate(r.Statement, 120))
+		case sqlq.RefusalSeparator:
+			return exitUsage, fmt.Errorf(
+				"GO is a client batch separator, not T-SQL (line %d). Send one batch per call.", r.Line)
+		}
+	}
+	return exitOK, nil
 }
 
 func execute(profile sqlq.Profile, sqlText string, args []any, o options,
@@ -292,7 +667,8 @@ func execute(profile sqlq.Profile, sqlText string, args []any, o options,
 		return result, exitSQL
 	}
 
-	rows, err := conn.QueryContext(ctx, sqlText, args...)
+	retmsg := &sqlexp.ReturnMessage{}
+	rows, err := conn.QueryContext(ctx, sqlText, append(args, retmsg)...)
 	if err != nil {
 		result.ElapsedMS = time.Since(started).Milliseconds()
 		result.Error = sqlError(err, secret)
@@ -300,56 +676,95 @@ func execute(profile sqlq.Profile, sqlText string, args []any, o options,
 	}
 	defer rows.Close()
 
-	if err := collect(rows, &result, o.maxRows); err != nil {
-		result.ElapsedMS = time.Since(started).Milliseconds()
+	sqlErrs, errSlots, err := collect(ctx, rows, retmsg, &result, o.maxRows)
+	result.ElapsedMS = time.Since(started).Milliseconds()
+	// Errors after the first go to messages, so none is lost; Error keeps the
+	// first, which is the one that explains the others.
+	for i, slot := range errSlots {
+		later := sqlError(sqlErrs[i+1], secret)
+		result.Messages[slot] = fmt.Sprintf("error %d: %s", later.Number, later.Message)
+	}
+	switch {
+	case err != nil:
 		result.Error = sqlError(err, secret)
 		return result, exitSQL
+	case len(sqlErrs) > 0:
+		result.Error = sqlError(sqlErrs[0], secret)
+		return result, exitSQL
 	}
-
-	result.ElapsedMS = time.Since(started).Milliseconds()
 	return result, exitOK
 }
 
-// collect reads the first result set into the result, then looks through any
-// further result sets for a showplan, which SET STATISTICS XML ON returns
-// after the data.
-func collect(rows *sql.Rows, result *sqlq.Result, maxRows int) error {
+// collect reads every result set and every informational message, in the order
+// the server sends them. The first non-showplan set fills the result's own
+// fields, later ones go to MoreResults, and a showplan goes to Plan. SQL errors
+// are returned separately, in order, so the sets read before them are kept. A
+// set still open when an error arrives is marked incomplete: the driver ends
+// it early and cleanly, and its rows would otherwise pass for the whole set.
+func collect(ctx context.Context, rows *sql.Rows, retmsg *sqlexp.ReturnMessage,
+	result *sqlq.Result, maxRows int) (sqlErrs []error, errSlots []int, err error) {
 	first := true
-	for {
-		cols, err := rows.ColumnTypes()
-		if err != nil {
-			return err
-		}
-		if isShowplan(cols) {
-			plan, err := readSingleString(rows)
-			if err != nil {
-				return err
+	open := -1 // the set the server has not closed yet: 0 the first, k MoreResults[k-1]
+	for active := true; active; {
+		switch m := retmsg.Message(ctx).(type) {
+		case sqlexp.MsgNotice:
+			result.Messages = append(result.Messages, m.Message.String())
+		case sqlexp.MsgError:
+			sqlErrs = append(sqlErrs, m.Error)
+			if len(sqlErrs) > 1 {
+				// A slot in arrival order; execute writes the scrubbed text.
+				errSlots = append(errSlots, len(result.Messages))
+				result.Messages = append(result.Messages, "")
 			}
-			result.Plan = plan
-		} else if first {
+			switch {
+			case open == 0:
+				result.Incomplete = true
+			case open > 0:
+				result.MoreResults[open-1].Incomplete = true
+			}
+		case sqlexp.MsgNext:
+			cols, err := rows.ColumnTypes()
+			if err != nil {
+				return sqlErrs, errSlots, err
+			}
+			if isShowplan(cols) {
+				plan, err := readSingleString(rows)
+				if err != nil {
+					return sqlErrs, errSlots, err
+				}
+				result.Plan = plan
+				continue
+			}
 			set := sqlq.NewRowSet(maxRows)
-			result.Columns = make([]sqlq.Column, len(cols))
+			columns := make([]sqlq.Column, len(cols))
 			for i, c := range cols {
-				result.Columns[i] = sqlq.Column{Name: c.Name(), Type: c.DatabaseTypeName()}
+				columns[i] = sqlq.Column{Name: c.Name(), Type: c.DatabaseTypeName()}
 			}
 			if err := scanAll(rows, cols, set); err != nil {
-				return err
+				return sqlErrs, errSlots, err
 			}
-			result.Rows = set.Rows
-			result.RowCount = set.RowCount
-			result.Truncated = set.Truncated
-			first = false
-		} else {
-			// Extra result sets beyond the first are drained, not reported:
-			// one query, one answer.
-			for rows.Next() {
+			if first {
+				result.Columns, result.Rows = columns, set.Rows
+				result.RowCount, result.Truncated = set.RowCount, set.Truncated
+				first = false
+				open = 0
+			} else {
+				result.MoreResults = append(result.MoreResults, sqlq.ResultSet{
+					Columns: columns, Rows: set.Rows, RowCount: set.RowCount, Truncated: set.Truncated})
+				open = len(result.MoreResults)
 			}
-		}
-		if !rows.NextResultSet() {
-			break
+		case sqlexp.MsgNextResultSet:
+			open = -1
+			active = rows.NextResultSet()
 		}
 	}
-	return rows.Err()
+	// Defensive: with go-mssqldb v1.11 a timeout already ends the loop through
+	// a failing NextResultSet and surfaces in rows.Err(), but a query cut short
+	// by -timeout must never exit 0 with partial rows if that ever changes.
+	if ctx.Err() != nil {
+		return sqlErrs, errSlots, ctx.Err()
+	}
+	return sqlErrs, errSlots, rows.Err()
 }
 
 func scanAll(rows *sql.Rows, cols []*sql.ColumnType, set *sqlq.RowSet) error {
@@ -435,21 +850,28 @@ func resolveProfilesPath(flagValue string) string {
 	return sqlq.DefaultProfilePath()
 }
 
-func readQuery(query, file string) (string, error) {
+func readQuery(query, file, saved string) (string, error) {
+	given := 0
+	for _, s := range []string{query, file, saved} {
+		if s != "" {
+			given++
+		}
+	}
 	switch {
-	case query != "" && file != "":
-		return "", fmt.Errorf("give either -query or -file, not both")
+	case given > 1:
+		return "", fmt.Errorf("give exactly one of -query, -file or -saved")
+	case given == 0:
+		return "", fmt.Errorf("one of -query, -file or -saved is required")
+	case saved != "":
+		return "", nil // the text comes from the catalogue
 	case query != "":
 		return query, nil
-	case file != "":
-		raw, err := os.ReadFile(file)
-		if err != nil {
-			return "", fmt.Errorf("reading -file: %w", err)
-		}
-		return string(raw), nil
-	default:
-		return "", fmt.Errorf("one of -query or -file is required")
 	}
+	raw, err := os.ReadFile(file)
+	if err != nil {
+		return "", fmt.Errorf("reading -file: %w", err)
+	}
+	return string(raw), nil
 }
 
 func namedArgs(params paramList) ([]any, error) {
