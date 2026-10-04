@@ -176,6 +176,31 @@ langage naturel.
   l'agent ne conclue pas que le dépôt ne contient rien. Pas de fichier de configuration
   propre à `sqlq` en v1.
 
+### Lecture des répertoires
+
+Règles ajoutées après la revue de code de la tâche 7.
+
+- Un répertoire `bundled` ou `personal` se lit par `os.ReadDir`, jamais par un motif
+  `*.sql` : un `[` dans le chemin du plugin faisait d'un motif glob une expression qui ne
+  trouvait rien, et le canon disparaissait sans un mot. L'extension `.sql` se reconnaît sans
+  tenir compte de la casse, dans les trois sources.
+- Un répertoire qui existe mais ne se lit pas donne un message (`bundled queries directory
+  unreadable: .`, `tsql-scripts directory unreadable: <chemin relatif>`), jamais le texte
+  de l'erreur système, qui porte le chemin absolu. Un répertoire `personal` absent reste
+  une source vide, sans message.
+- Un `.sql` qui est un lien symbolique est `rejected` (`symbolic link`) et n'est pas suivi :
+  sa cible peut être hors de la source, et c'est elle qu'on exécuterait. Un `.sql` qui n'est
+  pas un fichier ordinaire est `rejected` (`not a regular file`).
+- Chaque fichier est lu une seule fois, et au plus 1 Mio. Un fichier plus gros est
+  `rejected` (`file too large`) ; dans tsql-scripts, seulement si ses 64 premiers Kio
+  contiennent une tentative de marqueur, sinon il reste ignoré comme tout script non marqué.
+- Un fichier illisible est `rejected` (`unreadable`), dans toutes les sources : on ne peut
+  pas savoir s'il est marqué, et l'ignorer le ferait disparaître.
+- Un fichier qui commence par un BOM UTF-16 (`FF FE` ou `FE FF`) ou contient un octet nul est
+  `rejected` (`not UTF-8 text`), dans toutes les sources, qu'il soit marqué ou non : décodé
+  comme UTF-8, il ne présente aucune ligne lisible, et un script marqué enregistré en UTF-16
+  par SSMS disparaissait. Le corpus réel n'en contient aucun.
+
 ### Répertoire d'un profil
 
 Les noms de profil générés par `registered-servers` contiennent des `/` (groupes SSMS). Le
@@ -229,7 +254,11 @@ seule façon de voir ses requêtes sauvées.
 ## 8. Format des en-têtes
 
 Avant toute analyse, un BOM UTF-8 en tête de fichier est retiré. Les fins de ligne CRLF sont
-acceptées et conservées.
+acceptées et conservées. Un CR isolé (fins de ligne du Mac classique) coupe aussi une ligne
+d'en-tête, pour que le fichier soit vu ; mais l'entrée est `rejected` (`lone CR line
+endings`), parce que le garde-fou et l'analyse lexicale ne finissent une ligne que sur LF :
+pour eux, `-- x<CR>DELETE …` serait un seul commentaire. L'empreinte reste calculée sur les
+octets lus (§10), la ligne marqueur retirée selon le même découpage.
 
 ### Sources `bundled` et `personal` : bloc `/* … */`
 
@@ -253,7 +282,10 @@ SELECT ...
 3. Les paramètres se déduisent du SQL (§9). Une ligne `Parameter:` ou `Parameters:` est
    facultative ; quand elle est présente, elle doit nommer exactement les paramètres
    déduits, sinon `rejected`. Les fichiers livrés qui disent `No parameter.` restent valides.
-4. Une ligne `Heavy: yes` dans le bloc pose `heavy` (§12).
+4. Une ligne `Heavy: yes` dans le bloc pose `heavy` (§12). Une ligne qui commence par
+   `Heavy:` doit dire exactement `yes` ou `no` (casse et espaces autour indifférents) ;
+   sinon `rejected` : `Heavy: yes.` ne doit pas passer pour l'absence de la ligne (revue
+   de code de la tâche 7).
 5. Le reste est de la prose pour le lecteur humain.
 
 ### Source `tsql-scripts` : en-tête `--` et ligne marqueur
@@ -277,16 +309,24 @@ DECLARE @hostname sysname = N'%';
 
 - L'en-tête est la suite de lignes qui ouvre le fichier et dont chacune est vide ou commence
   par `--` (espaces en tête permis). Il s'arrête à la première autre ligne.
-- Une tentative de marqueur est toute ligne du fichier qui correspond à
-  `(?i)^\s*--\s*sqlq\s*:`. Si un fichier n'en a aucune, il n'entre pas au catalogue et
-  n'apparaît pas du tout. S'il en a une dans l'en-tête, c'est le marqueur. Toute autre
-  configuration rend l'entrée `rejected` : marqueur hors de l'en-tête (`marker outside the
-  header`), ou plus d'un marqueur. Un marqueur mal placé ou mal orthographié se voit donc,
-  au lieu de faire disparaître le script.
+- Une tentative de marqueur est toute ligne du fichier qui commence par `--`, précédé et
+  suivi d'espaces quelconques (Unicode compris, l'espace insécable par exemple), puis le mot
+  `sqlq` (frontière de mot), deux-points ou non : `(?i)^[\s\p{Zs}]*--[\s\p{Zs}]*sqlq\b`.
+  Si un fichier n'en a aucune, il n'entre pas au catalogue et n'apparaît pas du tout. S'il
+  en a une dans l'en-tête, c'est le marqueur, qui doit être bien formé :
+  `(?i)^[ \t]*--[ \t]*sqlq[ \t]*:`, sinon `rejected` (`malformed sqlq marker at line N`).
+  Toute autre configuration rend l'entrée `rejected` : marqueur hors de l'en-tête (`marker
+  outside the header`), ou plus d'un marqueur. Un marqueur mal placé ou mal orthographié se
+  voit donc, au lieu de faire disparaître le script. La tentative a été élargie après la
+  revue de code de la tâche 7 : `-- sqlq name=x` (sans deux-points) et `--` suivi d'une
+  espace insécable faisaient disparaître le script. Sur le corpus réel, aucun fichier non
+  marqué ne devient une entrée rejetée (un `TSQLQuery` dans une chaîne reste ignoré).
 - Clés, séparées par des espaces : `name=` (obligatoire), `params=` (liste séparée par des
   virgules, facultative, sans doublon), `heavy` (sans valeur, facultative). Une clé inconnue
   rend l'entrée `rejected` : une faute de frappe dans `heavy` ne doit pas passer pour son
-  absence. Un paramètre listé deux fois aussi.
+  absence. Un paramètre listé deux fois aussi. Un nom de `params=` doit être fait de lettres
+  ASCII, de chiffres et de `_`, sinon `rejected` (`invalid parameter name at position N in
+  params=`).
 - Le résumé est la ligne de commentaire de l'en-tête la plus proche au-dessus du marqueur
   dont le contenu, après `--`, est non vide, n'est pas fait que de tirets et ne commence pas
   par `http://` ou `https://`. Il n'y en a pas : `rejected` (`no summary above the marker`).
@@ -306,7 +346,11 @@ peut pas tourner apparaît quand même dans `-list-queries`, avec la raison :
 
 Une raison nomme un mot-clé, un nom de paramètre et une ligne, jamais un extrait du texte :
 `-list-queries` part chez le fournisseur du modèle à chaque session (§12, « Ce qui est
-publié »).
+publié »). Une raison ne cite jamais un jeton qui a échoué à la validation : elle donne sa
+position (`unknown marker key at position 3`, `invalid parameter name at position 1 in
+params=`, `invalid name`). Un nom de paramètre qui a passé la validation peut être cité.
+Règle précisée après la revue de code de la tâche 7, où `name=bk C:\Users\…\secret.xel`
+publiait le chemin dans la raison.
 
 `-saved` sur une entrée `rejected` : code 1, avec la même raison.
 
@@ -600,7 +644,12 @@ sur stdout.
 pas de serveur ni de base dans `verified`, pas d'extrait de SQL dans `rejected`, pas de
 valeur par défaut de paramètre, pas de texte d'erreur système (qui porte des chemins) dans
 `messages`, et les
-répertoires de profil absents de la vue sans `-profile`. Restent les résumés et les noms de
+répertoires de profil absents de la vue sans `-profile`. Une entrée tsql-scripts `rejected` dont
+le nom est invalide ne publie pas ce nom (qui peut être un chemin ou un serveur) : elle prend
+le nom du fichier sans extension s'il est un nom valide, sinon un nom vide ; il en va de même
+des entrées rejetées avant toute lecture (`unreadable`, `symbolic link`, `file too large`,
+`not UTF-8 text`). Ce nom n'a pas été revendiqué par l'auteur et ne compte pas dans les
+collisions (revue de code de la tâche 7). Restent les résumés et les noms de
 fichiers, écrits par l'auteur : la règle pour lui, consignée dans le `CLAUDE.md` de
 tsql-scripts et dans le skill, est de ne mettre ni client, ni hôte, ni base dans le résumé
 ou le nom d'un fichier de portée `generic`.

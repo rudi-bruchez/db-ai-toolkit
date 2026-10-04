@@ -1,13 +1,15 @@
 package sqlq
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 )
 
@@ -52,6 +54,11 @@ type Entry struct {
 	Hash        string          // registry key
 	Overrides   []OverrideParam // tsql-scripts only
 	QueryParams []string        // bundled and personal only
+
+	// nameFromFile marks a tsql-scripts name taken from the file stem because
+	// the marker gave none that could be published: the author did not claim
+	// it, so it takes no part in collisions.
+	nameFromFile bool
 }
 
 func (e Entry) MarshalJSON() ([]byte, error) {
@@ -143,18 +150,18 @@ func LoadCatalog(cfg CatalogConfig) Catalog {
 			// the agent concludes there is none.
 			c.Messages = append(c.Messages, "bundled queries not found")
 		} else {
-			c.Entries = append(c.Entries, loadBlockDir(cfg, cfg.BundledDir, "", SourceBundled, "generic")...)
+			c.loadBlockDir(cfg, cfg.BundledDir, "", SourceBundled, "generic")
 		}
 	}
 	if cfg.PersonalDir != "" {
-		c.Entries = append(c.Entries, loadBlockDir(cfg, filepath.Join(cfg.PersonalDir, "_generic"), "_generic", SourcePersonal, "generic")...)
+		c.loadBlockDir(cfg, filepath.Join(cfg.PersonalDir, "_generic"), "_generic", SourcePersonal, "generic")
 		if cfg.Profile != "" {
 			dir, err := ProfileDir(cfg.PersonalDir, cfg.Profile, cfg.ProfileNames)
 			if err != nil {
 				c.Messages = append(c.Messages, "personal queries disabled for this profile: "+err.Error())
 			} else {
 				rel, _ := filepath.Rel(cfg.PersonalDir, dir)
-				c.Entries = append(c.Entries, loadBlockDir(cfg, dir, filepath.ToSlash(rel), SourcePersonal, cfg.Profile)...)
+				c.loadBlockDir(cfg, dir, filepath.ToSlash(rel), SourcePersonal, cfg.Profile)
 			}
 		}
 	}
@@ -165,41 +172,105 @@ func LoadCatalog(cfg CatalogConfig) Catalog {
 		if st, err := os.Stat(cfg.TsqlScriptsDir); err != nil || !st.IsDir() {
 			c.Messages = append(c.Messages, "tsql-scripts source not found")
 		} else {
-			c.Entries = append(c.Entries, loadTsqlScripts(cfg)...)
+			c.loadTsqlScripts(cfg)
 		}
 	}
 	resolveCollisions(c.Entries)
 	return c
 }
 
-func loadBlockDir(cfg CatalogConfig, dir, relPrefix string, src Source, scope string) []Entry {
-	paths, _ := filepath.Glob(filepath.Join(dir, "*.sql"))
-	sort.Strings(paths)
-	var out []Entry
-	for _, p := range paths {
-		raw, err := os.ReadFile(p)
-		rel := filepath.Base(p)
+const (
+	maxQueryFileSize = 1 << 20  // larger files are rejected, not read whole
+	markerProbeSize  = 64 << 10 // what is read of a larger tsql-scripts file to tell if it is marked
+)
+
+// openFile is the one way the catalogue opens a query file; a test counts the
+// calls to prove that the bytes hashed are the bytes held for execution.
+var openFile = os.Open
+
+// readQueryFile reads a catalogue candidate once. A non-empty reason means the
+// file cannot be an entry; it never carries the OS error, whose text holds the
+// absolute path. A symbolic link is not followed: its target may lie outside
+// the source. When the reason is "file too large", raw holds the first
+// markerProbeSize bytes only.
+func readQueryFile(p string, d fs.DirEntry) (raw []byte, reason string) {
+	if d.Type()&fs.ModeSymlink != 0 {
+		return nil, "symbolic link"
+	}
+	info, err := d.Info()
+	if err != nil {
+		return nil, "unreadable"
+	}
+	if !info.Mode().IsRegular() {
+		return nil, "not a regular file"
+	}
+	f, err := openFile(p)
+	if err != nil {
+		return nil, "unreadable"
+	}
+	defer f.Close()
+	// The file opened must be the one examined: a swap for a link in between
+	// would otherwise be followed.
+	if fi, err := f.Stat(); err != nil || !os.SameFile(info, fi) {
+		return nil, "unreadable"
+	}
+	if info.Size() > maxQueryFileSize {
+		raw, _ = io.ReadAll(io.LimitReader(f, markerProbeSize))
+		return raw, "file too large"
+	}
+	raw, err = io.ReadAll(io.LimitReader(f, maxQueryFileSize+1))
+	switch {
+	case err != nil:
+		return nil, "unreadable"
+	case len(raw) > maxQueryFileSize:
+		return raw[:markerProbeSize], "file too large"
+	case bytes.HasPrefix(raw, []byte{0xFF, 0xFE}) || bytes.HasPrefix(raw, []byte{0xFE, 0xFF}) || bytes.IndexByte(raw, 0) >= 0:
+		// UTF-16 or binary: every rule below would read it as one unmarked line.
+		return nil, "not UTF-8 text"
+	}
+	return raw, ""
+}
+
+func isSQLFile(name string) bool { return strings.EqualFold(filepath.Ext(name), ".sql") }
+
+func (c *Catalog) loadBlockDir(cfg CatalogConfig, dir, relPrefix string, src Source, scope string) {
+	des, err := os.ReadDir(dir)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		where := relPrefix
+		if where == "" {
+			where = "."
+		}
+		c.Messages = append(c.Messages, fmt.Sprintf("%s queries directory unreadable: %s", src, where))
+	}
+	for _, d := range des {
+		if d.IsDir() || !isSQLFile(d.Name()) {
+			continue
+		}
+		rel := d.Name()
 		if relPrefix != "" {
 			rel = relPrefix + "/" + rel
 		}
-		e := Entry{Name: strings.TrimSuffix(filepath.Base(p), ".sql"), Source: src, Path: rel, Scope: scope}
-		if err != nil {
-			e.Rejected = "unreadable"
-			out = append(out, e)
+		e := Entry{Name: d.Name()[:len(d.Name())-len(".sql")], Source: src, Path: rel, Scope: scope}
+		raw, reason := readQueryFile(filepath.Join(dir, d.Name()), d)
+		if reason != "" {
+			e.Rejected = reason
+			c.Entries = append(c.Entries, e)
 			continue
 		}
 		body := StripBOM(raw)
 		e.SQL, e.Hash = string(body), ContentHash(body)
 		e.Rejected = blockEntryProblem(&e)
 		e.Verified = cfg.Registry.Lookup(e.Hash)
-		out = append(out, e)
+		c.Entries = append(c.Entries, e)
 	}
-	return out
 }
 
 func blockEntryProblem(e *Entry) string {
 	if !ValidQueryName(e.Name) {
 		return "invalid name"
+	}
+	if hasLoneCR(e.SQL) {
+		return "lone CR line endings"
 	}
 	h, err := ParseBlockHeader(e.SQL)
 	if err != nil {
@@ -220,44 +291,70 @@ func blockEntryProblem(e *Entry) string {
 	return ""
 }
 
-func loadTsqlScripts(cfg CatalogConfig) []Entry {
-	var out []Entry
+// stemName is the name published for a tsql-scripts entry whose marker gave
+// none that passed validation: the file stem if it is a valid name, else none.
+func stemName(p string) string {
+	base := filepath.Base(p)
+	if stem := base[:len(base)-len(filepath.Ext(base))]; ValidQueryName(stem) {
+		return stem
+	}
+	return ""
+}
+
+func (c *Catalog) loadTsqlScripts(cfg CatalogConfig) {
 	root := cfg.TsqlScriptsDir
 	filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		rel, _ := filepath.Rel(root, p)
+		rel = filepath.ToSlash(rel)
 		if err != nil {
+			// Only a directory read fails here; the OS error carries its absolute path.
+			c.Messages = append(c.Messages, "tsql-scripts directory unreadable: "+rel)
 			return nil
 		}
 		if d.IsDir() && d.Name() == ".git" {
 			return filepath.SkipDir
 		}
-		if d.IsDir() || !strings.EqualFold(filepath.Ext(p), ".sql") {
+		if d.IsDir() || !isSQLFile(p) {
 			return nil
 		}
-		raw, err := os.ReadFile(p)
-		if err != nil {
+		reject := func(reason string) error {
+			c.Entries = append(c.Entries, Entry{Name: stemName(p), nameFromFile: true,
+				Source: SourceTsqlScripts, Path: rel, Scope: "generic", Rejected: reason})
 			return nil
+		}
+		raw, reason := readQueryFile(p, d)
+		switch {
+		case reason == "file too large":
+			// Only a file that looks marked in its first bytes is the author's.
+			if _, found, _ := ParseMarkedHeader(string(StripBOM(raw))); found {
+				return reject(reason)
+			}
+			return nil
+		case reason != "":
+			return reject(reason)
 		}
 		body := string(StripBOM(raw))
 		h, found, herr := ParseMarkedHeader(body)
 		if !found {
 			return nil
 		}
-		rel, _ := filepath.Rel(root, p)
-		e := Entry{Name: h.Marker.Name, Source: SourceTsqlScripts, Path: filepath.ToSlash(rel), Scope: "generic", SQL: body}
+		e := Entry{Name: h.Marker.Name, Source: SourceTsqlScripts, Path: rel, Scope: "generic", SQL: body}
 		e.Hash = ContentHash([]byte(withoutLine(body, h.Marker.Line)))
 		switch {
 		case herr != nil:
 			e.Rejected = herr.Error()
 		case !ValidQueryName(e.Name):
+			e.Name, e.nameFromFile = stemName(p), true
 			e.Rejected = "invalid name"
+		case hasLoneCR(body):
+			e.Rejected = "lone CR line endings"
 		default:
 			e.Rejected = tsqlEntryProblem(&e, h)
 		}
 		e.Verified = cfg.Registry.Lookup(e.Hash)
-		out = append(out, e)
+		c.Entries = append(c.Entries, e)
 		return nil
 	})
-	return out
 }
 
 func tsqlEntryProblem(e *Entry, h MarkedHeader) string {
@@ -283,7 +380,7 @@ func withoutLine(text string, line int) string {
 	if line <= 0 {
 		return text
 	}
-	lines := strings.SplitAfter(text, "\n")
+	lines := splitAfterLines(text)
 	if line > len(lines) {
 		return text
 	}
@@ -296,7 +393,7 @@ func withoutLine(text string, line int) string {
 func resolveCollisions(entries []Entry) {
 	holders := map[string][]int{}
 	for i, e := range entries {
-		if e.Name != "" {
+		if e.Name != "" && !e.nameFromFile {
 			holders[e.Name] = append(holders[e.Name], i)
 		}
 	}
