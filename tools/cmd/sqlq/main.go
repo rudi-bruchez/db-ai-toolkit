@@ -88,6 +88,8 @@ func defineFlags(fs *flag.FlagSet) *options {
 	fs.StringVar(&o.saved, "saved", "", "run the catalogue query of that name")
 	fs.StringVar(&o.queriesDir, "queries", "", "directory of the bundled queries (default: next to the binary)")
 	fs.StringVar(&o.tsqlScriptsDir, "tsql-scripts", "", "local clone of tsql-scripts (default $DB_AI_TOOLKIT_TSQL_SCRIPTS)")
+	fs.StringVar(&o.saveQuery, "save-query", "", "after a successful -query or -file run, save it under that name for this profile")
+	fs.StringVar(&o.summary, "summary", "", "one-line summary written into the header by -save-query (required with it)")
 	return o
 }
 
@@ -155,6 +157,8 @@ type options struct {
 	saved          string
 	queriesDir     string
 	tsqlScriptsDir string
+	saveQuery      string
+	summary        string
 }
 
 func run(o options) int {
@@ -220,6 +224,14 @@ func run(o options) int {
 		return fail(code, err)
 	}
 
+	var savePath, saveContent string
+	if o.saveQuery != "" {
+		savePath, saveContent, err = checkSave(o, profile, profiles.Names(), sqlText)
+		if err != nil {
+			return fail(exitUsage, err)
+		}
+	}
+
 	resolver := sqlq.NewResolver(os.Getenv, resolveCredentialsPath(), func(msg string) {
 		fmt.Fprintln(os.Stderr, "sqlq:", msg)
 	})
@@ -232,8 +244,88 @@ func run(o options) int {
 	if code == exitOK && entryHash != "" {
 		recordRun(&result, entryHash, profile)
 	}
+	if code == exitOK && savePath != "" {
+		if err := writeSavedQuery(o, profile, profiles.Names(), savePath, saveContent); err != nil {
+			result.Error = &sqlq.SQLError{Message: "query ran but was not saved: " + err.Error()}
+			_ = emit(result)
+			return exitUsage
+		}
+		recordRun(&result, sqlq.ContentHash([]byte(saveContent)), profile)
+	}
 	_ = emit(result)
 	return code
+}
+
+// checkSave refuses, before anything runs, every save that could not end in a
+// valid catalogue entry, and returns where to write and what.
+func checkSave(o options, profile sqlq.Profile, profileNames []string, sqlText string) (string, string, error) {
+	if o.saved != "" {
+		return "", "", errors.New("-save-query saves a -query or -file run, not a -saved one")
+	}
+	if !sqlq.ValidQueryName(o.saveQuery) {
+		return "", "", fmt.Errorf("query name %q must match ^[a-z][a-z0-9-]{1,48}$", o.saveQuery)
+	}
+	if len(sqlq.FindWrites(sqlText)) > 0 {
+		return "", "", errors.New("the catalogue holds reads only: this batch would write")
+	}
+	if o.summary == "" {
+		return "", "", errors.New("-save-query needs -summary")
+	}
+	content, err := sqlq.SavedFileContent(o.summary, sqlText)
+	if err != nil {
+		return "", "", err
+	}
+	cfg := catalogConfig(o, profileNames)
+	cfg.Profile = profile.Name
+	for _, e := range sqlq.LoadCatalog(cfg).Entries {
+		// Rejected entries count too: the name is taken by a file on disk.
+		if e.Name == o.saveQuery {
+			return "", "", fmt.Errorf("name %q is already used by %s:%s", o.saveQuery, e.Source, e.Path)
+		}
+	}
+	dir, err := sqlq.ProfileDir(cfg.PersonalDir, profile.Name, profileNames)
+	if err != nil {
+		return "", "", err
+	}
+	return filepath.Join(dir, o.saveQuery+".sql"), content, nil
+}
+
+// writeSavedQuery creates the file, never over an existing one, and rereads it
+// through the catalogue; a file this run created and the catalogue rejects is
+// removed. Its errors name the file relative to the personal directory: the
+// absolute path, which an OS error carries, would publish the home directory.
+func writeSavedQuery(o options, profile sqlq.Profile, profileNames []string, path, content string) error {
+	cfg := catalogConfig(o, profileNames)
+	cfg.Profile = profile.Name
+	rel := path
+	if r, err := filepath.Rel(cfg.PersonalDir, path); err == nil {
+		rel = filepath.ToSlash(r)
+	}
+	osErr := func(err error) error {
+		var pe *fs.PathError
+		if errors.As(err, &pe) {
+			return fmt.Errorf("%s: %w", rel, pe.Err)
+		}
+		return fmt.Errorf("%s: %w", rel, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return osErr(err)
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return osErr(err) // includes "file exists": nothing of ours to remove
+	}
+	_, werr := f.WriteString(content)
+	if err := errors.Join(werr, f.Close()); err != nil {
+		os.Remove(path)
+		return osErr(err)
+	}
+	e, ok := sqlq.LoadCatalog(cfg).Find(o.saveQuery)
+	if !ok || e.Source != sqlq.SourcePersonal {
+		os.Remove(path)
+		return fmt.Errorf("%s does not read back as a valid catalogue entry, and was removed", rel)
+	}
+	return nil
 }
 
 // recordRun notes a successful run in the registry. A failure to record is

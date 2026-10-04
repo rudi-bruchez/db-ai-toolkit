@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -134,5 +135,57 @@ func TestOverrideBindsTypedValuesOnServer(t *testing.T) {
 	res, code := execute(p, text, args, options{maxRows: 5, timeoutSec: 120}, resolve)
 	if code != exitOK || len(res.Rows) != 1 || res.Rows[0]["d"] != "2026-10-04" || res.Rows[0]["n"] != "ROW" {
 		t.Errorf("code %d rows %+v error %+v", code, res.Rows, res.Error)
+	}
+}
+
+func TestNothingIsSavedWhenTheRunFailed(t *testing.T) {
+	p, _ := testProfile(t)
+	q := t.TempDir()
+	t.Setenv("DB_AI_TOOLKIT_QUERIES", q)
+	t.Setenv("DB_AI_TOOLKIT_REGISTRY", filepath.Join(t.TempDir(), "v.json"))
+	o := options{profileName: p.Name, profilesPath: os.Getenv("SQLQ_TEST_PROFILES"), query: "SELECT 1/0 AS x;",
+		saveQuery: "will-fail", summary: "Fails.", maxRows: 5, timeoutSec: 120, queriesDir: t.TempDir()}
+	if _, code := captureRun(t, o); code != exitSQL {
+		t.Fatalf("code %d", code)
+	}
+	if matches, _ := filepath.Glob(filepath.Join(q, "profiles", "*", "will-fail.sql")); len(matches) != 0 {
+		t.Errorf("a failed run left %v", matches)
+	}
+}
+
+func TestSaveWritesVerifiedEntry(t *testing.T) {
+	p, _ := testProfile(t)
+	q := t.TempDir()
+	t.Setenv("DB_AI_TOOLKIT_QUERIES", q)
+	reg := filepath.Join(t.TempDir(), "v.json")
+	t.Setenv("DB_AI_TOOLKIT_REGISTRY", reg)
+	o := options{profileName: p.Name, profilesPath: os.Getenv("SQLQ_TEST_PROFILES"),
+		query: "SELECT TOP (1) name FROM sys.objects WHERE name LIKE @pattern;", params: paramList{"pattern=sys%"},
+		saveQuery: "objects-like", summary: "Objects matching a pattern.", maxRows: 5, timeoutSec: 120, queriesDir: t.TempDir()}
+	if out, code := captureRun(t, o); code != exitOK {
+		t.Fatalf("code %d: %s", code, out)
+	}
+	o2 := options{listQueries: true, profileName: p.Name, profilesPath: os.Getenv("SQLQ_TEST_PROFILES"), queriesDir: o.queriesDir}
+	out, _ := captureRun(t, o2)
+	var cat struct {
+		Queries []struct {
+			Name, Source, Rejected string
+			Verified               *sqlq.Verified
+		} `json:"queries"`
+	}
+	if err := json.Unmarshal([]byte(out), &cat); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, q := range cat.Queries {
+		if q.Name == "objects-like" {
+			found = true
+			if q.Source != "personal" || q.Rejected != "" || q.Verified == nil {
+				t.Errorf("saved entry: %+v", q)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("saved entry missing: %s", out)
 	}
 }

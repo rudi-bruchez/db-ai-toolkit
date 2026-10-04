@@ -125,3 +125,78 @@ func TestBoundQueryRefusedOnAnotherProfile(t *testing.T) {
 		t.Errorf("err = %v", err)
 	}
 }
+
+func saveEnv(t *testing.T) string {
+	t.Helper()
+	q := t.TempDir()
+	t.Setenv("DB_AI_TOOLKIT_QUERIES", q)
+	t.Setenv("DB_AI_TOOLKIT_TSQL_SCRIPTS", "")
+	t.Setenv("DB_AI_TOOLKIT_REGISTRY", filepath.Join(t.TempDir(), "v.json"))
+	return q
+}
+
+func TestQueryNameRejectsTraversalAndCase(t *testing.T) {
+	saveEnv(t)
+	p := sqlq.Profile{Name: "dev"}
+	for _, name := range []string{"../../x", "Orders", "a", "x/y", "orders_late"} {
+		o := options{saveQuery: name, summary: "S.", queriesDir: t.TempDir()}
+		if _, _, err := checkSave(o, p, []string{"dev"}, "SELECT 1;"); err == nil {
+			t.Errorf("name %q accepted", name)
+		}
+	}
+}
+
+func TestSaveRefusesAWritingQuery(t *testing.T) {
+	saveEnv(t)
+	o := options{saveQuery: "purge", summary: "S.", queriesDir: t.TempDir(), allowWrite: true}
+	if _, _, err := checkSave(o, sqlq.Profile{Name: "dev", Mode: sqlq.ModeReadWrite}, []string{"dev"}, "DELETE FROM dbo.T;"); err == nil {
+		t.Error("a writing query was accepted for saving")
+	}
+}
+
+func TestSaveRefusesAVisibleName(t *testing.T) {
+	saveEnv(t)
+	o := options{saveQuery: "tables-largest", summary: "S.", queriesDir: "../../internal/sqlq/testdata/catalog/bundled"}
+	if _, _, err := checkSave(o, sqlq.Profile{Name: "dev"}, []string{"dev"}, "SELECT 1;"); err == nil {
+		t.Error("saving over a bundled name was accepted")
+	}
+}
+
+func TestSavedFileThatDoesNotReparseIsRemoved(t *testing.T) {
+	q := saveEnv(t)
+	o := options{saveQuery: "broken", queriesDir: t.TempDir()}
+	path := filepath.Join(q, "profiles", "dev", "broken.sql")
+	// Content without a header cannot read back as a valid entry, and neither
+	// can a valid header over a body the loader refuses: SavedFileContent
+	// accepts a lone CR, a NUL or an oversized body, the catalogue does not.
+	for _, body := range []string{
+		"SELECT 1;\n",
+		"/*  S.\n\n    Parameters: none.\n*/\nSELECT 1;\rSELECT 2;\n",
+		"/*  S.\n\n    Parameters: none.\n*/\nSELECT 'a\x00b';\n",
+		"/*  S.\n\n    Parameters: none.\n*/\nSELECT 1;\n" + strings.Repeat("-- pad\n", 1<<18),
+	} {
+		if err := writeSavedQuery(o, sqlq.Profile{Name: "dev"}, []string{"dev"}, path, body); err == nil {
+			t.Errorf("an unparseable saved file was accepted: %.60q", body)
+		}
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("the rejected file was left behind (%.60q): %v", body, err)
+			os.Remove(path)
+		}
+	}
+	os.MkdirAll(filepath.Dir(path), 0o700)
+	os.WriteFile(path, []byte("kept"), 0o600)
+	if err := writeSavedQuery(o, sqlq.Profile{Name: "dev"}, []string{"dev"}, path, "/* S.\n*/\nSELECT 1;\n"); err == nil {
+		t.Error("an existing file was overwritten")
+	}
+	if b, _ := os.ReadFile(path); string(b) != "kept" {
+		t.Errorf("existing file changed to %q", b)
+	}
+}
+
+func TestSaveRequiresSummary(t *testing.T) {
+	saveEnv(t)
+	o := options{saveQuery: "orders-late", queriesDir: t.TempDir()}
+	if _, _, err := checkSave(o, sqlq.Profile{Name: "dev"}, []string{"dev"}, "SELECT 1;"); err == nil || !strings.Contains(err.Error(), "-summary") {
+		t.Errorf("err = %v", err)
+	}
+}
