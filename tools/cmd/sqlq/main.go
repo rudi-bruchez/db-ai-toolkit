@@ -173,46 +173,8 @@ func run(o options) int {
 		return fail(exitUsage, err)
 	}
 
-	// Writing takes two independent yeses: the profile must permit it, and
-	// this invocation must intend it. A profile is a persistent property of a
-	// file somebody edited once; -allow-write is a statement about right now.
-	if violations := sqlq.FindWrites(sqlText); len(violations) > 0 {
-		switch {
-		case profile.ReadOnly():
-			return fail(exitRefused, fmt.Errorf(
-				"profile %q is read-only and this batch would write: statement %q uses %s",
-				profile.Name, truncate(violations[0].Statement, 120), violations[0].Keyword))
-		case !o.allowWrite:
-			return fail(exitRefused, fmt.Errorf(
-				"this batch would write (statement %q uses %s) and profile %q permits it, but "+
-					"-allow-write was not given; pass it only once the user has confirmed the write",
-				truncate(violations[0].Statement, 120), violations[0].Keyword, profile.Name))
-		}
-	}
-
-	// USE writes nothing, so the write guard passes it - and it silently makes
-	// two of this tool's own statements false at once: the "database" field of
-	// the answer still names the profile's catalog, and -database is overridden
-	// from inside the text it was meant to govern.
-	if changes := sqlq.FindContextChanges(sqlText); len(changes) > 0 {
-		return fail(exitRefused, fmt.Errorf(
-			"%s changes the database for the rest of the batch, so the reported database "+
-				"would no longer be the one queried: statement %q. Select the database with "+
-				"-database, or name it in the object (Other.dbo.T).",
-			changes[0].Keyword, truncate(changes[0].Statement, 120)))
-	}
-
-	// GO is a client batch separator, not T-SQL. The guard above already knows
-	// how to see it - it splits statements on it - but the execution path sends
-	// the text through untouched, so the server answers with a syntax error
-	// that explains nothing. Refuse rather than split: a correct splitter has to
-	// respect string literals, both comment forms and bracketed identifiers,
-	// which is real work for a need (several read-only batches at once) that
-	// does not arise.
-	if lines := sqlq.FindBatchSeparators(sqlText); len(lines) > 0 {
-		return fail(exitUsage, fmt.Errorf(
-			"GO is a client batch separator, not T-SQL (line %d). Send one batch per call.",
-			lines[0]))
+	if code, err := guard(sqlText, profile, o.allowWrite); err != nil {
+		return fail(code, err)
 	}
 
 	named, err := namedArgs(o.params)
@@ -227,6 +189,54 @@ func run(o options) int {
 	result, code := execute(profile, sqlText, named, o, resolver.Resolve)
 	_ = emit(result)
 	return code
+}
+
+// guard applies sqlq's three refusals in their historical order and returns the
+// exit code and message of the first that applies. The messages quote the
+// statement: they answer the caller of a batch it just wrote, never the catalogue.
+//
+// Writing takes two independent yeses: the profile must permit it, and this
+// invocation must intend it. A profile is a persistent property of a file
+// somebody edited once; -allow-write is a statement about right now.
+//
+// USE writes nothing, so the write guard passes it - and it silently makes two
+// of this tool's own statements false at once: the "database" field of the
+// answer still names the profile's catalog, and -database is overridden from
+// inside the text it was meant to govern.
+//
+// GO is a client batch separator, not T-SQL. The guard already knows how to see
+// it - it splits statements on it - but the execution path sends the text
+// through untouched, so the server answers with a syntax error that explains
+// nothing. Refuse rather than split: a correct splitter has to respect string
+// literals, both comment forms and bracketed identifiers, which is real work
+// for a need (several read-only batches at once) that does not arise.
+func guard(sqlText string, profile sqlq.Profile, allowWrite bool) (int, error) {
+	for _, r := range sqlq.Refusals(sqlText) {
+		switch r.Kind {
+		case sqlq.RefusalWrite:
+			switch {
+			case profile.ReadOnly():
+				return exitRefused, fmt.Errorf(
+					"profile %q is read-only and this batch would write: statement %q uses %s",
+					profile.Name, truncate(r.Statement, 120), r.Keyword)
+			case !allowWrite:
+				return exitRefused, fmt.Errorf(
+					"this batch would write (statement %q uses %s) and profile %q permits it, but "+
+						"-allow-write was not given; pass it only once the user has confirmed the write",
+					truncate(r.Statement, 120), r.Keyword, profile.Name)
+			}
+		case sqlq.RefusalContext:
+			return exitRefused, fmt.Errorf(
+				"%s changes the database for the rest of the batch, so the reported database "+
+					"would no longer be the one queried: statement %q. Select the database with "+
+					"-database, or name it in the object (Other.dbo.T).",
+				r.Keyword, truncate(r.Statement, 120))
+		case sqlq.RefusalSeparator:
+			return exitUsage, fmt.Errorf(
+				"GO is a client batch separator, not T-SQL (line %d). Send one batch per call.", r.Line)
+		}
+	}
+	return exitOK, nil
 }
 
 func execute(profile sqlq.Profile, sqlText string, args []any, o options,
