@@ -17,8 +17,8 @@ func TestMissingIndexesQueryContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r := refusals(string(body)); len(r) > 0 {
-		t.Fatalf("sqlq would refuse the query: %s", strings.Join(r, "; "))
+	if r := Refusals(string(body)); len(r) > 0 {
+		t.Fatalf("sqlq would refuse the query: %s", r[0].Reason())
 	}
 	code := strings.ToUpper(Sanitize(string(body)))
 	norm := regexp.MustCompile(`\s+`).ReplaceAllString(code, " ")

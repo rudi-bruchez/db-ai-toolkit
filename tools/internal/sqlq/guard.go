@@ -3,7 +3,6 @@ package sqlq
 import (
 	"regexp"
 	"strings"
-	"unicode"
 )
 
 // writeKeywords are the statement keywords that make a batch something other
@@ -85,7 +84,9 @@ func Sanitize(sql string) string {
 		r := rs[i]
 		switch {
 		case r == '-' && i+1 < len(rs) && rs[i+1] == '-':
-			for i < len(rs) && rs[i] != '\n' {
+			// SQL Server ends a -- comment at CR as well as LF (measured: a
+			// lone CR, and no other control or Unicode separator).
+			for i < len(rs) && rs[i] != '\n' && rs[i] != '\r' {
 				blank(rs[i])
 				i++
 			}
@@ -161,10 +162,16 @@ func sanitizeBatches(sql string) string {
 func FindWrites(sql string) []WriteViolation {
 	var out []WriteViolation
 	for _, stmt := range Statements(sql) {
-		for _, tok := range tokens(stmt) {
+		toks := tokens(stmt)
+		for i, tok := range toks {
 			upper := strings.ToUpper(tok)
 			if writeKeywords[upper] {
 				out = append(out, WriteViolation{Statement: stmt, Keyword: upper})
+				break
+			}
+			// NEXT VALUE FOR advances a sequence: a SELECT that writes.
+			if upper == "NEXT" && i+2 < len(toks) && strings.EqualFold(toks[i+1], "VALUE") && strings.EqualFold(toks[i+2], "FOR") {
+				out = append(out, WriteViolation{Statement: stmt, Keyword: "NEXT VALUE FOR"})
 				break
 			}
 		}
@@ -174,12 +181,21 @@ func FindWrites(sql string) []WriteViolation {
 
 // tokens splits text into SQL word tokens. Underscores, @, # and $ are word
 // characters, so create_date and @param stay whole and are never mistaken for
-// the CREATE keyword.
+// the CREATE keyword; a number ends where SQL Server ends it (wordEnd), so
+// 1DELETE yields DELETE.
 func tokens(s string) []string {
-	return strings.FieldsFunc(s, func(r rune) bool {
-		return !(unicode.IsLetter(r) || unicode.IsDigit(r) ||
-			r == '_' || r == '@' || r == '#' || r == '$')
-	})
+	rs := []rune(s)
+	var out []string
+	for i := 0; i < len(rs); {
+		if !isWordRune(rs[i]) {
+			i++
+			continue
+		}
+		j := wordEnd(rs, i)
+		out = append(out, string(rs[i:j]))
+		i = j
+	}
+	return out
 }
 
 // containsToken reports whether token appears as a whole word in s,

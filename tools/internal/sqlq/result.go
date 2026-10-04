@@ -23,17 +23,23 @@ type SQLError struct {
 // Result is the single JSON object sqlq writes to stdout, on success and on
 // failure alike, so a caller never has two shapes to parse.
 type Result struct {
-	Profile   string    `json:"profile"`
-	Server    string    `json:"server"`
-	Database  string    `json:"database"`
-	ElapsedMS int64     `json:"elapsed_ms"`
-	Columns   []Column  `json:"columns"`
-	Rows      []Row     `json:"rows"`
-	RowCount  int       `json:"rowcount"`
-	Truncated bool      `json:"truncated"`
-	Messages  []string  `json:"messages"`
-	Plan      *string   `json:"plan"`
-	Error     *SQLError `json:"error"`
+	Profile   string   `json:"profile"`
+	Server    string   `json:"server"`
+	Database  string   `json:"database"`
+	ElapsedMS int64    `json:"elapsed_ms"`
+	Columns   []Column `json:"columns"`
+	Rows      []Row    `json:"rows"`
+	RowCount  int      `json:"rowcount"`
+	Truncated bool     `json:"truncated"`
+	// Incomplete means an error cut this set short: its rows are not all of it.
+	Incomplete bool `json:"incomplete"`
+	// MoreResults holds every result set after the first, always an array.
+	MoreResults []ResultSet `json:"more_results"`
+	Messages    []string    `json:"messages"`
+	Plan        *string     `json:"plan"`
+	Error       *SQLError   `json:"error"`
+	// Saved is set on a -saved run only.
+	Saved *SavedRun `json:"saved,omitempty"`
 }
 
 // Row is one result row, keyed by column name.
@@ -50,8 +56,35 @@ func (r Result) MarshalJSON() ([]byte, error) {
 	if out.Rows == nil {
 		out.Rows = []Row{}
 	}
+	if out.MoreResults == nil {
+		out.MoreResults = []ResultSet{}
+	}
 	if out.Messages == nil {
 		out.Messages = []string{}
+	}
+	return json.Marshal(out)
+}
+
+// ResultSet is one result set after the first. The first stays in Result's own
+// columns, rows, rowcount and truncated, so a single-query caller sees nothing new.
+type ResultSet struct {
+	Columns   []Column `json:"columns"`
+	Rows      []Row    `json:"rows"`
+	RowCount  int      `json:"rowcount"`
+	Truncated bool     `json:"truncated"`
+	// Incomplete means an error cut this set short: its rows are not all of it.
+	Incomplete bool `json:"incomplete"`
+}
+
+// MarshalJSON keeps an empty set's columns and rows as arrays, like Result's.
+func (s ResultSet) MarshalJSON() ([]byte, error) {
+	type alias ResultSet
+	out := alias(s)
+	if out.Columns == nil {
+		out.Columns = []Column{}
+	}
+	if out.Rows == nil {
+		out.Rows = []Row{}
 	}
 	return json.Marshal(out)
 }
@@ -79,4 +112,28 @@ func (rs *RowSet) Add(row Row) {
 		return
 	}
 	rs.Rows = append(rs.Rows, row)
+}
+
+// SavedRun says which catalogue entry ran and with what, so the agent cannot
+// report a value other than the one sent. Verified is the state before the run.
+type SavedRun struct {
+	Name     string            `json:"name"`
+	Source   Source            `json:"source"`
+	Path     string            `json:"path"`
+	Params   map[string]string `json:"params"`
+	Defaults []string          `json:"defaults"`
+	Verified *Verified         `json:"verified"`
+}
+
+// MarshalJSON keeps params an object and defaults an array, never null.
+func (r SavedRun) MarshalJSON() ([]byte, error) {
+	type alias SavedRun
+	out := alias(r)
+	if out.Params == nil {
+		out.Params = map[string]string{}
+	}
+	if out.Defaults == nil {
+		out.Defaults = []string{}
+	}
+	return json.Marshal(out)
 }

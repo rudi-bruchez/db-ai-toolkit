@@ -1,7 +1,7 @@
 # Design — catalogue de requêtes `sqlq` (promotion des requêtes ad-hoc en requêtes stockées)
 
 Date : 2026-09-02
-Statut : brainstorming terminé, en attente de relecture avant plan d'implémentation.
+Statut : remplacé par `2026-10-04-query-catalog-design.md`, jamais implémenté.
 Prérequis : le design `2026-09-02-live-query-design.md`, implémenté et relu
 (`docs/reviews/2026-09-02-sqlq-harm-review.md`).
 
