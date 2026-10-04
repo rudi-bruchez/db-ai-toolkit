@@ -3,7 +3,7 @@
 Date : 2026-10-04
 Version : 2.1, après la relecture du panel de la spec (`docs/reviews/2026-10-04-query-catalog-design-panel/`)
 et celle du plan (`docs/reviews/2026-10-04-query-catalog-plan-panel/`).
-Statut : en attente de plan d'implémentation.
+Statut : implémentée sur la branche `feat/query-catalog` (plan du 4 octobre 2026).
 Remplace : `2026-09-02-query-catalog-design.md`, jamais implémenté. Ses décisions sont
 reprises ici quand elles tiennent, et modifiées là où le §14 le dit.
 Prérequis : `2026-09-02-live-query-design.md`, implémenté.
@@ -348,7 +348,10 @@ Une raison nomme un mot-clé, un nom de paramètre et une ligne, jamais un extra
 `-list-queries` part chez le fournisseur du modèle à chaque session (§12, « Ce qui est
 publié »). Une raison ne cite jamais un jeton qui a échoué à la validation : elle donne sa
 position (`unknown marker key at position 3`, `invalid parameter name at position 1 in
-params=`, `invalid name`). Un nom de paramètre qui a passé la validation peut être cité.
+params=`, `invalid name`). Un nom de paramètre qui a passé la validation peut être cité,
+ainsi qu'un nom de type refusé (`type numeric not supported`) ou un mot-clé
+(`CASE in the initializer`) ; un identifiant tiré du SQL ne l'est pas, sa ligne suffit
+(revue finale de branche).
 Règle précisée après la revue de code de la tâche 7, où `name=bk C:\Users\…\secret.xel`
 publiait le chemin dans la raison.
 

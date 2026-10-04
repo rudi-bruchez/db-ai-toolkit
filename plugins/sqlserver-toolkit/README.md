@@ -199,11 +199,13 @@ seconds, within the year range of each type.
 `-file` run under `profiles/<profile>/`. The query runs first; the file is
 written only if it exits `0`, then read back through the catalogue and removed
 if it does not come out as a valid entry. Writing batches are never saved, nor a
-name already present in the profile's view. `sqlq` never writes into the plugin
+name already present in the profile's view, nor a run made with `-database` or
+`-dirty-reads`, which the saved file would not record. `-summary` without
+`-save-query` is refused rather than ignored. `sqlq` never writes into the plugin
 or into tsql-scripts.
 
 `-saved` and `-save-query` refuse with exit code `1` when the bundled directory
-is not found: without the canon, a name cannot be checked against it. Pass
+is not found, unreadable or empty: without the canon, a name cannot be checked against it. Pass
 `-queries <plugin>/skills/live-query/queries` to a binary built elsewhere.
 
 Each successful `-saved` run, and each save, is recorded in the verification

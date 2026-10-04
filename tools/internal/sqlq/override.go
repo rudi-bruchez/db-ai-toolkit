@@ -180,6 +180,9 @@ func parseDeclaredType(rs []rune, lt []Token) (ParamType, int, error) {
 	base := strings.ToLower(lt[i].Text)
 	i++
 	t := ParamType{Base: base}
+	if base != "sysname" && base != "datetime2" && !stringTypes[base] && intRanges[base] == [2]int64{} && !otherTypes[base] {
+		return ParamType{}, 0, fmt.Errorf("type %s not supported", base)
+	}
 	if lt[i].Text == "(" {
 		if i+2 >= len(lt) || lt[i+2].Text != ")" {
 			return ParamType{}, 0, fmt.Errorf("type %s: unsupported length", base)

@@ -367,3 +367,10 @@ func TestOverrideRefusalQuotesNoIdentifier(t *testing.T) {
 		}
 	}
 }
+
+func TestUnsupportedTypeIsNamedBeforeItsLength(t *testing.T) {
+	_, err := AnalyseOverrides("DECLARE @p numeric(5,2) = 1;\nSELECT @p;", []string{"p"})
+	if err == nil || !strings.Contains(err.Error(), "not supported") {
+		t.Errorf("err = %v", err)
+	}
+}

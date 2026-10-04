@@ -144,7 +144,7 @@ func TestNothingIsSavedWhenTheRunFailed(t *testing.T) {
 	t.Setenv("DB_AI_TOOLKIT_QUERIES", q)
 	t.Setenv("DB_AI_TOOLKIT_REGISTRY", filepath.Join(t.TempDir(), "v.json"))
 	o := options{profileName: p.Name, profilesPath: os.Getenv("SQLQ_TEST_PROFILES"), query: "SELECT 1/0 AS x;",
-		saveQuery: "will-fail", summary: "Fails.", maxRows: 5, timeoutSec: 120, queriesDir: t.TempDir()}
+		saveQuery: "will-fail", summary: "Fails.", maxRows: 5, timeoutSec: 120, queriesDir: "../../internal/sqlq/testdata/catalog/bundled"}
 	if _, code := captureRun(t, o); code != exitSQL {
 		t.Fatalf("code %d", code)
 	}
@@ -161,7 +161,7 @@ func TestSaveWritesVerifiedEntry(t *testing.T) {
 	t.Setenv("DB_AI_TOOLKIT_REGISTRY", reg)
 	o := options{profileName: p.Name, profilesPath: os.Getenv("SQLQ_TEST_PROFILES"),
 		query: "SELECT TOP (1) name FROM sys.objects WHERE name LIKE @pattern;", params: paramList{"pattern=sys%"},
-		saveQuery: "objects-like", summary: "Objects matching a pattern.", maxRows: 5, timeoutSec: 120, queriesDir: t.TempDir()}
+		saveQuery: "objects-like", summary: "Objects matching a pattern.", maxRows: 5, timeoutSec: 120, queriesDir: "../../internal/sqlq/testdata/catalog/bundled"}
 	if out, code := captureRun(t, o); code != exitOK {
 		t.Fatalf("code %d: %s", code, out)
 	}
@@ -187,5 +187,15 @@ func TestSaveWritesVerifiedEntry(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("saved entry missing: %s", out)
+	}
+}
+
+func TestLaterErrorsKeepTheirPlaceInMessages(t *testing.T) {
+	p, resolve := testProfile(t)
+	res, _ := execute(p, "PRINT 'p1'; RAISERROR('e16', 16, 1); SELECT 1/0 AS x; PRINT 'p2';", nil,
+		options{maxRows: 50, timeoutSec: 120}, resolve)
+	got := strings.Join(res.Messages, "|")
+	if i, j := strings.Index(got, "error 8134"), strings.Index(got, "p2"); i < 0 || j < 0 || i > j {
+		t.Errorf("messages out of order: %q", res.Messages)
 	}
 }

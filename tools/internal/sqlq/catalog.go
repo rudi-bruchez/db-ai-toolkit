@@ -347,6 +347,7 @@ func (c *Catalog) loadTsqlScripts(cfg CatalogConfig) {
 		e.Hash = ContentHash([]byte(withoutLine(body, h.Marker.Line)))
 		switch {
 		case herr != nil:
+			e.Name, e.nameFromFile = stemName(p), true
 			e.Rejected = herr.Error()
 		case !ValidQueryName(e.Name):
 			e.Name, e.nameFromFile = stemName(p), true

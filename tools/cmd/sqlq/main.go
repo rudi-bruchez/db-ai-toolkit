@@ -162,6 +162,9 @@ type options struct {
 }
 
 func run(o options) int {
+	if err := flagConflicts(o); err != nil {
+		return fail(exitUsage, err)
+	}
 	if o.listQueries {
 		return listQueries(o)
 	}
@@ -279,8 +282,11 @@ func checkSave(o options, profile sqlq.Profile, profileNames []string, sqlText s
 	if o.summary == "" {
 		return "", "", errors.New("-save-query needs -summary")
 	}
-	// The saved file carries the SQL only: a later -saved run would read at
-	// the default isolation and not reproduce this one.
+	// The saved file carries the SQL only: a later -saved run would run in
+	// the profile's database, at the default isolation, and not reproduce this one.
+	if o.database != "" {
+		return "", "", errors.New("-save-query cannot keep a -database run: the saved file would not record it; save it from a profile whose database is the one wanted, or qualify the names in the query")
+	}
 	if o.dirtyReads {
 		return "", "", errors.New("-save-query cannot keep a -dirty-reads run: the saved file would not record it; add SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED to the query instead")
 	}
@@ -456,16 +462,25 @@ func missingQueryError(cat sqlq.Catalog, cfg sqlq.CatalogConfig, name string) er
 	return fmt.Errorf("no query named %q (use -list-queries -profile %s)%s", name, cfg.Profile, also)
 }
 
+// flagConflicts refuses flags that would be silently ignored.
+func flagConflicts(o options) error {
+	if o.summary != "" && o.saveQuery == "" {
+		return errors.New("-summary only goes with -save-query: nothing would be saved")
+	}
+	return nil
+}
+
 // needCanon refuses a catalogue without the bundled queries: in it a personal
 // or tsql-scripts file holding a bundled name is not seen as a collision, and
 // would run, or be saved, in the canon's place.
 func needCanon(cat sqlq.Catalog) error {
-	for _, m := range cat.Messages {
-		if m == sqlq.MsgBundledNotFound {
-			return errors.New("bundled queries not found, so a name cannot be checked against them; pass -queries <plugin>/skills/live-query/queries")
+	for _, e := range cat.Entries {
+		if e.Source == sqlq.SourceBundled {
+			return nil
 		}
 	}
-	return nil
+	// Missing, unreadable or empty: the same blindness to bundled names.
+	return errors.New("bundled queries not found, so a name cannot be checked against them; pass -queries <plugin>/skills/live-query/queries")
 }
 
 // prepareSaved turns a catalogue entry and the -param values into the text to
@@ -661,16 +676,13 @@ func execute(profile sqlq.Profile, sqlText string, args []any, o options,
 	}
 	defer rows.Close()
 
-	sqlErrs, err := collect(ctx, rows, retmsg, &result, o.maxRows)
+	sqlErrs, errSlots, err := collect(ctx, rows, retmsg, &result, o.maxRows)
 	result.ElapsedMS = time.Since(started).Milliseconds()
 	// Errors after the first go to messages, so none is lost; Error keeps the
 	// first, which is the one that explains the others.
-	for i, e := range sqlErrs {
-		if i == 0 {
-			continue
-		}
-		later := sqlError(e, secret)
-		result.Messages = append(result.Messages, fmt.Sprintf("error %d: %s", later.Number, later.Message))
+	for i, slot := range errSlots {
+		later := sqlError(sqlErrs[i+1], secret)
+		result.Messages[slot] = fmt.Sprintf("error %d: %s", later.Number, later.Message)
 	}
 	switch {
 	case err != nil:
@@ -690,7 +702,7 @@ func execute(profile sqlq.Profile, sqlText string, args []any, o options,
 // set still open when an error arrives is marked incomplete: the driver ends
 // it early and cleanly, and its rows would otherwise pass for the whole set.
 func collect(ctx context.Context, rows *sql.Rows, retmsg *sqlexp.ReturnMessage,
-	result *sqlq.Result, maxRows int) (sqlErrs []error, err error) {
+	result *sqlq.Result, maxRows int) (sqlErrs []error, errSlots []int, err error) {
 	first := true
 	open := -1 // the set the server has not closed yet: 0 the first, k MoreResults[k-1]
 	for active := true; active; {
@@ -699,6 +711,11 @@ func collect(ctx context.Context, rows *sql.Rows, retmsg *sqlexp.ReturnMessage,
 			result.Messages = append(result.Messages, m.Message.String())
 		case sqlexp.MsgError:
 			sqlErrs = append(sqlErrs, m.Error)
+			if len(sqlErrs) > 1 {
+				// A slot in arrival order; execute writes the scrubbed text.
+				errSlots = append(errSlots, len(result.Messages))
+				result.Messages = append(result.Messages, "")
+			}
 			switch {
 			case open == 0:
 				result.Incomplete = true
@@ -708,12 +725,12 @@ func collect(ctx context.Context, rows *sql.Rows, retmsg *sqlexp.ReturnMessage,
 		case sqlexp.MsgNext:
 			cols, err := rows.ColumnTypes()
 			if err != nil {
-				return sqlErrs, err
+				return sqlErrs, errSlots, err
 			}
 			if isShowplan(cols) {
 				plan, err := readSingleString(rows)
 				if err != nil {
-					return sqlErrs, err
+					return sqlErrs, errSlots, err
 				}
 				result.Plan = plan
 				continue
@@ -724,7 +741,7 @@ func collect(ctx context.Context, rows *sql.Rows, retmsg *sqlexp.ReturnMessage,
 				columns[i] = sqlq.Column{Name: c.Name(), Type: c.DatabaseTypeName()}
 			}
 			if err := scanAll(rows, cols, set); err != nil {
-				return sqlErrs, err
+				return sqlErrs, errSlots, err
 			}
 			if first {
 				result.Columns, result.Rows = columns, set.Rows
@@ -745,9 +762,9 @@ func collect(ctx context.Context, rows *sql.Rows, retmsg *sqlexp.ReturnMessage,
 	// a failing NextResultSet and surfaces in rows.Err(), but a query cut short
 	// by -timeout must never exit 0 with partial rows if that ever changes.
 	if ctx.Err() != nil {
-		return sqlErrs, ctx.Err()
+		return sqlErrs, errSlots, ctx.Err()
 	}
-	return sqlErrs, rows.Err()
+	return sqlErrs, errSlots, rows.Err()
 }
 
 func scanAll(rows *sql.Rows, cols []*sql.ColumnType, set *sqlq.RowSet) error {

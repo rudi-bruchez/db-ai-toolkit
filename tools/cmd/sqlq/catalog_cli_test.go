@@ -139,7 +139,7 @@ func TestQueryNameRejectsTraversalAndCase(t *testing.T) {
 	saveEnv(t)
 	p := sqlq.Profile{Name: "dev"}
 	for _, name := range []string{"../../x", "Orders", "a", "x/y", "orders_late"} {
-		o := options{saveQuery: name, summary: "S.", queriesDir: t.TempDir()}
+		o := options{saveQuery: name, summary: "S.", queriesDir: "../../internal/sqlq/testdata/catalog/bundled"}
 		if _, _, err := checkSave(o, p, []string{"dev"}, "SELECT 1;"); err == nil {
 			t.Errorf("name %q accepted", name)
 		}
@@ -148,7 +148,7 @@ func TestQueryNameRejectsTraversalAndCase(t *testing.T) {
 
 func TestSaveRefusesAWritingQuery(t *testing.T) {
 	saveEnv(t)
-	o := options{saveQuery: "purge", summary: "S.", queriesDir: t.TempDir(), allowWrite: true}
+	o := options{saveQuery: "purge", summary: "S.", queriesDir: "../../internal/sqlq/testdata/catalog/bundled", allowWrite: true}
 	if _, _, err := checkSave(o, sqlq.Profile{Name: "dev", Mode: sqlq.ModeReadWrite}, []string{"dev"}, "DELETE FROM dbo.T;"); err == nil {
 		t.Error("a writing query was accepted for saving")
 	}
@@ -164,7 +164,7 @@ func TestSaveRefusesAVisibleName(t *testing.T) {
 
 func TestSavedFileThatDoesNotReparseIsRemoved(t *testing.T) {
 	q := saveEnv(t)
-	o := options{saveQuery: "broken", queriesDir: t.TempDir()}
+	o := options{saveQuery: "broken", queriesDir: "../../internal/sqlq/testdata/catalog/bundled"}
 	path := filepath.Join(q, "profiles", "dev", "broken.sql")
 	// Content without a header cannot read back as a valid entry, and neither
 	// can a valid header over a body the loader refuses: SavedFileContent
@@ -195,7 +195,7 @@ func TestSavedFileThatDoesNotReparseIsRemoved(t *testing.T) {
 
 func TestSaveRequiresSummary(t *testing.T) {
 	saveEnv(t)
-	o := options{saveQuery: "orders-late", queriesDir: t.TempDir()}
+	o := options{saveQuery: "orders-late", queriesDir: "../../internal/sqlq/testdata/catalog/bundled"}
 	if _, _, err := checkSave(o, sqlq.Profile{Name: "dev"}, []string{"dev"}, "SELECT 1;"); err == nil || !strings.Contains(err.Error(), "-summary") {
 		t.Errorf("err = %v", err)
 	}
@@ -219,7 +219,7 @@ func TestSavedNeedsTheCanon(t *testing.T) {
 
 func TestSaveRefusesADirtyReadsRun(t *testing.T) {
 	saveEnv(t)
-	o := options{saveQuery: "orders-late", summary: "Late orders.", dirtyReads: true, queriesDir: t.TempDir()}
+	o := options{saveQuery: "orders-late", summary: "Late orders.", dirtyReads: true, queriesDir: "../../internal/sqlq/testdata/catalog/bundled"}
 	if _, _, err := checkSave(o, sqlq.Profile{Name: "dev"}, []string{"dev"}, "SELECT 1;"); err == nil || !strings.Contains(err.Error(), "-dirty-reads") {
 		t.Errorf("err = %v", err)
 	}
@@ -232,12 +232,36 @@ func TestSaveRefusesASymlinkedProfileDir(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(q, "profiles", "dev")); err != nil {
 		t.Skip(err)
 	}
-	o := options{saveQuery: "orders-late", summary: "S.", queriesDir: t.TempDir()}
+	o := options{saveQuery: "orders-late", summary: "S.", queriesDir: "../../internal/sqlq/testdata/catalog/bundled"}
 	path := filepath.Join(q, "profiles", "dev", "orders-late.sql")
 	if err := writeSavedQuery(o, sqlq.Profile{Name: "dev"}, []string{"dev"}, path, "/* S.\n*/\nSELECT 1;\n"); err == nil {
 		t.Error("saved through a symlinked profile directory")
 	}
 	if _, err := os.Stat(filepath.Join(outside, "orders-late.sql")); !os.IsNotExist(err) {
 		t.Errorf("a file was written outside the personal root: %v", err)
+	}
+}
+
+func TestSavedNeedsAReadableNonEmptyCanon(t *testing.T) {
+	empty := t.TempDir()
+	if err := needCanon(sqlq.LoadCatalog(sqlq.CatalogConfig{BundledDir: empty})); err == nil {
+		t.Error("an empty bundled directory passed for the canon")
+	}
+}
+
+func TestSaveRefusesADatabaseRun(t *testing.T) {
+	saveEnv(t)
+	o := options{saveQuery: "orders-late", summary: "Late orders.", database: "tempdb", queriesDir: "../../internal/sqlq/testdata/catalog/bundled"}
+	if _, _, err := checkSave(o, sqlq.Profile{Name: "dev"}, []string{"dev"}, "SELECT 1;"); err == nil || !strings.Contains(err.Error(), "-database") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+func TestSummaryWithoutSaveQueryIsRefused(t *testing.T) {
+	if err := flagConflicts(options{summary: "S.", query: "SELECT 1"}); err == nil {
+		t.Error("-summary without -save-query accepted")
+	}
+	if err := flagConflicts(options{summary: "S.", saveQuery: "x"}); err != nil {
+		t.Errorf("-summary with -save-query refused: %v", err)
 	}
 }
