@@ -155,3 +155,27 @@ func TestFindContextChangesLeavesOrdinaryReadsAlone(t *testing.T) {
 		}
 	}
 }
+
+// SQL Server ends a -- comment at a lone CR and a number at its last digit; a
+// guard that cuts text otherwise lets a write through.
+func TestFindWritesCutsTextLikeTheServer(t *testing.T) {
+	for _, sql := range []string{
+		"SELECT 1 AS a -- c\rDELETE FROM dbo.t",
+		"SELECT 1DELETE FROM dbo.t",
+		"SELECT 1.5DELETE FROM dbo.t",
+		"SELECT 1e5DELETE FROM dbo.t",
+		"SELECT 1eDELETE FROM dbo.t",
+		"SELECT 0x1FUPDATE dbo.t SET c = 1",
+		"SELECT $1DELETE FROM dbo.t",
+	} {
+		if len(FindWrites(sql)) == 0 {
+			t.Errorf("FindWrites(%q) found nothing", sql)
+		}
+	}
+	// A word that only contains digits stays whole: no false refusal.
+	for _, sql := range []string{"SELECT create_date, x1delete FROM sys.objects", "SELECT $PARTITION.pf(1)"} {
+		if v := FindWrites(sql); len(v) != 0 {
+			t.Errorf("FindWrites(%q) = %+v; want none", sql, v)
+		}
+	}
+}
