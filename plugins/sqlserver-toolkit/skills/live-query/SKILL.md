@@ -136,7 +136,7 @@ sqlq -profile <name> -query "<sql>" -database Other # override the profile's dat
 sqlq -profile <name> -query "<sql>" -timeout 120   # default is 30 seconds
 sqlq -list-queries -profile <name>                 # the catalogue for this profile
 sqlq -profile <name> -saved tables-largest -maxrows 20
-sqlq -profile <name> -saved sessions-from-host -param hostname=SRV-APP01 -maxrows 50
+sqlq -profile <name> -saved sessions-by-host -param hostname=SRV-APP01 -maxrows 50
 sqlq -profile <name> -query "<sql>" -save-query orders-late -summary "Orders past their promised date."
 ```
 
