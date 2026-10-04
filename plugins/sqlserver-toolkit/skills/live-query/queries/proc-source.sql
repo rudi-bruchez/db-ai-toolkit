@@ -13,6 +13,9 @@
 
     The parameter list is built with FOR XML PATH rather than STRING_AGG so
     this works before SQL Server 2017.
+
+    To judge whether a procedure is well written, work the procedure checklist
+    in references/review-checklists.md against the definition this returns.
 */
 SELECT
     SCHEMA_NAME(o.schema_id)      AS [schema_name],

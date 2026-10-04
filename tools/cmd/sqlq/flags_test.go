@@ -29,8 +29,9 @@ func TestEveryFlagIsDocumented(t *testing.T) {
 		}
 		fs.VisitAll(func(f *flag.Flag) {
 			// \b so that -profile is not considered documented by a mention
-			// of -profiles.
-			if !regexp.MustCompile(`-` + regexp.QuoteMeta(f.Name) + `\b`).Match(text) {
+			// of -profiles, and no word character or hyphen before the dash so
+			// that -queries is not considered documented by -list-queries.
+			if !regexp.MustCompile(`(^|[^\w-])-` + regexp.QuoteMeta(f.Name) + `\b`).Match(text) {
 				t.Errorf("flag -%s is not documented in %s", f.Name, doc)
 			}
 		})
