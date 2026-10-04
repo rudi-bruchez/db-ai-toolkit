@@ -126,6 +126,10 @@ sqlq -profile prod-erp -file queries/tables-largest.sql
 sqlq -profile prod-erp -file queries/object-references.sql -param name=dbo.Orders
 sqlq -profile prod-erp -query "<sql>" -plan
 sqlq -profile prod-erp -query "<sql>" -database Other -timeout 120
+sqlq -list-queries -profile prod-erp
+sqlq -profile prod-erp -saved tables-largest -maxrows 20
+sqlq -profile prod-erp -saved sessions-from-host -param hostname=SRV-APP01 -maxrows 50
+sqlq -profile prod-erp -query "<sql>" -save-query orders-late -summary "Orders past their promised date."
 ```
 
 `-database` overrides the profile's database for one run. `-timeout` (default 30
@@ -136,13 +140,88 @@ Exit codes: `0` success, `1` usage or configuration, `2` SQL error, `3` refused
 by the write guard, `4` connection failure. The JSON goes to stdout in every
 case, so a caller never has two formats to parse.
 
+A batch can return several result sets. The first fills `columns`, `rows`,
+`rowcount` and `truncated`; every later one goes to `more_results`, each as
+`{columns, rows, rowcount, truncated, incomplete}`, with `-maxrows` applied to
+each. `incomplete: true` (on the top level for the first set) means an error cut
+that set short, so its rows are not the whole set. `error` keeps the first SQL
+error and the exit code stays `2`; later errors go to `messages` as
+`error <n>: <text>`. `messages` also carries `PRINT` and low-severity
+`RAISERROR` output, in the order the server sent it. With `-plan` and several
+statements, only the last statement's plan is kept.
+
+### Query catalogue
+
+Stored queries are run by name, so a question already answered once is not
+rewritten from scratch. `sqlq -list-queries` prints the catalogue as JSON; with
+`-profile`, it adds the queries saved for that profile. The catalogue reads
+three sources:
+
+| Source | Location | Name |
+|---|---|---|
+| `bundled` | `skills/live-query/queries/*.sql`, found next to the binary | the file name |
+| `personal` | `~/.config/db-ai-toolkit/queries/_generic/*.sql`, and `profiles/<profile>/*.sql` for one profile | the file name |
+| `tsql-scripts` | a local clone of tsql-scripts, walked recursively, `.git/` excluded | the `name=` of its `-- sqlq:` marker line |
+
+The tsql-scripts clone is named by `-tsql-scripts <dir>`, or else by
+`$DB_AI_TOOLKIT_TSQL_SCRIPTS`; there is no guessed default. When it is not set
+or not found, the catalogue says so in `messages`, so that a missing source is
+not mistaken for an empty one. `-queries <dir>` replaces the bundled directory,
+for development outside the plugin. A bundled name wins a collision with
+another source; between two other sources, every entry holding the name is
+rejected. Only scripts carrying a marker enter the catalogue, and only the
+user adds one.
+
+Every catalogue file is listed, either as an entry or as `rejected` with a
+reason (a guard refusal such as `batch separator GO at line 9`, an invalid or
+duplicate marker, a missing summary, a parameter that cannot be overridden). No
+file disappears in silence. A reason names a keyword, a parameter or a line,
+never an excerpt of the file, because the catalogue reaches the model provider
+in every session; for the same reason it prints paths relative to their source
+and no parameter default.
+
+`-saved <name>` runs an entry, with its values given as `-param name=value`.
+The result gains a `saved` object naming the entry, the values passed, the
+parameters left at their default, and its verification state before the run;
+the catalogue's own messages are copied into `messages`. A bundled or personal
+parameter is required and bound as `nvarchar`. A tsql-scripts parameter
+replaces the initial value of its `DECLARE`, bound as a typed value and never
+spliced into the text. That is accepted only on a standalone line
+`DECLARE @p <type> = <one expression>;` (or `AS <type>`), with no `IF`,
+`ELSE`, `WHILE`, `BEGIN`, `GOTO` or label before it, where the variable is never
+assigned again and its name is ASCII; otherwise the entry is rejected. The value
+is checked against the type before connecting: string length and ASCII for
+`varchar`, integer range, `bit` as `0`, `1`, `true` or `false`, dates as
+`YYYY-MM-DD` and date-times as `YYYY-MM-DDTHH:MM[:SS]` without fractional
+seconds, within the year range of each type.
+
+`-save-query <name> -summary "<one line>"` saves a successful `-query` or
+`-file` run under `profiles/<profile>/`. The query runs first; the file is
+written only if it exits `0`, then read back through the catalogue and removed
+if it does not come out as a valid entry. Writing batches are never saved, nor a
+name already present in the profile's view. `sqlq` never writes into the plugin
+or into tsql-scripts.
+
+`-saved` and `-save-query` refuse with exit code `1` when the bundled directory
+is not found: without the canon, a name cannot be checked against it. Pass
+`-queries <plugin>/skills/live-query/queries` to a binary built elsewhere.
+
+Each successful `-saved` run, and each save, is recorded in the verification
+registry, `~/.config/db-ai-toolkit/verified.json`, keyed by the SHA-256 of the
+content. The catalogue shows `verified` (date and profile) only while the file
+is unchanged, and `null` otherwise. The registry and the personal queries are
+local to the machine. `$DB_AI_TOOLKIT_QUERIES` moves the personal directory and
+`$DB_AI_TOOLKIT_REGISTRY` the registry file: both are entry points for tests and
+development.
+
 ### Known limits
 
-- `messages` is always empty: `PRINT` and `RAISERROR` below severity 11 are not
-  captured yet. Doing so needs the `sqlexp` message loop, which restructures the
-  execution path.
-- Only the first result set is returned; extra sets are drained, except a
-  showplan, which lands in `plan`.
+- A tsql-scripts parameter can only override a one-line `DECLARE` of a simple
+  type. A marked script using `GO`, a temporary table or `EXEC` is listed as
+  `rejected`: the guard is not relaxed for the catalogue.
+- The verification registry attests that a content ran successfully, not that
+  its answer is right. It is not synchronised between machines, and two runs
+  finishing at the same instant can lose one entry.
 - The binary is ~15 MB because Entra ID support pulls in the Azure identity
   libraries.
 

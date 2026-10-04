@@ -25,6 +25,9 @@
 
     parent_class = 1 restricts this to triggers on tables and views. DDL and
     logon triggers live elsewhere; query sys.server_triggers for those.
+
+    Then read the flagged definitions against the trigger checklist in
+    references/review-checklists.md.
 */
 SELECT
     OBJECT_SCHEMA_NAME(t.parent_id)  AS [parent_schema],

@@ -40,25 +40,90 @@ JSON object.
 
    A profile marked `"unusable"` cannot run here — a DPAPI-backed profile on a
    non-Windows machine. Say so; do not try it.
-3. **Route the question** using the decision tree below.
+3. **Route the question.** Run `sqlq -list-queries -profile <name>`. Prefer a
+   catalogue entry to writing SQL: see "The query catalogue" below.
 4. **Answer from the JSON.** Quote the values the server returned. If
-   `truncated` is `true`, say so and give the real `rowcount`.
+   `truncated` is `true`, say so and give the real `rowcount`. If
+   `more_results` is not empty, read every set before concluding.
 
-## Decision tree
+## The query catalogue
+
+`sqlq -list-queries -profile <name>` prints every stored query this profile can
+run, from three sources:
+
+| Source | Where the file is (`path` is relative to it) |
+|---|---|
+| `bundled` | `${CLAUDE_PLUGIN_ROOT}/skills/live-query/queries/<path>` |
+| `tsql-scripts` | `$DB_AI_TOOLKIT_TSQL_SCRIPTS/<path>`, the user's local clone |
+| `personal` | `~/.config/db-ai-toolkit/queries/<path>` (`_generic/` or `profiles/<profile>/`) |
+
+Call it once the profile is chosen: without `-profile`, the queries saved for
+that profile are not shown. Its `messages` say when a source is missing
+(`tsql-scripts source not configured`, `bundled queries not found`): a missing
+source is not an empty one, so do not conclude that no stored query exists.
+
+Every catalogue file is either listed or listed as `rejected` with a reason;
+none disappears in silence.
+
+| Field | What it requires of you |
+|---|---|
+| `verified: null` | Never run with `sqlq` on this machine in its current form. Say so before running it. Otherwise it gives the date and profile of the last success, which proves the SQL ran, not that its answer is right. |
+| `rejected` | **Do not run it, and do not rewrite the script as an ad-hoc query to get around the refusal.** Report the reason; the fix belongs to the user, in the source file. |
+| `dirty_reads: true` | The query reads uncommitted data (`NOLOCK`, `READ UNCOMMITTED`). **Never rely on its result to answer a question about whether data is correct.** |
+| `heavy: true` | Expensive by its author's judgement. **On a `prod` profile, announce the cost and wait for a yes**, even if the session was already confirmed. |
+| `params` | Pass each with `-param name=value`. A `bundled` or `personal` parameter has no default: all are required. A `tsql-scripts` parameter carries its declared type and keeps the file's default when not passed; the default itself is in the file's header, not in the catalogue. |
+
+**Before the first run of a catalogue query in a session, read its header**, at
+the location in the table above. That is where its warnings live: which column
+to read, which `-maxrows` keeps it whole, which checklist in
+`references/review-checklists.md` or `references/missing-index-reading.md`
+comes next. A `tsql-scripts` header is the block of `--` lines that opens the
+file.
+
+**Always pass `-maxrows` to a catalogue query.** The `TOP (n)` rule below is for
+the SQL you write; for a stored query its author answers for the size of the
+result, and `-maxrows` stays the safety net.
 
 | The user asks | Do this |
 |---|---|
-| Largest tables, space used | `-file queries/tables-largest.sql` |
-| What references this table/object | `-file queries/object-references.sql -param name=<object>` — **read the warning in that file about dynamic SQL** |
-| Why a view returns wrong or missing rows | `-file queries/view-diagnose.sql -param name=<view>`, then work the view checklist in `references/review-checklists.md` |
-| Is this procedure well written | `-file queries/proc-source.sql -param name=<proc>`, then the procedure checklist |
-| Are there badly built triggers | `-file queries/triggers-inventory.sql`, then the trigger checklist |
-| Is the blocked process trace configured and running | `-file queries/blocked-processes-check.sql`. Answer from `instance_state`, not from the rows, and read the file's header first: OK means configured and running, not that reports are being written; only Extended Events are checked; a "pending" reason is not a cue to run `RECONFIGURE`; and how to cover an availability group |
-| Which indexes are missing in this database | `-file queries/missing-indexes.sql -database <db> -maxrows 70`, then follow `references/missing-index-reading.md`. Read the file's header first. Never paste a suggestion as `CREATE INDEX`, never recommend dropping an index from this result |
-| Why is this query slow | Run it with `-plan`, then hand the `plan` field to the `sqlserver-query-plans` plugin. Do not analyse showplan XML by hand here. |
-| Anything else | Write the query yourself, but keep the output discipline below |
+| Why is this query slow | Run it with `-plan`, then hand the `plan` field to the `sqlserver-query-plans` plugin. Do not analyse showplan XML by hand here. With several statements, only the last statement's plan is kept: run the slow one alone. |
+| Anything no catalogue entry answers | Write the query yourself, but keep the output discipline below. |
 
-Bundled queries live in `${CLAUDE_PLUGIN_ROOT}/skills/live-query/queries/`.
+After an ad-hoc query that succeeded and proved useful, offer in one line to
+save it: `-save-query <name> -summary "<one line>"`. **Never save without the
+user's explicit yes.** Saving is a run: the file is written only if the run
+succeeds, and it is saved for this profile only. Keep clients, hosts and
+databases out of the name and the summary: the catalogue is printed in every
+session.
+
+### Parameters of a tsql-scripts entry
+
+A `tsql-scripts` value replaces the initial value of a `DECLARE` in the script,
+bound as a typed parameter, never spliced into the text. `sqlq` checks it before
+connecting: a value too long for its `nvarchar(n)` or `varchar(n)`, non-ASCII
+text for a `varchar`, an integer outside its type's range, a `bit` other than
+`0`, `1`, `true`, `false`, is refused with exit code `1`. Dates are
+`YYYY-MM-DD`, and date-times `YYYY-MM-DDTHH:MM[:SS]` (`smalldatetime`: minutes
+only), never with fractional seconds, and within the type's year range (from
+`0001` for `date` and `datetime2`, from `1753-01-01` for `datetime`,
+`1900-01-01` to `2079-06-06` for `smalldatetime`). A `-param` the entry does
+not declare is refused: a typo must not silently run the default.
+
+A `rejected` reason on a tsql-scripts entry usually names one of these rules,
+which the user applies in the clone:
+
+- The marker is one line in the header (the `--` lines opening the file):
+  `-- sqlq: name=<name> params=<a>,<b> heavy`. `name=` is required, `params=`
+  and `heavy` are optional; any other key, a repeated parameter, a second
+  marker or one below the header is rejected.
+- The summary is the nearest non-empty comment line above the marker that is
+  not only dashes and not a URL. None: rejected.
+- A parameter is accepted only on a standalone line
+  `DECLARE @p <type> = <one expression>;` (or `DECLARE @p AS <type> = ...;`),
+  nothing else on the line, no `IF`, `ELSE`, `WHILE`, `BEGIN`, `GOTO` or label
+  before it in the script, never assigned again in the script, its name ASCII letters, digits and `_`. Types:
+  `nvarchar`, `nchar`, `sysname`, `varchar`, `char`, the integer types, `bit`,
+  `date`, `datetime`, `datetime2`, `smalldatetime`.
 
 ## Calling sqlq
 
@@ -69,19 +134,46 @@ sqlq -profile <name> -file <path> -param name=dbo.Orders -maxrows 100
 sqlq -profile <name> -query "<sql>" -plan          # capture the actual execution plan
 sqlq -profile <name> -query "<sql>" -database Other # override the profile's database
 sqlq -profile <name> -query "<sql>" -timeout 120   # default is 30 seconds
+sqlq -list-queries -profile <name>                 # the catalogue for this profile
+sqlq -profile <name> -saved tables-largest -maxrows 20
+sqlq -profile <name> -saved sessions-from-host -param hostname=SRV-APP01 -maxrows 50
+sqlq -profile <name> -query "<sql>" -save-query orders-late -summary "Orders past their promised date."
 ```
+
+Two flags move the catalogue's sources, for development and for a local clone:
+`-queries <dir>` replaces the bundled directory (found next to the binary by
+default), and `-tsql-scripts <dir>` names the tsql-scripts clone instead of
+`$DB_AI_TOOLKIT_TSQL_SCRIPTS`. When the bundled directory is not found,
+`-saved` and `-save-query` refuse with exit code `1` (`bundled queries not
+found`): without the canon, a name cannot be checked against it. Pass
+`-queries <plugin>/skills/live-query/queries` in that case.
 
 Every run prints one JSON object, on success and on failure alike:
 
 ```json
 {"profile":"prod-erp","server":"SRV01","database":"ERP","elapsed_ms":42,
  "columns":[{"name":"n","type":"INT"}],"rows":[{"n":1}],
- "rowcount":1,"truncated":false,"messages":[],"plan":null,"error":null}
+ "rowcount":1,"truncated":false,"incomplete":false,"more_results":[],
+ "messages":[],"plan":null,"error":null,
+ "saved":{"name":"tables-largest","source":"bundled","path":"tables-largest.sql",
+          "params":{},"defaults":[],"verified":null}}
 ```
+
+- `more_results` holds every result set after the first, each as
+  `{columns, rows, rowcount, truncated, incomplete}`; `-maxrows` applies to each.
+- `incomplete: true`, on the top level or on a set, means an error cut that set
+  short: its rows are not the whole set. Never report them as complete.
+- `messages` carries the server's `PRINT` and low-severity `RAISERROR` output,
+  in order, plus what `sqlq` itself has to say: on a `-saved` run, the
+  catalogue's own messages (a missing tsql-scripts source, a disabled personal
+  layer) are copied here.
+- `saved` appears on a `-saved` run only: which entry ran, the `params` you
+  passed, the `defaults` left untouched, and `verified` as it was before the run.
 
 On failure, `error` carries `{number, severity, state, line, procedure,
 message}`. Quote the error number and line — that is what makes a SQL Server
-error diagnosable.
+error diagnosable. `error` keeps the first SQL error; later ones are in
+`messages` as `error <n>: <text>`, and the sets read before the error are kept.
 
 Exit codes: `0` success, `1` usage or configuration, `2` SQL error,
 `3` refused by the write guard, `4` connection failure.
@@ -187,7 +279,9 @@ means Kerberos, and the profile must supply `krb5Realm` plus one of
 
 ## Known limits
 
-- `messages` is always empty: `PRINT` and `RAISERROR` output below severity 11
-  is not captured yet.
-- Only the first result set is returned. Extra result sets are drained, except a
-  showplan, which lands in `plan`.
+- The verification registry and the personal queries belong to this machine;
+  nothing synchronises them.
+- A tsql-scripts parameter can only override a one-line `DECLARE` of a simple
+  type. Placeholders such as `<database>` and hard-coded object names are not
+  adjustable until the script is converted.
+- With `-plan`, only the last statement's plan is kept.
