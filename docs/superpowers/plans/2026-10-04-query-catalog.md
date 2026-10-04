@@ -97,7 +97,9 @@ Files :
 - Create : `tools/internal/sqlq/refusals.go`, `tools/internal/sqlq/refusals_test.go`
 - Modify : `tools/internal/sqlq/bundled_queries_test.go` (supprimer la fonction locale
   `refusals` et `TestRefusalsCatchesWhatSqlqRefuses`, appeler `Refusals`)
-- Modify : `tools/cmd/sqlq/main.go:178-221` (les trois contrôles appellent `Refusals`)
+- Modify : `tools/internal/sqlq/missing_indexes_query_test.go:20-22` (même remplacement)
+- Modify : `tools/cmd/sqlq/main.go:178-221` (les trois contrôles deviennent `guard()`)
+- Create : `tools/cmd/sqlq/guard_test.go`
 
 Interfaces :
 - Consumes : `Sanitize`, `FindWrites`, `FindContextChanges`, `FindBatchSeparators`,
@@ -111,6 +113,7 @@ Interfaces :
     écriture, contexte, séparateur.
   - `func (r Refusal) Reason() string` : `write keyword EXEC at line 12`, `USE at line 1`,
     `batch separator GO at line 9`. Jamais d'extrait de texte.
+  - dans `cmd/sqlq` : `func guard(sqlText string, profile sqlq.Profile, allowWrite bool) (int, error)`
 
 - [ ] Step 1 : écrire les tests qui échouent
 
@@ -369,23 +372,113 @@ Dans `bundled_queries_test.go`, remplacer l'appel `refusals(string(body))` par :
 ```
 
 et supprimer la fonction `refusals` et `TestRefusalsCatchesWhatSqlqRefuses` (remplacée par
-`TestRefusalsAgreeWithTheGuards`). Retirer l'import `fmt` et `strings` s'ils ne servent
+`TestRefusalsAgreeWithTheGuards`). `missing_indexes_query_test.go` appelle aussi
+`refusals` : y remplacer les lignes 20 à 22 par
+
+```go
+	if r := Refusals(string(body)); len(r) > 0 {
+		t.Fatalf("sqlq would refuse the query: %s", r[0].Reason())
+	}
+``` Retirer l'import `fmt` et `strings` s'ils ne servent
 plus.
 
-Dans `main.go`, remplacer les trois blocs `FindWrites` / `FindContextChanges` /
-`FindBatchSeparators` de `run` par une boucle sur `sqlq.Refusals(sqlText)` qui garde
-exactement les messages, l'ordre et les codes actuels : écriture (`exitRefused`, sauf
-profil `readwrite` avec `-allow-write`), contexte (`exitRefused`), séparateur
-(`exitUsage`). Les messages gardent `truncate(r.Statement, 120)` comme aujourd'hui : ils
-répondent à l'appelant d'une requête qu'il vient d'écrire, pas au catalogue.
+Dans `main.go`, ajouter `guard` et remplacer, dans `run`, les trois blocs qui vont du
+commentaire « Writing takes two independent yeses » jusqu'à la fin du bloc
+`FindBatchSeparators` (lignes 178 à 221 aujourd'hui) par :
+
+```go
+	if code, err := guard(sqlText, profile, o.allowWrite); err != nil {
+		return fail(code, err)
+	}
+```
+
+```go
+// guard applies sqlq's three refusals in their historical order and returns the
+// exit code and message of the first that applies. The messages quote the
+// statement: they answer the caller of a batch it just wrote, never the catalogue.
+func guard(sqlText string, profile sqlq.Profile, allowWrite bool) (int, error) {
+	for _, r := range sqlq.Refusals(sqlText) {
+		switch r.Kind {
+		case sqlq.RefusalWrite:
+			// Writing takes two independent yeses: the profile must permit it,
+			// and this invocation must intend it.
+			switch {
+			case profile.ReadOnly():
+				return exitRefused, fmt.Errorf(
+					"profile %q is read-only and this batch would write: statement %q uses %s",
+					profile.Name, truncate(r.Statement, 120), r.Keyword)
+			case !allowWrite:
+				return exitRefused, fmt.Errorf(
+					"this batch would write (statement %q uses %s) and profile %q permits it, but "+
+						"-allow-write was not given; pass it only once the user has confirmed the write",
+					truncate(r.Statement, 120), r.Keyword, profile.Name)
+			}
+		case sqlq.RefusalContext:
+			return exitRefused, fmt.Errorf(
+				"%s changes the database for the rest of the batch, so the reported database "+
+					"would no longer be the one queried: statement %q. Select the database with "+
+					"-database, or name it in the object (Other.dbo.T).",
+				r.Keyword, truncate(r.Statement, 120))
+		case sqlq.RefusalSeparator:
+			return exitUsage, fmt.Errorf(
+				"GO is a client batch separator, not T-SQL (line %d). Send one batch per call.", r.Line)
+		}
+	}
+	return exitOK, nil
+}
+```
+
+Garder au-dessus de `guard` les commentaires explicatifs des trois blocs supprimés (pourquoi
+`USE` est refusé, pourquoi `GO` est refusé plutôt que découpé) : ils documentent des
+décisions et doivent survivre au déplacement.
+
+Ajouter `tools/cmd/sqlq/guard_test.go` :
+
+```go
+package main
+
+import (
+	"testing"
+
+	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/sqlq"
+)
+
+// The refactoring must not change a single exit code of the existing command.
+func TestGuardKeepsExitCodes(t *testing.T) {
+	ro := sqlq.Profile{Name: "ro"}
+	rw := sqlq.Profile{Name: "rw", Mode: sqlq.ModeReadWrite}
+	cases := []struct {
+		name  string
+		sql   string
+		p     sqlq.Profile
+		allow bool
+		want  int
+	}{
+		{"read", "SELECT 1;", ro, false, exitOK},
+		{"write on readonly", "DELETE FROM dbo.T;", ro, true, exitRefused},
+		{"write without -allow-write", "DELETE FROM dbo.T;", rw, false, exitRefused},
+		{"write allowed", "DELETE FROM dbo.T;", rw, true, exitOK},
+		{"use", "USE tempdb;", ro, false, exitRefused},
+		{"go", "SELECT 1;\nGO\n", ro, false, exitUsage},
+		{"write allowed then go", "DELETE FROM dbo.T;\nGO\n", rw, true, exitUsage},
+	}
+	for _, c := range cases {
+		code, err := guard(c.sql, c.p, c.allow)
+		if code != c.want || (code == exitOK) != (err == nil) {
+			t.Errorf("%s: code %d err %v, want %d", c.name, code, err, c.want)
+		}
+	}
+}
+```
 
 - [ ] Step 4 : vérifier que tout passe
 
-Run : `cd tools && go test ./internal/sqlq -run '^(TestLex|TestRefusals|TestBundledQueriesPassTheReadOnlyGuard)' -count=1 -v`
-Expected : `TestLexTracksLineOffsetAndDepth`, `TestRefusalsGiveKeywordAndLine`,
-`TestRefusalsAgreeWithTheGuards` et `TestBundledQueriesPassTheReadOnlyGuard` (avec ses
-7 sous-tests) passent. Exactement 4 tests de premier niveau ; tout autre nombre veut dire
-que le filtre ou le travail est faux.
+Run : `cd tools && go test ./internal/sqlq -run '^(TestLexTracksLineOffsetAndDepth|TestRefusalsGiveKeywordAndLine|TestRefusalsAgreeWithTheGuards|TestBundledQueriesPassTheReadOnlyGuard)$' -count=1 -v`
+Expected : ces 4 tests de premier niveau passent (`TestBundledQueriesPassTheReadOnlyGuard`
+avec ses 7 sous-tests). Tout autre nombre veut dire que le filtre ou le travail est faux.
+
+Puis : `cd tools && go test ./cmd/sqlq -run '^TestGuardKeepsExitCodes$' -count=1 -v`, 1 test
+`PASS`.
 
 Puis : `cd tools && go test ./... -count=1 && go vet ./...`, tout vert.
 
@@ -400,7 +493,8 @@ les trois autres restent verts. « 3 sur 4 » est le succès de cette étape. Re
 ```bash
 git add tools/internal/sqlq/lex.go tools/internal/sqlq/lex_test.go \
         tools/internal/sqlq/refusals.go tools/internal/sqlq/refusals_test.go \
-        tools/internal/sqlq/bundled_queries_test.go tools/cmd/sqlq/main.go
+        tools/internal/sqlq/bundled_queries_test.go tools/internal/sqlq/missing_indexes_query_test.go \
+        tools/cmd/sqlq/main.go tools/cmd/sqlq/guard_test.go
 git commit -m "refactor(sqlq): one Refusals() for main, the tests and the catalogue" -m "The bundled-query test copied the order of main.go's three guards, so a fourth refusal added to main.go would have let a bundled query pass its test and fail in front of an instance. The catalogue needs the same answer with a line number and no statement text, because it prints refusal reasons on every session. A lexer that keeps operators and parenthesis depth comes with it, since the parameter analyses need both."
 ```
 
@@ -455,6 +549,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -481,6 +576,10 @@ func testProfile(t *testing.T) (sqlq.Profile, sqlq.SecretResolver) {
 	if !p.ReadOnly() {
 		t.Fatalf("profile %q must be readonly for the integration tests", name)
 	}
+	// Never the user's real layers: no clone, a throwaway registry and query dir.
+	t.Setenv("DB_AI_TOOLKIT_TSQL_SCRIPTS", "")
+	t.Setenv("DB_AI_TOOLKIT_REGISTRY", filepath.Join(t.TempDir(), "verified.json"))
+	t.Setenv("DB_AI_TOOLKIT_QUERIES", t.TempDir())
 	r := sqlq.NewResolver(os.Getenv, "", func(string) {})
 	return p, r.Resolve
 }
@@ -488,7 +587,7 @@ func testProfile(t *testing.T) (sqlq.Profile, sqlq.SecretResolver) {
 func TestEveryResultSetIsReturned(t *testing.T) {
 	p, resolve := testProfile(t)
 	res, code := execute(p, "SELECT 1 AS a; SELECT 2 AS b UNION ALL SELECT 3;", nil,
-		options{maxRows: 1, timeoutSec: 30}, resolve)
+		options{maxRows: 1, timeoutSec: 120}, resolve)
 	if code != exitOK || res.Error != nil {
 		t.Fatalf("code %d, error %+v", code, res.Error)
 	}
@@ -507,7 +606,7 @@ func TestEveryResultSetIsReturned(t *testing.T) {
 func TestMessagesAreCaptured(t *testing.T) {
 	p, resolve := testProfile(t)
 	res, code := execute(p, "PRINT 'hello from print'; RAISERROR('low severity', 10, 1); SELECT 1 AS a;", nil,
-		options{maxRows: 50, timeoutSec: 30}, resolve)
+		options{maxRows: 50, timeoutSec: 120}, resolve)
 	if code != exitOK {
 		t.Fatalf("code %d, error %+v", code, res.Error)
 	}
@@ -520,7 +619,7 @@ func TestMessagesAreCaptured(t *testing.T) {
 func TestErrorAfterFirstSetKeepsRows(t *testing.T) {
 	p, resolve := testProfile(t)
 	res, code := execute(p, "SELECT 1 AS a; SELECT 1/0 AS b;", nil,
-		options{maxRows: 50, timeoutSec: 30}, resolve)
+		options{maxRows: 50, timeoutSec: 120}, resolve)
 	if code != exitSQL || res.Error == nil || res.Error.Number != 8134 {
 		t.Fatalf("want exit 2 with error 8134, got %d %+v", code, res.Error)
 	}
@@ -530,25 +629,22 @@ func TestErrorAfterFirstSetKeepsRows(t *testing.T) {
 }
 ```
 
-Préparer l'instance de test et lancer, dans la même invocation du shell (l'état ne survit
-pas d'un appel à l'autre) :
+Lancer, dans une seule invocation du shell (l'état ne survit pas d'un appel à l'autre) :
 
 ```bash
 cd tools && \
-podman start dbai-catalog-test >/dev/null 2>&1 || podman run -d --name dbai-catalog-test \
-  -e ACCEPT_EULA=Y -e MSSQL_SA_PASSWORD="$DBAI_TEST_SA_PASSWORD" -p 11544:1433 \
-  mcr.microsoft.com/mssql/server:2025-latest >/dev/null && \
-until podman exec dbai-catalog-test /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa \
-  -P "$DBAI_TEST_SA_PASSWORD" -Q "SELECT 1" >/dev/null 2>&1; do sleep 2; done && \
 export SQLQ_TEST_PROFILES="$DBAI_TEST_PROFILES" SQLQ_TEST_PROFILE=catalog-test \
-       MSSQL_CATALOG_TEST_PWD="$DBAI_TEST_SA_PASSWORD" && \
-go test ./cmd/sqlq -run '^(TestEveryResultSetIsReturned|TestMessagesAreCaptured|TestErrorAfterFirstSetKeepsRows|TestTimeoutIsAnErrorNotPartialSuccess)$' -count=1 -v
+       MSSQL_CATALOG_TEST_PWD="$(cat "$DBAI_TEST_PASSWORD_FILE")" && \
+go test ./cmd/sqlq -run '^(TestEveryResultSetIsReturned|TestMessagesAreCaptured|TestErrorAfterFirstSetKeepsRows|TestTimeoutIsAnErrorNotPartialSuccess|TestManyMessagesDoNotHang)$' -count=1 -v
 ```
 
-Le contrôleur fournit `DBAI_TEST_SA_PASSWORD` et `DBAI_TEST_PROFILES` (un fichier de
-profils hors dépôt qui contient
-`{"catalog-test":{"server":"localhost,11544","database":"master","auth":"sql","user":"sa","passwordEnv":"MSSQL_CATALOG_TEST_PWD","mode":"readonly"}}`).
-Ne jamais écrire le mot de passe dans un fichier du dépôt ni dans un message.
+Le contrôleur fournit dans le prompt de la tâche les valeurs de `DBAI_TEST_PROFILES` (un
+fichier de profils hors dépôt, au profil `catalog-test` en `readonly`) et de
+`DBAI_TEST_PASSWORD_FILE` (un fichier hors dépôt qui contient le mot de passe). L'instance
+de test est déjà démarrée ; ne pas en démarrer d'autre, ne pas la toucher autrement que par
+`sqlq` ou par ces tests, qui passent par `execute`. Ne jamais écrire le mot de passe dans un
+fichier du dépôt, un message de commit ou le rapport. L'instance est lente (pression mémoire
+sur la machine) : les tests utilisent `timeoutSec: 120`, sauf le test de timeout.
 
 Expected : `TestEveryResultSetIsReturned` échoue à la compilation (`res.MoreResults
 undefined`). Les tests `SKIP` au lieu de `FAIL` veulent dire que les variables manquent :
@@ -686,18 +782,34 @@ func TestTimeoutIsAnErrorNotPartialSuccess(t *testing.T) {
 }
 ```
 
-et l'ajouter au filtre des steps 2 et 4 (4 tests au lieu de 3).
+et celui qui vérifie que le flux de messages ne se bloque pas quand le serveur envoie plus de
+messages que la file de `sqlexp` n'en tient (15) avant le jeu suivant :
+
+```go
+func TestManyMessagesDoNotHang(t *testing.T) {
+	p, resolve := testProfile(t)
+	batch := "SELECT 1 AS a;\n" + strings.Repeat("PRINT 'm';\n", 40) + "SELECT 2 AS b;"
+	res, code := execute(p, batch, nil, options{maxRows: 5, timeoutSec: 120}, resolve)
+	if code != exitOK || len(res.Messages) != 40 || len(res.MoreResults) != 1 {
+		t.Errorf("code %d, %d messages, %d extra sets, error %+v", code, len(res.Messages), len(res.MoreResults), res.Error)
+	}
+}
+```
+
+S'il échoue par timeout, le blocage est réel : s'arrêter et le rapporter avec la sortie,
+sans contourner (pas de file plus grande bricolée, pas de goroutine ajoutée sans l'avoir
+dit). Les filtres des steps 2 et 4 comptent 5 tests.
 
 - [ ] Step 4 : vérifier
 
-Relancer la commande du step 2 (même invocation unique du shell). Expected : les 4 tests
+Relancer la commande du step 2 (même invocation unique du shell). Expected : les 5 tests
 `PASS`, aucun `SKIP`. Puis `cd tools && go test ./internal/sqlq -run '^TestMoreResultsIsAlwaysAnArray$' -count=1 -v`
 (1 test, PASS), puis `cd tools && go test ./... -count=1 && go vet ./...`.
 
 - [ ] Step 5 : casser pour voir tomber
 
-Dans `collect`, ne plus ajouter à `MoreResults` (commenter l'`append`). Relancer les 4 tests
-d'intégration : `TestEveryResultSetIsReturned` tombe, les trois autres passent. Remettre.
+Dans `collect`, ne plus ajouter à `MoreResults` (commenter l'`append`). Relancer les 5 tests
+d'intégration : `TestEveryResultSetIsReturned` tombe, les quatre autres passent. Remettre.
 Supprimer le contrôle `ctx.Err()` après la boucle : `TestTimeoutIsAnErrorNotPartialSuccess`
 tombe. Remettre.
 Puis remplacer `result.Messages = append(...)` par rien : `TestMessagesAreCaptured` tombe.
@@ -827,6 +939,10 @@ func TestUnknownMarkerKeyIsRejected(t *testing.T) {
 	_, _, err = ParseMarkedHeader("-- S\n-- sqlq: params=a\nSELECT 1;")
 	if err == nil {
 		t.Errorf("a marker without name must be refused")
+	}
+	_, _, err = ParseMarkedHeader("-- S\n-- sqlq: name=a-b params=hostname,HostName\nSELECT 1;")
+	if err == nil {
+		t.Errorf("a parameter listed twice must be refused")
 	}
 }
 
@@ -1013,6 +1129,11 @@ func parseMarker(rest string) (Marker, error) {
 				p = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(p), "@"))
 				if p == "" {
 					return Marker{}, errors.New("empty name in params=")
+				}
+				for _, seen := range m.Params {
+					if seen == p {
+						return Marker{}, fmt.Errorf("parameter %q listed twice in params=", p)
+					}
 				}
 				m.Params = append(m.Params, p)
 			}
@@ -1239,10 +1360,17 @@ rapporter le fichier et les deux listes.
 - [ ] Step 5 : casser pour voir tomber
 
 Retirer la condition `t.Depth == base` du test de virgule. Relancer :
-`TestDeclaredVariableIsOnlyTheDeclareTarget` doit tomber si une virgule en profondeur non
-nulle déclare une variable ; si elle ne tombe pas, ajouter au test le cas
-`DECLARE @a nvarchar(10) = LEFT(@src, 3);` (attendu : `src` paramètre) et vérifier qu'il
-tombe alors. Remettre le code.
+`TestDeclaredVariableIsOnlyTheDeclareTarget` ne tombe pas avec les cas du step 1 : ajouter
+d'abord au test, avant de casser, le cas
+
+```go
+	if got := QueryParams("DECLARE @a nvarchar(10) = LEFT(@src, @len);\nSELECT @a;"); strings.Join(got, ",") != "src,len" {
+		t.Errorf("a comma inside parentheses must not declare: %v", got)
+	}
+```
+
+(ajouter `strings` aux imports), vérifier qu'il passe, puis casser : il tombe, parce que la
+virgule de `LEFT(…)` ferait de `@len` une variable déclarée. Remettre le code.
 
 - [ ] Step 6 : commit
 
@@ -1380,6 +1508,32 @@ func TestComparisonIsAccepted(t *testing.T) {
 	}
 }
 
+func TestRewriteOrderIndependentOfMarker(t *testing.T) {
+	src := "DECLARE @a int = 1;\nDECLARE @b int = 2;\nSELECT @a, @b;"
+	ps, err := AnalyseOverrides(src, []string{"b", "a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "DECLARE @a int = @sqlq_a;\nDECLARE @b int = @sqlq_b;\nSELECT @a, @b;"
+	if got := Rewrite(src, ps, map[string]bool{"a": true, "b": true}); got != want {
+		t.Errorf("Rewrite = %q, want %q", got, want)
+	}
+}
+
+func TestUnbalancedInitializerIsRejected(t *testing.T) {
+	for _, src := range []string{"DECLARE @p int = (1 + 2));\nSELECT @p;", "DECLARE @p int = ((1 + 2);\nSELECT @p;"} {
+		if _, err := AnalyseOverrides(src, []string{"p"}); err == nil {
+			t.Errorf("accepted %q", src)
+		}
+	}
+}
+
+func TestOutputTargetIsRejected(t *testing.T) {
+	if _, err := AnalyseOverrides("DECLARE @p int = 1;\nSELECT @p OUTPUT;", []string{"p"}); err == nil {
+		t.Error("@p OUTPUT accepted")
+	}
+}
+
 func TestReservedPrefixIsRejected(t *testing.T) {
 	if _, err := AnalyseOverrides("DECLARE @p int = 1;\nDECLARE @sqlq_p int = 2;\nSELECT @p;", []string{"p"}); err == nil {
 		t.Errorf("@sqlq_ identifiers must be refused")
@@ -1432,6 +1586,8 @@ func TestParamValueValidatedByType(t *testing.T) {
 		{ParamType{"bit", 0}, "2"},
 		{ParamType{"date", 0}, "04/10/2026"},
 		{ParamType{"datetime", 0}, "2026-10-04 10:30"},
+		{ParamType{"nvarchar", 1}, "😀"},
+		{ParamType{"smalldatetime", 0}, "2026-10-04T10:30:30"},
 	}
 	for _, c := range bad {
 		if _, err := BindValue(c.typ, c.in); err == nil {
@@ -1443,7 +1599,7 @@ func TestParamValueValidatedByType(t *testing.T) {
 
 - [ ] Step 2 : vérifier l'échec
 
-Run : `cd tools && go test ./internal/sqlq -run '^(TestDeclareOverrideBindsNotConcatenates|TestDeclareOverrideKeepsOffsetsWithAccents|TestOverrideKeepsCRLF|TestEmptyStringDefaultIsAccepted|TestDeclareLineMustStandAlone|TestCompoundAssignmentIsRejected|TestSelectAssignmentIsRejected|TestComparisonIsAccepted|TestReservedPrefixIsRejected|TestUnsupportedTypeIsRejected|TestParameterNamesAreCaseInsensitive|TestParamValueValidatedByType)$' -count=1 -v`
+Run : `cd tools && go test ./internal/sqlq -run '^(TestDeclareOverrideBindsNotConcatenates|TestDeclareOverrideKeepsOffsetsWithAccents|TestOverrideKeepsCRLF|TestEmptyStringDefaultIsAccepted|TestDeclareLineMustStandAlone|TestCompoundAssignmentIsRejected|TestSelectAssignmentIsRejected|TestComparisonIsAccepted|TestReservedPrefixIsRejected|TestUnsupportedTypeIsRejected|TestParameterNamesAreCaseInsensitive|TestParamValueValidatedByType|TestRewriteOrderIndependentOfMarker|TestUnbalancedInitializerIsRejected|TestOutputTargetIsRejected)$' -count=1 -v`
 Expected : échec de compilation (`undefined: AnalyseOverrides`).
 
 - [ ] Step 3 : implémenter
@@ -1454,10 +1610,11 @@ package sqlq
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
+	"unicode/utf16"
 
 	"github.com/golang-sql/civil"
 )
@@ -1568,6 +1725,22 @@ func analyseOne(rs []rune, toks []Token, name string) (OverrideParam, error) {
 			return OverrideParam{}, fmt.Errorf("line %d: another statement follows the declaration", line)
 		}
 	}
+	balance := 0
+	for _, t := range expr {
+		switch t.Text {
+		case "(":
+			balance++
+		case ")":
+			balance--
+		}
+		if balance < 0 {
+			break
+		}
+	}
+	if balance != 0 {
+		// Lex never lets depth go negative, so "(1 + 2))" must be counted here.
+		return OverrideParam{}, fmt.Errorf("line %d: unbalanced parentheses in the initializer", line)
+	}
 	start, end := lineToks[eq].End, last.Start
 	def := strings.TrimSpace(string(rs[start:end]))
 	if def == "" {
@@ -1632,7 +1805,9 @@ func checkNotAssigned(toks []Token, from int, target string) error {
 			continue
 		}
 		next := toks[i+1].Text
-		if compoundOps[next] {
+		// OUT and OUTPUT make the variable a target. The guard already refuses
+		// the EXEC and INTO that carry them; this keeps the rule true on its own.
+		if compoundOps[next] || strings.EqualFold(next, "OUT") || strings.EqualFold(next, "OUTPUT") {
 			return fmt.Errorf("assigned at line %d", toks[i].Line)
 		}
 		if next != "=" || toks[i].Depth > 0 {
@@ -1647,11 +1822,13 @@ func checkNotAssigned(toks []Token, from int, target string) error {
 }
 
 // Rewrite replaces the initializer of each passed parameter by @sqlq_<name>.
+// params come in marker order, which need not be source order: they are applied
+// from the highest offset down, so an earlier replacement never shifts a later one.
 func Rewrite(sql string, params []OverrideParam, passed map[string]bool) string {
 	rs := []rune(sql)
-	// From the last offset to the first, so earlier offsets stay valid.
-	for i := len(params) - 1; i >= 0; i-- {
-		p := params[i]
+	ordered := append([]OverrideParam(nil), params...)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].start > ordered[j].start })
+	for _, p := range ordered {
 		if !passed[p.Name] {
 			continue
 		}
@@ -1668,7 +1845,8 @@ func Rewrite(sql string, params []OverrideParam, passed map[string]bool) string 
 func BindValue(t ParamType, value string) (any, error) {
 	switch {
 	case t.Base == "sysname" || stringTypes[t.Base]:
-		if t.Length > 0 && utf8.RuneCountInString(value) > t.Length {
+		// n counts UTF-16 code units, not runes: an emoji takes two.
+		if t.Length > 0 && len(utf16.Encode([]rune(value))) > t.Length {
 			return nil, fmt.Errorf("value longer than %s", t)
 		}
 		if (t.Base == "varchar" || t.Base == "char") && !isASCII(value) {
@@ -1697,7 +1875,13 @@ func BindValue(t ParamType, value string) (any, error) {
 		}
 		return civil.DateOf(d), nil
 	default: // datetime, datetime2, smalldatetime
-		for _, layout := range []string{"2006-01-02", "2006-01-02T15:04", "2006-01-02T15:04:05"} {
+		layouts := []string{"2006-01-02", "2006-01-02T15:04", "2006-01-02T15:04:05"}
+		if t.Base == "smalldatetime" {
+			// smalldatetime rounds seconds to the minute: refuse them rather
+			// than report 10:30:30 for a variable holding 10:31.
+			layouts = layouts[:2]
+		}
+		for _, layout := range layouts {
 			if d, err := time.Parse(layout, value); err == nil {
 				return civil.DateTimeOf(d), nil
 			}
@@ -1721,7 +1905,9 @@ que seul `civil` a changé de bloc.
 
 - [ ] Step 4 : vérifier
 
-Relancer le step 2. Expected : 12 tests `PASS` : `TestDeclareOverrideBindsNotConcatenates`,
+Relancer le step 2. Expected : 15 tests `PASS` : `TestRewriteOrderIndependentOfMarker`,
+`TestUnbalancedInitializerIsRejected`, `TestOutputTargetIsRejected`,
+`TestDeclareOverrideBindsNotConcatenates`,
 `TestDeclareOverrideKeepsOffsetsWithAccents`, `TestOverrideKeepsCRLF`,
 `TestEmptyStringDefaultIsAccepted`, `TestDeclareLineMustStandAlone`,
 `TestCompoundAssignmentIsRejected`, `TestSelectAssignmentIsRejected`,
@@ -1738,7 +1924,8 @@ signaler, pas à faire disparaître en assouplissant la règle.
 
 - [ ] Step 5 : casser pour voir tomber
 
-Supprimer le `if compoundOps[next]` de `checkNotAssigned`. Relancer :
+Remplacer le tri de `Rewrite` par l'ordre du slice : `TestRewriteOrderIndependentOfMarker`
+tombe. Remettre. Supprimer le `if compoundOps[next] …` de `checkNotAssigned`. Relancer :
 `TestCompoundAssignmentIsRejected` tombe, les autres passent. Remettre. Puis remplacer
 `toks[i].Depth > 0` par `false` : `TestComparisonIsAccepted` tombe. Remettre.
 
@@ -1875,7 +2062,9 @@ func LoadRegistry(path string) (Registry, string) {
 		return r, ""
 	}
 	if err != nil {
-		return r, "verification registry unreadable, treated as empty: " + err.Error()
+		// No err text: os errors carry the absolute path, and this message is
+		// published by -list-queries.
+		return r, "verification registry unreadable, treated as empty"
 	}
 	if err := json.Unmarshal(b, &r.entries); err != nil {
 		r.entries = map[string]Verified{}
@@ -1958,8 +2147,9 @@ Interfaces :
 - Produces :
   - `type Source string` avec `SourceBundled = "bundled"`, `SourcePersonal = "personal"`,
     `SourceTsqlScripts = "tsql-scripts"`
-  - `type CatalogParam struct { Name, Type, Default string }` (tags `name`,
-    `type,omitempty`, `default,omitempty`)
+  - `type CatalogParam struct { Name, Type string }` (tags `name`, `type,omitempty`). Le
+    défaut d'une surcharge n'est pas publié (spec §12, « Ce qui est publié ») : il reste dans
+    `OverrideParam.Default`.
   - `type Entry struct { Name, Summary string; Params []CatalogParam; Scope string; Source Source; Path string; Verified *Verified; DirtyReads, Heavy bool; Rejected string; SQL string; Hash string; Overrides []OverrideParam; QueryParams []string }`
     avec `func (e Entry) MarshalJSON() ([]byte, error)` : une entrée `rejected` ne publie que
     `name`, `source`, `path`, `rejected` ; une entrée valide publie `name`, `summary`,
@@ -1979,23 +2169,22 @@ Arborescence de test (créer chaque fichier tel quel) :
 testdata/catalog/bundled/tables-largest.sql      /* Largest tables.\n\n    Parameters: none.\n*/\nSELECT TOP (5) name FROM sys.tables;\n
 testdata/catalog/bundled/object-refs.sql         /* References of an object.\n\n    Parameter: @name - the object.\n*/\nSELECT TOP (5) name FROM sys.objects WHERE name = @name;\n
 testdata/catalog/bundled/Bad_Name.sql            /* Bad name.\n*/\nSELECT 1;\n
+testdata/catalog/bundled/lying-header.sql        /* Says a, uses b.\n\n    Parameter: @a - one.\n*/\nSELECT @b AS b;\n
 testdata/catalog/personal/_generic/tables-largest.sql   /* Shadow attempt.\n*/\nSELECT 2;\n
 testdata/catalog/personal/_generic/my-generic.sql       /* Mine.\n*/\nSELECT 3;\n
 testdata/catalog/personal/profiles/au-prd/node1/orders-late.sql  /* Late orders.\n*/\nSELECT 4;\n
 testdata/catalog/personal/profiles/other/orders-late.sql         /* Other profile.\n*/\nSELECT 5;\n
-testdata/catalog/tsql/diagnostics/sessions-from-host.sql   (le markedTemplate de la tâche 3, sans heavy, suivi de SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;)
+testdata/catalog/tsql/diagnostics/sessions-from-host.sql   -----\n-- Get sessions from a specific host\n-- sqlq: name=sessions-from-host params=hostname\n--\n-- rudi@babaluga.com, go ahead license\n-----\n\nSET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;\nDECLARE @hostname sysname = N'%';\nSELECT host_name FROM sys.dm_exec_sessions WHERE host_name LIKE @hostname;\n
 testdata/catalog/tsql/diagnostics/waits.sql        -- Waits\n-- sqlq: name=waits\nSELECT 1;\nGO\n
 testdata/catalog/tsql/diagnostics/unmarked.sql     -- Nothing\nSELECT 1;\n
 testdata/catalog/tsql/a/dup.sql                    -- Dup A\n-- sqlq: name=dup\nSELECT 1;\n
 testdata/catalog/tsql/b/dup.sql                    -- Dup B\n-- sqlq: name=dup\nSELECT 2;\n
 testdata/catalog/tsql/x/takes-bundled.sql          -- Takes a bundled name\n-- sqlq: name=tables-largest\nSELECT 1;\n
-testdata/catalog/tsql/.git/ignored.sql             -- Ignored\n-- sqlq: name=ignored\nSELECT 1;\n
 ```
 
-Les `\n` ci-dessus sont des fins de ligne réelles. Le dossier `.git` de testdata est un
-répertoire ordinaire nommé `.git` ; vérifier que `git add` l'accepte (un dépôt Git refuse
-d'indexer un chemin `.git`) : s'il est refusé, le créer dans le test avec `t.TempDir()` au
-lieu de testdata, et le dire dans le rapport.
+Les `\n` ci-dessus sont des fins de ligne réelles. Git n'indexe pas un chemin qui contient
+un composant `.git` : l'exclusion de `.git` se teste dans un répertoire temporaire
+(`TestDotGitIsSkipped` ci-dessous), pas dans testdata.
 
 - [ ] Step 1 : tests qui échouent
 
@@ -2037,7 +2226,7 @@ func TestCatalogListsExactlyTheFilesPresent(t *testing.T) {
 		got = append(got, string(e.Source)+":"+e.Path)
 	}
 	want := []string{
-		"bundled:Bad_Name.sql", "bundled:object-refs.sql", "bundled:tables-largest.sql",
+		"bundled:Bad_Name.sql", "bundled:lying-header.sql", "bundled:object-refs.sql", "bundled:tables-largest.sql",
 		"personal:_generic/my-generic.sql", "personal:_generic/tables-largest.sql",
 		"tsql-scripts:a/dup.sql", "tsql-scripts:b/dup.sql",
 		"tsql-scripts:diagnostics/sessions-from-host.sql", "tsql-scripts:diagnostics/waits.sql",
@@ -2052,6 +2241,17 @@ func TestMarkedScriptRefusedByGuardIsListedAsRejected(t *testing.T) {
 	e, _ := entryByPath(LoadCatalog(testCatalogConfig("")), SourceTsqlScripts, "diagnostics/waits.sql")
 	if e.Rejected != "batch separator GO at line 4" {
 		t.Errorf("rejected = %q", e.Rejected)
+	}
+}
+
+func TestParametersLineIsOptionalButChecked(t *testing.T) {
+	c := LoadCatalog(testCatalogConfig(""))
+	lying, _ := entryByPath(c, SourceBundled, "lying-header.sql")
+	if !strings.Contains(lying.Rejected, "Parameters line") {
+		t.Errorf("a header that lies about its parameters: rejected = %q", lying.Rejected)
+	}
+	if e, _ := entryByPath(c, SourceBundled, "object-refs.sql"); e.Rejected != "" {
+		t.Errorf("a truthful Parameter line was rejected: %q", e.Rejected)
 	}
 }
 
@@ -2117,7 +2317,8 @@ func TestProfileDirRejectsDotDotAndCaseTwins(t *testing.T) {
 func TestTsqlEntryCarriesTypedParamsAndDirtyReads(t *testing.T) {
 	e, _ := entryByPath(LoadCatalog(testCatalogConfig("")), SourceTsqlScripts, "diagnostics/sessions-from-host.sql")
 	if e.Rejected != "" || !e.DirtyReads || e.Name != "sessions-from-host" ||
-		len(e.Params) != 1 || e.Params[0] != (CatalogParam{Name: "hostname", Type: "sysname", Default: "N'%'"}) {
+		len(e.Params) != 1 || e.Params[0] != (CatalogParam{Name: "hostname", Type: "sysname"}) ||
+		e.Overrides[0].Default != "N'%'" {
 		t.Errorf("entry = %+v", e)
 	}
 }
@@ -2149,6 +2350,34 @@ func TestVerifiedDropsWhenSQLChanges(t *testing.T) {
 	cfg.Registry, _ = LoadRegistry(reg)
 	if e, _ := LoadCatalog(cfg).Find("one"); e.Verified != nil {
 		t.Errorf("verification survived a change of SQL")
+	}
+}
+
+func TestDotGitIsSkipped(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, ".git"), 0o700)
+	os.WriteFile(filepath.Join(dir, ".git", "ignored.sql"), []byte("-- Ignored\n-- sqlq: name=ignored\nSELECT 1;\n"), 0o600)
+	os.WriteFile(filepath.Join(dir, "kept.sql"), []byte("-- Kept\n-- sqlq: name=kept\nSELECT 1;\n"), 0o600)
+	// The bundled canon is loaded too: a marker that takes one of its names is
+	// rejected by the real catalogue and must be rejected here.
+	c := LoadCatalog(CatalogConfig{TsqlScriptsDir: dir, BundledDir: bundledQueriesDir})
+	if len(c.Entries) != 1 || c.Entries[0].Name != "kept" {
+		t.Errorf("entries = %+v", c.Entries)
+	}
+}
+
+// The registry key is the hash of the bytes -saved will execute, captured once
+// at load: there is no second read of the file between hashing and running.
+func TestVerifiedHashesBytesThatRan(t *testing.T) {
+	for _, e := range LoadCatalog(testCatalogConfig("AU-PRD/node1")).Entries {
+		want := ContentHash([]byte(e.SQL))
+		if e.Source == SourceTsqlScripts {
+			h, _, _ := ParseMarkedHeader(e.SQL)
+			want = ContentHash([]byte(withoutLine(e.SQL, h.Marker.Line)))
+		}
+		if e.SQL == "" || e.Hash != want {
+			t.Errorf("%s:%s: hash does not cover the SQL held for execution", e.Source, e.Path)
+		}
 	}
 }
 
@@ -2185,7 +2414,7 @@ func TestListQueriesPublishesNoPathServerOrSQL(t *testing.T) {
 
 - [ ] Step 2 : vérifier l'échec
 
-Run : `cd tools && go test ./internal/sqlq -run '^(TestCatalogListsExactlyTheFilesPresent|TestMarkedScriptRefusedByGuardIsListedAsRejected|TestInvalidFileNameIsRejected|TestBundledWinsCollisionOthersRejected|TestCollisionBetweenNonBundledRejectsAll|TestProfileViewListsOnlyThatProfile|TestProfileDirRejectsDotDotAndCaseTwins|TestTsqlEntryCarriesTypedParamsAndDirtyReads|TestVerifiedSurvivesRenameAndMarkerEdit|TestVerifiedDropsWhenSQLChanges|TestMissingTsqlScriptsSourceIsAMessageNotAnError|TestListQueriesPublishesNoPathServerOrSQL)$' -count=1 -v`
+Run : `cd tools && go test ./internal/sqlq -run '^(TestCatalogListsExactlyTheFilesPresent|TestMarkedScriptRefusedByGuardIsListedAsRejected|TestInvalidFileNameIsRejected|TestBundledWinsCollisionOthersRejected|TestCollisionBetweenNonBundledRejectsAll|TestProfileViewListsOnlyThatProfile|TestProfileDirRejectsDotDotAndCaseTwins|TestTsqlEntryCarriesTypedParamsAndDirtyReads|TestVerifiedSurvivesRenameAndMarkerEdit|TestVerifiedDropsWhenSQLChanges|TestMissingTsqlScriptsSourceIsAMessageNotAnError|TestListQueriesPublishesNoPathServerOrSQL|TestDotGitIsSkipped|TestVerifiedHashesBytesThatRan|TestParametersLineIsOptionalButChecked)$' -count=1 -v`
 Expected : échec de compilation.
 
 - [ ] Step 3 : implémenter
@@ -2223,10 +2452,11 @@ func DefaultQueriesDir() string {
 	return filepath.Join(filepath.Dir(DefaultProfilePath()), "queries")
 }
 
+// CatalogParam is what the catalogue publishes about a parameter. The default is
+// deliberately absent: tsql-scripts defaults include local paths and SQL.
 type CatalogParam struct {
-	Name    string `json:"name"`
-	Type    string `json:"type,omitempty"`
-	Default string `json:"default,omitempty"`
+	Name string `json:"name"`
+	Type string `json:"type,omitempty"`
 }
 
 type Entry struct {
@@ -2330,7 +2560,13 @@ func ProfileDir(personalDir, profile string, all []string) (string, error) {
 func LoadCatalog(cfg CatalogConfig) Catalog {
 	var c Catalog
 	if cfg.BundledDir != "" {
-		c.Entries = append(c.Entries, loadBlockDir(cfg, cfg.BundledDir, "", SourceBundled, "generic")...)
+		if st, err := os.Stat(cfg.BundledDir); err != nil || !st.IsDir() {
+			// Without this, a binary built outside the plugin lists no canon and
+			// the agent concludes there is none.
+			c.Messages = append(c.Messages, "bundled queries not found")
+		} else {
+			c.Entries = append(c.Entries, loadBlockDir(cfg, cfg.BundledDir, "", SourceBundled, "generic")...)
+		}
 	}
 	if cfg.PersonalDir != "" {
 		c.Entries = append(c.Entries, loadBlockDir(cfg, filepath.Join(cfg.PersonalDir, "_generic"), "_generic", SourcePersonal, "generic")...)
@@ -2457,7 +2693,7 @@ func tsqlEntryProblem(e *Entry, h MarkedHeader) string {
 	}
 	e.Overrides = ps
 	for _, p := range ps {
-		e.Params = append(e.Params, CatalogParam{Name: p.Name, Type: p.Type.String(), Default: p.Default})
+		e.Params = append(e.Params, CatalogParam{Name: p.Name, Type: p.Type.String()})
 	}
 	e.DirtyReads = DirtyReads(e.SQL)
 	return ""
@@ -2498,6 +2734,8 @@ func resolveCollisions(entries []Entry) {
 		}
 		for _, i := range idx {
 			switch {
+			case entries[i].Rejected != "":
+				// Keep the first reason: it is the one the author must fix.
 			case i == bundled:
 			case bundled >= 0:
 				entries[i].Rejected = fmt.Sprintf("name %q is taken by bundled", name)
@@ -2514,7 +2752,8 @@ reste courte et sans chemin ; le JSON liste déjà chaque entrée avec son `path
 
 - [ ] Step 4 : vérifier
 
-Relancer le step 2. Expected : 12 tests `PASS` (`TestCatalogListsExactlyTheFilesPresent`,
+Relancer le step 2. Expected : 15 tests `PASS` (`TestParametersLineIsOptionalButChecked`, `TestDotGitIsSkipped`,
+`TestVerifiedHashesBytesThatRan`, `TestCatalogListsExactlyTheFilesPresent`,
 `TestMarkedScriptRefusedByGuardIsListedAsRejected`, `TestInvalidFileNameIsRejected`,
 `TestBundledWinsCollisionOthersRejected`, `TestCollisionBetweenNonBundledRejectsAll`,
 `TestProfileViewListsOnlyThatProfile`, `TestProfileDirRejectsDotDotAndCaseTwins`,
@@ -2770,7 +3009,20 @@ func captureRun(t *testing.T, o options) (string, int) {
 }
 ```
 
-(ajouter `io` et `os` aux imports.)
+Le bloc d'imports complet de `catalog_cli_test.go` :
+
+```go
+import (
+	"database/sql"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/sqlq"
+)
+```
 
 Le cas `-list-queries` sans `-profiles` lisible doit aussi isoler la vraie couche
 personnelle : `o.personalDir` n'existe pas comme drapeau, donc `catalogConfig` lit
@@ -2779,8 +3031,13 @@ personnelle : `o.personalDir` n'existe pas comme drapeau, donc `catalogConfig` l
 et `t.Setenv("DB_AI_TOOLKIT_REGISTRY", filepath.Join(t.TempDir(), "v.json"))` (même règle
 pour le registre : `$DB_AI_TOOLKIT_REGISTRY`, sinon `sqlq.DefaultRegistryPath()`). Ces deux
 variables sont des points d'entrée de test et de développement, documentés comme tels dans
-le README (tâche 11). Ajouter ces trois `t.Setenv` en tête de
-`TestListQueriesWorksWithoutProfilesFile`.
+le README (tâche 11). `TestListQueriesWorksWithoutProfilesFile` commence donc par :
+
+```go
+	t.Setenv("DB_AI_TOOLKIT_QUERIES", t.TempDir())
+	t.Setenv("DB_AI_TOOLKIT_TSQL_SCRIPTS", "")
+	t.Setenv("DB_AI_TOOLKIT_REGISTRY", filepath.Join(t.TempDir(), "v.json"))
+```
 
 Ajouter à `integration_test.go` :
 
@@ -2797,7 +3054,7 @@ func TestOverrideBindsTypedValuesOnServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, code := execute(p, text, args, options{maxRows: 5, timeoutSec: 30}, resolve)
+	res, code := execute(p, text, args, options{maxRows: 5, timeoutSec: 120}, resolve)
 	if code != exitOK || len(res.Rows) != 1 || res.Rows[0]["d"] != "2026-10-04" || res.Rows[0]["n"] != "ROW" {
 		t.Errorf("code %d rows %+v error %+v", code, res.Rows, res.Error)
 	}
@@ -2809,7 +3066,7 @@ Ce test prouve que la date passe sans dépendre de `DATEFORMAT` : sous `ydm`, la
 
 - [ ] Step 2 : vérifier l'échec
 
-Run : `cd tools && go test ./cmd/sqlq -run '^(TestPrepareSavedRewritesAndBinds|TestUnknownParamRefusedBeforeConnecting|TestDuplicateParamIsRefused|TestInvalidValueRefusedBeforeConnecting|TestMissingParameterIsRefusedBeforeConnecting|TestListQueriesWorksWithoutProfilesFile)$' -count=1 -v`
+Run : `cd tools && go test ./cmd/sqlq -run '^(TestPrepareSavedRewritesAndBinds|TestUnknownParamRefusedBeforeConnecting|TestDuplicateParamIsRefused|TestInvalidValueRefusedBeforeConnecting|TestMissingParameterIsRefusedBeforeConnecting|TestListQueriesWorksWithoutProfilesFile|TestReadQueryNeedsExactlyOneSource|TestBoundQueryRefusedOnAnotherProfile)$' -count=1 -v`
 Expected : échec de compilation (`undefined: prepareSaved`).
 
 - [ ] Step 3 : implémenter
@@ -2866,39 +3123,50 @@ func bundledQueriesDir() string {
 }
 ```
 
-Dans `run`, avant tout le reste :
+`run` est remplacé en entier par la version ci-dessous. Les étapes qui précèdent le
+catalogue (profils, `-list-profiles`, `-profile` obligatoire, `-database`) sont celles
+d'aujourd'hui, mot pour mot ; `guard` vient de la tâche 1.
 
 ```go
+func run(o options) int {
 	if o.listQueries {
-		profiles, perr := sqlq.LoadProfiles(resolveProfilesPath(o.profilesPath))
-		if o.profileName != "" {
-			if perr != nil {
-				return fail(exitUsage, perr)
-			}
-			if _, err := profiles.Get(o.profileName); err != nil {
-				return fail(exitUsage, err)
-			}
-		}
-		cfg := catalogConfig(o, profiles.Names())
-		reg, msg := sqlq.LoadRegistry(registryPath())
-		cfg.Registry = reg
-		cat := sqlq.LoadCatalog(cfg)
-		if msg != "" {
-			cat.Messages = append(cat.Messages, msg)
-		}
-		return emit(cat)
+		return listQueries(o)
 	}
-```
+	profiles, err := sqlq.LoadProfiles(resolveProfilesPath(o.profilesPath))
+	if err != nil {
+		return fail(exitUsage, err)
+	}
 
-(`profiles.Names()` sur une map nil rend une liste vide ; le vérifier dans `profile.go:300`.)
+	if o.listProfiles {
+		return emit(map[string]any{"profiles": describeProfiles(profiles)})
+	}
 
-`readQuery` devient à trois sources exclusives : `-query`, `-file`, `-saved`. Avec
-`-saved` :
+	if o.profileName == "" {
+		// Not the full list: the profile names are the estate map, and a bare
+		// mistake should not publish it. -list-profiles is the way to look.
+		return fail(exitUsage, fmt.Errorf(
+			"-profile is required (%d defined; use -list-profiles)", len(profiles)))
+	}
+	profile, err := profiles.Get(o.profileName)
+	if err != nil {
+		return fail(exitUsage, err)
+	}
+	if o.database != "" {
+		profile.Database = o.database
+	}
 
-```go
+	sqlText, err := readQuery(o.query, o.file, o.saved)
+	if err != nil {
+		return fail(exitUsage, err)
+	}
+
+	var named []any
 	var saved *sqlq.SavedRun
 	var entryHash string
 	if o.saved != "" {
+		if !sqlq.ValidQueryName(o.saved) {
+			return fail(exitUsage, fmt.Errorf("query name %q must match ^[a-z][a-z0-9-]{1,48}$", o.saved))
+		}
 		cfg := catalogConfig(o, profiles.Names())
 		cfg.Registry, _ = sqlq.LoadRegistry(registryPath())
 		cat := sqlq.LoadCatalog(cfg)
@@ -2906,13 +3174,130 @@ Dans `run`, avant tout le reste :
 		if !ok {
 			return fail(exitUsage, missingQueryError(cat, cfg, o.saved))
 		}
-		text, args, run, err := prepareSaved(e, o.params)
+		sqlText, named, saved, err = prepareSaved(e, o.params)
 		if err != nil {
 			return fail(exitUsage, err)
 		}
-		sqlText, named, saved, entryHash = text, args, run, e.Hash
+		entryHash = e.Hash
+	} else {
+		named, err = namedArgs(o.params)
+		if err != nil {
+			return fail(exitUsage, err)
+		}
 	}
+
+	// The guard runs on the text actually sent, rewritten overrides included.
+	if code, err := guard(sqlText, profile, o.allowWrite); err != nil {
+		return fail(code, err)
+	}
+
+	resolver := sqlq.NewResolver(os.Getenv, resolveCredentialsPath(), func(msg string) {
+		fmt.Fprintln(os.Stderr, "sqlq:", msg)
+	})
+
+	result, code := execute(profile, sqlText, named, o, resolver.Resolve)
+	result.Saved = saved
+	if code == exitOK && entryHash != "" {
+		recordRun(&result, entryHash, profile)
+	}
+	_ = emit(result)
+	return code
+}
+
+// recordRun notes a successful run in the registry. A failure to record is
+// reported, not fatal: the query did run, and the cost is a later "verified": null.
+func recordRun(result *sqlq.Result, hash string, profile sqlq.Profile) {
+	err := sqlq.RecordVerified(registryPath(), hash, sqlq.Verified{
+		Date: time.Now().Format("2006-01-02"), Profile: profile.Name})
+	if err != nil {
+		result.Messages = append(result.Messages, "verification not recorded: "+err.Error())
+	}
+}
+
+// listQueries prints the catalogue. It needs no profile file unless -profile
+// is given, so the catalogue can be inspected on a machine with none.
+func listQueries(o options) int {
+	profiles, perr := sqlq.LoadProfiles(resolveProfilesPath(o.profilesPath))
+	if o.profileName != "" {
+		if perr != nil {
+			return fail(exitUsage, perr)
+		}
+		if _, err := profiles.Get(o.profileName); err != nil {
+			return fail(exitUsage, err)
+		}
+	}
+	cfg := catalogConfig(o, profiles.Names())
+	reg, msg := sqlq.LoadRegistry(registryPath())
+	cfg.Registry = reg
+	cat := sqlq.LoadCatalog(cfg)
+	if msg != "" {
+		cat.Messages = append(cat.Messages, msg)
+	}
+	return emit(cat)
+}
+
+func readQuery(query, file, saved string) (string, error) {
+	given := 0
+	for _, s := range []string{query, file, saved} {
+		if s != "" {
+			given++
+		}
+	}
+	switch {
+	case given > 1:
+		return "", fmt.Errorf("give exactly one of -query, -file or -saved")
+	case given == 0:
+		return "", fmt.Errorf("one of -query, -file or -saved is required")
+	case saved != "":
+		return "", nil // the text comes from the catalogue
+	case query != "":
+		return query, nil
+	}
+	raw, err := os.ReadFile(file)
+	if err != nil {
+		return "", fmt.Errorf("reading -file: %w", err)
+	}
+	return string(raw), nil
+}
 ```
+
+`profiles.Names()` sur une map nil rend une liste vide (le vérifier dans `profile.go:300`).
+Un changement d'ordre est voulu : une erreur de `-param` est désormais signalée avant un
+refus du garde-fou, parce que pour `-saved` le texte à garder n'existe qu'après
+`prepareSaved`. Les messages et codes de chaque refus restent ceux d'aujourd'hui.
+
+Ajouter à `catalog_cli_test.go` :
+
+```go
+func TestReadQueryNeedsExactlyOneSource(t *testing.T) {
+	if _, err := readQuery("SELECT 1", "", "tables-largest"); err == nil {
+		t.Error("-query with -saved accepted")
+	}
+	if _, err := readQuery("", "", ""); err == nil {
+		t.Error("no source accepted")
+	}
+	if text, err := readQuery("", "", "x"); err != nil || text != "" {
+		t.Errorf("-saved alone: %q, %v", text, err)
+	}
+}
+
+func TestBoundQueryRefusedOnAnotherProfile(t *testing.T) {
+	q := t.TempDir()
+	os.MkdirAll(filepath.Join(q, "profiles", "prd"), 0o700)
+	os.WriteFile(filepath.Join(q, "profiles", "prd", "orders-late.sql"), []byte("/* Late.\n*/\nSELECT 1;\n"), 0o600)
+	cfg := sqlq.CatalogConfig{PersonalDir: q, Profile: "dev", ProfileNames: []string{"dev", "prd"}}
+	cat := sqlq.LoadCatalog(cfg)
+	if _, ok := cat.Find("orders-late"); ok {
+		t.Fatal("a query of profile prd is visible from dev")
+	}
+	err := missingQueryError(cat, cfg, "orders-late")
+	if err == nil || !strings.Contains(err.Error(), `bound to profile directory "prd"`) {
+		t.Errorf("err = %v", err)
+	}
+}
+```
+
+(ajouter `path/filepath` aux imports.)
 
 ```go
 // missingQueryError explains why a name did not resolve in this profile's view.
@@ -2938,17 +3323,8 @@ func missingQueryError(cat sqlq.Catalog, cfg sqlq.CatalogConfig, name string) er
 }
 ```
 
-(`name` a déjà passé `ValidQueryName` : ajouter ce contrôle en tête du bloc `-saved`, avec
-`fail(exitUsage, …)`, pour qu'aucun nom non validé n'entre dans un chemin. Importer `io/fs`
-et `sort`.)
-
-`readQuery` prend `saved string` en troisième argument : deux sources ou plus parmi
-`-query`, `-file`, `-saved` rendent `give exactly one of -query, -file or -saved`, aucune
-rend `one of -query, -file or -saved is required`, et `-saved` seul rend `("", nil)`, le
-texte venant du catalogue.
-
-Les contrôles du garde-fou (`sqlq.Refusals`) s'appliquent ensuite au `sqlText` final,
-réécrit compris, comme pour `-query`. `namedArgs(o.params)` n'est appelé que hors `-saved`.
+(`run` a déjà validé `name` par `ValidQueryName`, donc aucun nom non validé n'entre dans un
+chemin. Importer `io/fs` et `sort`.)
 
 `prepareSaved` :
 
@@ -3030,29 +3406,42 @@ func overrideNames(ps []sqlq.OverrideParam) string {
 Le message de `TestMissingParameterIsRefusedBeforeConnecting` attend `"name" required` :
 le texte ci-dessus est `parameter "name" required by query "refs"`, qui le contient.
 
-Après `execute` :
+Dans `internal/sqlq/result.go` :
 
 ```go
-	result, code := execute(profile, sqlText, named, o, resolver.Resolve)
-	result.Saved = saved
-	if code == exitOK && entryHash != "" {
-		if err := sqlq.RecordVerified(registryPath(), entryHash, sqlq.Verified{
-			Date: time.Now().Format("2006-01-02"), Profile: profile.Name}); err != nil {
-			result.Messages = append(result.Messages, "verification not recorded: "+err.Error())
-		}
+// SavedRun says which catalogue entry ran and with what, so the agent cannot
+// report a value other than the one sent.
+type SavedRun struct {
+	Name     string            `json:"name"`
+	Source   Source            `json:"source"`
+	Path     string            `json:"path"`
+	Params   map[string]string `json:"params"`
+	Defaults []string          `json:"defaults"`
+	Verified *Verified         `json:"verified"`
+}
+
+func (r SavedRun) MarshalJSON() ([]byte, error) {
+	type alias SavedRun
+	out := alias(r)
+	if out.Params == nil {
+		out.Params = map[string]string{}
 	}
-	_ = emit(result)
-	return code
+	if out.Defaults == nil {
+		out.Defaults = []string{}
+	}
+	return json.Marshal(out)
+}
 ```
 
-`SavedRun` et son `MarshalJSON` (pour `params` objet et `defaults` tableau jamais `null`)
-s'ajoutent à `internal/sqlq/result.go`.
+et dans `Result`, après `Error` : `Saved *SavedRun `json:"saved,omitempty"``.
 
 - [ ] Step 4 : vérifier
 
-Relancer le filtre du step 2. Expected : 6 tests `PASS`.
+Relancer le filtre du step 2. Expected : 8 tests `PASS`. Puis
+`cd tools && go test ./cmd/sqlq -run '^TestGuardKeepsExitCodes$' -count=1 -v` : le
+comportement de `-query` et `-file` n'a pas bougé.
 
-Puis l'intégration, même invocation unique que la tâche 2 (setup inclus), avec le filtre
+Puis l'intégration, même invocation unique que la tâche 2 (mêmes exports), avec le filtre
 `'^TestOverrideBindsTypedValuesOnServer$'` : 1 test `PASS`, pas `SKIP`.
 
 Puis `cd tools && go test ./... -count=1 && go vet ./...`. `TestEveryFlagIsDocumented`
@@ -3088,7 +3477,8 @@ Interfaces :
 - Consumes : `SavedFileContent`, `ProfileDir`, `LoadCatalog`, `ValidQueryName`,
   `RecordVerified`, `ContentHash`, `catalogConfig`, `registryPath`, `captureRun`.
 - Produces : options `saveQuery string`, `summary string` ;
-  `func checkSave(o options, profile sqlq.Profile, profileNames []string, sqlText string) (path, content string, err error)`.
+  `func checkSave(o options, profile sqlq.Profile, profileNames []string, sqlText string) (path, content string, err error)` ;
+  `func writeSavedQuery(o options, profile sqlq.Profile, profileNames []string, path, content string) error`.
 
 - [ ] Step 1 : tests qui échouent
 
@@ -3131,6 +3521,27 @@ func TestSaveRefusesAVisibleName(t *testing.T) {
 	}
 }
 
+func TestSavedFileThatDoesNotReparseIsRemoved(t *testing.T) {
+	q := saveEnv(t)
+	o := options{saveQuery: "broken", queriesDir: t.TempDir()}
+	path := filepath.Join(q, "profiles", "dev", "broken.sql")
+	// Content without a header cannot read back as a valid entry.
+	if err := writeSavedQuery(o, sqlq.Profile{Name: "dev"}, []string{"dev"}, path, "SELECT 1;\n"); err == nil {
+		t.Fatal("an unparseable saved file was accepted")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("the rejected file was left behind: %v", err)
+	}
+	os.MkdirAll(filepath.Dir(path), 0o700)
+	os.WriteFile(path, []byte("kept"), 0o600)
+	if err := writeSavedQuery(o, sqlq.Profile{Name: "dev"}, []string{"dev"}, path, "/* S.\n*/\nSELECT 1;\n"); err == nil {
+		t.Error("an existing file was overwritten")
+	}
+	if b, _ := os.ReadFile(path); string(b) != "kept" {
+		t.Errorf("existing file changed to %q", b)
+	}
+}
+
 func TestSaveRequiresSummary(t *testing.T) {
 	saveEnv(t)
 	o := options{saveQuery: "orders-late", queriesDir: t.TempDir()}
@@ -3149,7 +3560,7 @@ func TestNothingIsSavedWhenTheRunFailed(t *testing.T) {
 	t.Setenv("DB_AI_TOOLKIT_QUERIES", q)
 	t.Setenv("DB_AI_TOOLKIT_REGISTRY", filepath.Join(t.TempDir(), "v.json"))
 	o := options{profileName: p.Name, profilesPath: os.Getenv("SQLQ_TEST_PROFILES"), query: "SELECT 1/0 AS x;",
-		saveQuery: "will-fail", summary: "Fails.", maxRows: 5, timeoutSec: 30, queriesDir: t.TempDir()}
+		saveQuery: "will-fail", summary: "Fails.", maxRows: 5, timeoutSec: 120, queriesDir: t.TempDir()}
 	if _, code := captureRun(t, o); code != exitSQL {
 		t.Fatalf("code %d", code)
 	}
@@ -3166,7 +3577,7 @@ func TestSaveWritesVerifiedEntry(t *testing.T) {
 	t.Setenv("DB_AI_TOOLKIT_REGISTRY", reg)
 	o := options{profileName: p.Name, profilesPath: os.Getenv("SQLQ_TEST_PROFILES"),
 		query: "SELECT TOP (1) name FROM sys.objects WHERE name LIKE @pattern;", params: paramList{"pattern=sys%"},
-		saveQuery: "objects-like", summary: "Objects matching a pattern.", maxRows: 5, timeoutSec: 30, queriesDir: t.TempDir()}
+		saveQuery: "objects-like", summary: "Objects matching a pattern.", maxRows: 5, timeoutSec: 120, queriesDir: t.TempDir()}
 	if out, code := captureRun(t, o); code != exitOK {
 		t.Fatalf("code %d: %s", code, out)
 	}
@@ -3196,11 +3607,11 @@ func TestSaveWritesVerifiedEntry(t *testing.T) {
 }
 ```
 
-(ajouter `encoding/json` et `path/filepath` aux imports de `integration_test.go`.)
+(ajouter `encoding/json` aux imports de `integration_test.go`.)
 
 - [ ] Step 2 : vérifier l'échec
 
-Run : `cd tools && go test ./cmd/sqlq -run '^(TestQueryNameRejectsTraversalAndCase|TestSaveRefusesAWritingQuery|TestSaveRefusesAVisibleName|TestSaveRequiresSummary)$' -count=1 -v`
+Run : `cd tools && go test ./cmd/sqlq -run '^(TestQueryNameRejectsTraversalAndCase|TestSaveRefusesAWritingQuery|TestSaveRefusesAVisibleName|TestSaveRequiresSummary|TestSavedFileThatDoesNotReparseIsRemoved)$' -count=1 -v`
 Expected : échec de compilation (`undefined: checkSave`).
 
 - [ ] Step 3 : implémenter
@@ -3249,17 +3660,35 @@ func checkSave(o options, profile sqlq.Profile, profileNames []string, sqlText s
 }
 ```
 
-Dans `run`, quand `o.saveQuery != ""` : appeler `checkSave` avant `execute` (échec :
-`fail(exitUsage, err)`). Après `execute`, seulement si `code == exitOK` :
+Dans `run` (version de la tâche 9), insérer juste après le bloc `guard` :
 
 ```go
-		if err := writeSavedQuery(o, profile, profileNames, savePath, saveContent); err != nil {
+	var savePath, saveContent string
+	if o.saveQuery != "" {
+		savePath, saveContent, err = checkSave(o, profile, profiles.Names(), sqlText)
+		if err != nil {
+			return fail(exitUsage, err)
+		}
+	}
+```
+
+et remplacer la fin de `run`, du `result.Saved = saved` au `return code`, par :
+
+```go
+	result.Saved = saved
+	if code == exitOK && entryHash != "" {
+		recordRun(&result, entryHash, profile)
+	}
+	if code == exitOK && savePath != "" {
+		if err := writeSavedQuery(o, profile, profiles.Names(), savePath, saveContent); err != nil {
 			result.Error = &sqlq.SQLError{Message: "query ran but was not saved: " + err.Error()}
 			_ = emit(result)
 			return exitUsage
 		}
-		_ = sqlq.RecordVerified(registryPath(), sqlq.ContentHash([]byte(saveContent)),
-			sqlq.Verified{Date: time.Now().Format("2006-01-02"), Profile: profile.Name})
+		recordRun(&result, sqlq.ContentHash([]byte(saveContent)), profile)
+	}
+	_ = emit(result)
+	return code
 ```
 
 ```go
@@ -3293,7 +3722,7 @@ func writeSavedQuery(o options, profile sqlq.Profile, profileNames []string, pat
 
 - [ ] Step 4 : vérifier
 
-Le filtre du step 2 : 4 tests `PASS`. Puis l'intégration (setup de la tâche 2 dans la même
+Le filtre du step 2 : 5 tests `PASS`. Puis l'intégration (exports de la tâche 2 dans la même
 invocation) avec `'^(TestNothingIsSavedWhenTheRunFailed|TestSaveWritesVerifiedEntry)$'` :
 2 tests `PASS`, pas `SKIP`.
 
@@ -3319,6 +3748,7 @@ Files :
 - Modify : `plugins/sqlserver-toolkit/skills/live-query/SKILL.md`
 - Modify : `plugins/sqlserver-toolkit/README.md`
 - Modify : `AGENTS.md` (section « Querying a live SQL Server instance »)
+- Modify : `tools/cmd/sqlq/flags_test.go` (la regex de `TestEveryFlagIsDocumented`)
 
 - [ ] Step 1 : constater l'échec
 
@@ -3326,6 +3756,16 @@ Run : `cd tools && go test ./cmd/sqlq -run '^TestEveryFlagIsDocumented$' -count=
 Expected : FAIL, une ligne par drapeau non documenté et par document : `-list-queries`,
 `-saved`, `-save-query`, `-summary`, `-queries`, `-tsql-scripts`, dans `README.md` et
 `SKILL.md`, soit 12 erreurs. Un autre nombre : s'arrêter et comprendre pourquoi.
+
+Corriger d'abord le test : `-queries\b` trouve `-queries` dans `-list-queries`, si bien que
+`-queries` passerait pour documenté sans l'être. Dans `flags_test.go`, remplacer la regex par
+
+```go
+			if !regexp.MustCompile(`(^|[^\w-])-` + regexp.QuoteMeta(f.Name) + `\b`).Match(text) {
+```
+
+et relancer le step 1 : toujours 12 erreurs (la correction ne doit en ajouter ni en retirer
+tant que la doc n'est pas écrite ; `-queries` en fait partie).
 
 - [ ] Step 2 : réécrire `SKILL.md`
 
@@ -3387,7 +3827,7 @@ aucun drapeau inventé (chaque drapeau cité existe dans `defineFlags`), aucun c
 - [ ] Step 6 : commit
 
 ```bash
-git add plugins/sqlserver-toolkit/skills/live-query/SKILL.md plugins/sqlserver-toolkit/README.md AGENTS.md
+git add plugins/sqlserver-toolkit/skills/live-query/SKILL.md plugins/sqlserver-toolkit/README.md AGENTS.md tools/cmd/sqlq/flags_test.go
 git commit -m "docs(live-query): route questions through the query catalogue" -m "The decision table described seven queries in a second place, where it could drift from the files. The skill now asks the catalogue, which reads the files themselves, and says what verified, rejected, dirty_reads and heavy require of the agent."
 ```
 
@@ -3423,13 +3863,17 @@ func TestRealCloneHasNoRejectedEntry(t *testing.T) {
 		t.Skip("DB_AI_TOOLKIT_TSQL_SCRIPTS not set")
 	}
 	c := LoadCatalog(CatalogConfig{TsqlScriptsDir: dir})
-	if len(c.Entries) == 0 {
-		t.Fatal("no marked script found: the clone path is wrong or no marker was added")
-	}
+	marked := 0
 	for _, e := range c.Entries {
-		if e.Rejected != "" {
-			t.Errorf("%s (%s): %s", e.Path, e.Name, e.Rejected)
+		if e.Source == SourceTsqlScripts {
+			marked++
 		}
+		if e.Rejected != "" {
+			t.Errorf("%s:%s (%s): %s", e.Source, e.Path, e.Name, e.Rejected)
+		}
+	}
+	if marked == 0 {
+		t.Fatal("no marked script found: the clone path is wrong or no marker was added")
 	}
 }
 ```
@@ -3472,24 +3916,42 @@ pour le faire entrer.
 
 - [ ] Step 4 : valider sur l'instance de test
 
-Avec le setup de la tâche 2 dans la même invocation, lancer chaque entrée du lot et chaque
-requête livrée par `-saved` sur le profil `catalog-test`, avec `-maxrows 20`, puis chaque
-entrée paramétrée une seconde fois avec une valeur passée. Pour chaque run, relever : code
-de sortie, nombre de jeux (`1 + len(more_results)`), `rowcount` du premier, `messages`,
-`verified` avant et après. Écrire `docs/validation/2026-10-04-query-catalog.md` sur le
-modèle de `docs/validation/2026-10-01-missing-indexes.md` : instance (`SELECT @@VERSION`),
-login, une table par run, et chaque écart avec son explication. Un script qui échoue sur
-l'instance sort du lot : retirer son marqueur et le consigner.
+Tout dans une seule invocation du shell, avec les exports de la tâche 2, plus
+`export DB_AI_TOOLKIT_REGISTRY="$(mktemp -d)/verified.json" DB_AI_TOOLKIT_QUERIES="$(mktemp -d)"`
+pour que la validation n'écrive pas dans le vrai registre de l'utilisateur (une vérification
+faite sur un conteneur de test ne vaut pas pour ses instances), le binaire construit au step 3
+et `-profiles "$SQLQ_TEST_PROFILES" -profile catalog-test -maxrows 20 -timeout 120`
+sur chaque appel. L'instance est partagée et lente : ne rien y créer, ne pas la redémarrer.
 
-Enfin, `sqlq -list-queries` une seconde fois : chaque entrée lancée avec succès porte
-`verified`.
+1. `sqlq -list-profiles`, puis `SELECT LEFT(@@VERSION, 80) AS v` en `-query` : version pour
+   la validation.
+2. Choisir les valeurs des requêtes livrées à paramètre :
+   `-query "SELECT TOP (3) SCHEMA_NAME(schema_id) + '.' + name AS n, type FROM sys.all_objects WHERE is_ms_shipped = 1 AND type IN ('V', 'P') AND OBJECT_DEFINITION(object_id) IS NOT NULL ORDER BY name"`.
+   Prendre la première vue rendue pour `view-diagnose` et `object-references`, la première
+   procédure pour `proc-source`.
+3. Chaque requête livrée par `-saved <nom>`, avec `-param name=<valeur du point 2>` pour
+   `object-references`, `proc-source`, `view-diagnose`, et `-database master` pour
+   `missing-indexes`.
+4. Chaque entrée du lot par `-saved <nom>` sans `-param`, puis chaque entrée paramétrée une
+   seconde fois avec une valeur passée valide pour son type (une chaîne `%` ou un nom de
+   l'instance, un entier, `0` ou `1` pour un `bit`).
+5. `-list-queries -profile catalog-test` : chaque entrée lancée avec succès porte
+   `verified`.
+
+Pour chaque run, relever : code de sortie, nombre de jeux (`1 + len(more_results)`),
+`rowcount` du premier, nombre de `messages`, `verified` avant et après. Écrire
+`docs/validation/2026-10-04-query-catalog.md` sur le modèle de
+`docs/validation/2026-10-01-missing-indexes.md` : instance, login (`sa`, conteneur de test),
+une ligne par run, et chaque écart avec son explication. Un script du lot qui échoue sur
+l'instance sort du lot : retirer son marqueur et le consigner. Une requête livrée qui échoue
+est un défaut à rapporter, pas à corriger dans cette tâche.
 
 - [ ] Step 5 : version et nettoyage
 
-Passer `plugins/sqlserver-toolkit/.claude-plugin/plugin.json` en `0.5.0`. Arrêter et
-supprimer le conteneur `dbai-catalog-test` (`podman rm -f dbai-catalog-test`) et le fichier
-de profils de test. Supprimer `/tmp/sqlq-catalog`. Vérifier `git status --porcelain -uall`
-dans les deux dépôts : seuls les fichiers de cette tâche sont modifiés.
+Passer `plugins/sqlserver-toolkit/.claude-plugin/plugin.json` en `0.5.0`. Supprimer
+`/tmp/sqlq-catalog`. Ne pas toucher au conteneur de test ni au fichier de profils : ils
+appartiennent au contrôleur. Vérifier `git status --porcelain -uall` dans les deux dépôts :
+seuls les fichiers de cette tâche sont modifiés.
 
 - [ ] Step 6 : commits
 
@@ -3504,5 +3966,5 @@ Dans db-ai-toolkit :
 
 ```bash
 git add tools/internal/sqlq/real_clone_test.go docs/validation/2026-10-04-query-catalog.md plugins/sqlserver-toolkit/.claude-plugin/plugin.json
-git commit -m "test(sqlq): validate the catalogue against tsql-scripts and an instance" -m "Every marked script and every bundled query ran through -saved on a SQL Server 2025 container, parameterised ones twice, and the record keeps what each returned. The check on the real clone is what the user runs after adding markers."
+git commit -m "test(sqlq): validate the catalogue against tsql-scripts and an instance" -m "The marked scripts and the bundled queries ran through -saved on a SQL Server 2025 test container, parameterised ones twice, and the record keeps what each run returned, including those that failed and left the set. The check on the real clone is what the user runs after adding markers."
 ```
