@@ -195,3 +195,147 @@ func TestParamValueValidatedByType(t *testing.T) {
 		}
 	}
 }
+
+// Defects found by the code review of task 5. Each case was proven on a real
+// SQL Server to change or lose the bound value.
+
+func TestAssignmentInsideParenthesesIsRejected(t *testing.T) {
+	for _, src := range []string{
+		"DECLARE @p int = 1;\n(SELECT @p = 2);\nSELECT @p;",
+		"DECLARE @p int = 1;\nSELECT 1 UNION (SELECT @p = 2);\nSELECT @p;",
+		"DECLARE @p int = 1;\nIF EXISTS (SELECT @p = 2) SELECT 'y';\nSELECT @p;",
+		"DECLARE @p int = 1;\nSELECT x FROM (VALUES(1)) v(x) ORDER BY (SELECT @p = 2);\nSELECT @p;",
+	} {
+		if _, err := AnalyseOverrides(src, []string{"p"}); err == nil {
+			t.Errorf("assignment accepted: %q", src)
+		}
+	}
+	ok := "DECLARE @p int = 1;\nSELECT name FROM sys.objects WHERE (@p = 1) OR object_id = 3;\nSELECT CASE WHEN @p = 1 THEN 1 END;"
+	if _, err := AnalyseOverrides(ok, []string{"p"}); err != nil {
+		t.Errorf("comparison refused: %v", err)
+	}
+}
+
+func TestVariableGluedToNumberIsRejected(t *testing.T) {
+	for _, src := range []string{
+		"DECLARE @p int = 1;\nSELECT TOP 1@p = object_id FROM sys.objects;\nSELECT @p;",
+		"DECLARE @p int = 1;\nSELECT TOP 1@P = object_id FROM sys.objects;\nSELECT @p;",
+	} {
+		if _, err := AnalyseOverrides(src, []string{"p"}); err == nil {
+			t.Errorf("glued assignment accepted: %q", src)
+		}
+	}
+	// x@p is one identifier for SQL Server too.
+	if _, err := AnalyseOverrides("DECLARE @p int = 1;\nSELECT x@p FROM t WHERE c = @p;", []string{"p"}); err != nil {
+		t.Errorf("identifier x@p refused: %v", err)
+	}
+}
+
+func TestInitializerMustBeOneExpression(t *testing.T) {
+	for _, init := range []string{
+		"1 GOTO x", "1 (SELECT 2 AS two)", "1 CHECKPOINT", "1 WAITFOR DELAY '00:00:01'",
+		"1 COMMIT", "1 OPEN c", "1 BREAK", "'a' COMMIT", "N'a' COMMIT", "1 'a'",
+		"CASE WHEN 1 = 1 THEN 1 END", "N'a' COLLATE Latin1_General_BIN", "1 +", "1 = 1",
+		"f (1)", "1(2)", "1.5(SELECT 2)", "x.(1)", "1 ~ 2",
+	} {
+		src := "DECLARE @p int = " + init + ";\nSELECT @p;"
+		if _, err := AnalyseOverrides(src, []string{"p"}); err == nil {
+			t.Errorf("initializer %q accepted", init)
+		}
+	}
+	for _, init := range []string{
+		"N'%'", "''", "'%PROFIL%'", "-1", "100", "NULL", "@@SPID", "~0", "0x1F", "1.5", ".5",
+		"DATEADD(hour, -@LookbackHours, GETDATE())",
+		"DATEPART(hour,@RunDateStart)*10000 + DATEPART(minute,@RunDateStart)*100 + DATEPART(second,@RunDateStart)",
+		"CONVERT(INT, CONVERT(VARCHAR(8), @RunDateStart, 112))",
+		"dbo.f(1) + (1 + 2) * - 3", "N'a' + N'b' /* why */", "[x]",
+	} {
+		src := "DECLARE @p int = " + init + ";\nSELECT @p;"
+		if _, err := AnalyseOverrides(src, []string{"p"}); err != nil {
+			t.Errorf("initializer %q refused: %v", init, err)
+		}
+	}
+}
+
+func TestConditionalDeclareIsRejected(t *testing.T) {
+	for _, src := range []string{
+		"IF 1 = 0\nDECLARE @p int = 5;\nSELECT @p;",
+		"IF 1 = 1 SELECT 1 ELSE\nDECLARE @p int = 5;\nSELECT @p;",
+		"WHILE 1 = 0\nDECLARE @p int = 5;\nSELECT @p;",
+		"BEGIN TRY\nDECLARE @p int = 5;\nSELECT @p;\nEND TRY BEGIN CATCH END CATCH",
+		"GOTO x;\nDECLARE @p int = 5;\nx:\nSELECT @p;",
+		"x:\nDECLARE @p int = 5;\nSELECT @p;",
+	} {
+		if _, err := AnalyseOverrides(src, []string{"p"}); err == nil {
+			t.Errorf("conditional declaration accepted: %q", src)
+		}
+	}
+}
+
+func TestFractionalSecondsAreRejected(t *testing.T) {
+	for _, c := range []struct{ typ, in string }{
+		{"datetime", "2020-12-31T23:59:59.999"},
+		{"datetime2", "2020-12-31T23:59:59.5"},
+		{"datetime2", "2020-12-31T23:59:59,5"},
+		{"datetime", "2020-12-31T23:59:59.000"},
+	} {
+		if _, err := BindValue(ParamType{Base: c.typ}, c.in); err == nil {
+			t.Errorf("BindValue(%s, %q) accepted", c.typ, c.in)
+		}
+	}
+}
+
+func TestDateOutsideTypeRangeIsRejected(t *testing.T) {
+	bad := []struct{ typ, in string }{
+		{"date", "0000-01-01"}, {"datetime2", "0000-12-31T10:00"}, {"datetime", "1752-12-31"},
+		{"smalldatetime", "1899-12-31T23:59"}, {"smalldatetime", "2079-06-07"},
+	}
+	for _, c := range bad {
+		if _, err := BindValue(ParamType{Base: c.typ}, c.in); err == nil {
+			t.Errorf("BindValue(%s, %q) accepted", c.typ, c.in)
+		}
+	}
+	good := []struct{ typ, in string }{
+		{"date", "0001-01-01"}, {"datetime2", "0001-01-01T00:00"}, {"datetime", "1753-01-01"},
+		{"smalldatetime", "1900-01-01"}, {"smalldatetime", "2079-06-06T23:59"}, {"date", "9999-12-31"},
+	}
+	for _, c := range good {
+		if _, err := BindValue(ParamType{Base: c.typ}, c.in); err != nil {
+			t.Errorf("BindValue(%s, %q) refused: %v", c.typ, c.in, err)
+		}
+	}
+}
+
+func TestNonASCIIVariableNamesAreRejected(t *testing.T) {
+	cases := []struct{ src, name string }{
+		{"DECLARE @p int = 1;\nSET @ｐ = 7;\nSELECT @p;", "p"},
+		{"DECLARE @strasse int = 1;\nSET @straße = 2;\nSELECT @strasse;", "strasse"},
+		{"DECLARE @straße int = 1;\nSELECT @straße;", "straße"},
+	}
+	for _, c := range cases {
+		if _, err := AnalyseOverrides(c.src, []string{c.name}); err == nil {
+			t.Errorf("accepted %q for %s", c.src, c.name)
+		}
+	}
+}
+
+func TestDeclareWithAsIsAccepted(t *testing.T) {
+	src := "DECLARE @StartTime  as datetime2 = '2023-02-26 06:00:00';\nSELECT @StartTime;"
+	ps, err := AnalyseOverrides(src, []string{"starttime"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ps[0].Type.Base != "datetime2" {
+		t.Errorf("type = %v", ps[0].Type)
+	}
+	if got := Rewrite(src, ps, map[string]bool{"starttime": true}); got != "DECLARE @StartTime  as datetime2 = @sqlq_starttime;\nSELECT @StartTime;" {
+		t.Errorf("Rewrite = %q", got)
+	}
+}
+
+func TestBracketedTypeIsNamedInTheRefusal(t *testing.T) {
+	_, err := AnalyseOverrides("DECLARE @p [int] = 1;\nSELECT @p;", []string{"p"})
+	if err == nil || !strings.Contains(err.Error(), "bracket") {
+		t.Errorf("err = %v", err)
+	}
+}

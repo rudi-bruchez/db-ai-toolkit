@@ -401,7 +401,23 @@ DECLARE @p <type> = <expression> ;
   plus que des espaces), ne contient ni `;` ni virgule de profondeur de parenthèses
   nulle (ce qui exclut `DECLARE @a int = 1, @b int = 2;`), et ses parenthèses sont
   équilibrées ;
-- `<type>` est l'un des types de la table ci-dessous.
+- `<type>` est l'un des types de la table ci-dessous, écrit nu ; `DECLARE @p AS <type> =`
+  est la même déclaration et s'accepte. Un type entre crochets (`[int]`) ou entre
+  guillemets est blanchi par `Sanitize` comme tout identifiant délimité : le refus le dit
+  plutôt que de parler d'un type `=` ;
+- `<expression>` forme une seule expression à sa profondeur de parenthèses : opérandes
+  (littéral, variable, nom, groupe entre parenthèses) et opérateurs binaires (`+ - * / % &
+  | ^`) alternent, avec `+ - ~` en unaires. Un nom collé à un groupe est un appel de
+  fonction ; un nombre collé à un groupe ne l'est pas. `CASE` et `COLLATE` à cette
+  profondeur sont refusés plutôt qu'analysés. Sans cette règle, `DECLARE @p int = 1 GOTO x;`,
+  `= 1 (SELECT 2 AS two);`, `= 1 CHECKPOINT;`, `= 1 WAITFOR DELAY '00:00:01';`, `COMMIT`,
+  `OPEN c` ou `BREAK` passaient, et la réécriture effaçait l'instruction qui suit le `1` :
+  une liste de mots qui commencent une instruction ne sera jamais complète, la structure
+  l'est ;
+- aucun `IF`, `ELSE`, `WHILE`, `BEGIN`, `GOTO` ni étiquette (`x:`) ne précède la déclaration
+  dans le texte nettoyé (un `ELSE` dans `CASE … END` ne compte pas). Après `IF 1 = 0`, la
+  ligne `DECLARE @p int = 5;` ne s'exécute pas, `@p` existe et vaut `NULL`, quelle que soit
+  la valeur liée.
 
 La portion remplacée est `<expression>`, aux positions du texte nettoyé reportées sur le
 texte d'origine. `Sanitize` travaille en runes, la réécriture aussi. Les remplacements
@@ -438,6 +454,13 @@ convient pas : code 1, message nommant le paramètre et son type.
 - Les dates sont liées avec un type temporel du driver plutôt qu'en chaîne, pour ne pas
   dépendre du `DATEFORMAT` de la session : sous un login français, `2026-10-04` en chaîne
   vers `datetime` peut se lire en `AAAA-JJ-MM`.
+- Aucune fraction de seconde, pour aucun type date et heure : l'analyse de Go accepte
+  `23:59:59.999` même quand le format ne la nomme pas, et le serveur l'arrondit
+  (`2020-12-31T23:59:59.999` en `datetime` devient le 1er janvier 2021).
+- L'année et la date restent dans l'intervalle du type, que le driver ou le serveur
+  ramènerait sans erreur (l'année `0000` devient `0001`) : au moins `0001` pour `date` et
+  `datetime2`, au moins `1753-01-01` pour `datetime`, de `1900-01-01` à `2079-06-06` pour
+  `smalldatetime`.
 - Tout autre type (`decimal`, `float`, `uniqueidentifier`, `xml`…) : la ligne n'est pas
   surchargeable, l'entrée est `rejected` (`parameter "p": type decimal not supported`).
 
@@ -456,13 +479,22 @@ sur les jetons du texte nettoyé, pour chaque occurrence de `@p` hors de sa déc
 
 - `@p` suivi d'un opérateur composé (`+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`), de
   `OUT` ou de `OUTPUT` : affectation, partout ;
-- `@p` suivi de `=` à une profondeur de parenthèses non nulle : comparaison
-  (`IIF(@online = 1, …)`), acceptée ;
-- `@p` suivi de `=` à profondeur nulle, quand le jeton qui précède `@p` est l'un de
-  `WHERE`, `AND`, `OR`, `NOT`, `ON`, `WHEN`, `HAVING`, `IF`, `WHILE`, `THEN`, `ELSE` :
-  comparaison, acceptée ;
-- `@p` suivi de `=` à profondeur nulle dans tout autre contexte (`SET @p =`,
-  `SELECT @p =`, `SELECT TOP (1) @p =`, `SELECT @x = 1, @p = 2`) : affectation.
+- `@p` suivi de `=`, à toute profondeur de parenthèses, quand le jeton qui précède `@p`
+  est `(` ou l'un de `WHERE`, `AND`, `OR`, `NOT`, `ON`, `WHEN`, `HAVING`, `IF`, `WHILE`,
+  `THEN`, `ELSE` : comparaison (`IIF(@online = 1, …)`, `WHERE @p = 1`), acceptée ;
+- `@p` suivi de `=` dans tout autre contexte (`SET @p =`, `SELECT @p =`,
+  `SELECT TOP (1) @p =`, `SELECT @x = 1, @p = 2`, `(SELECT @p = 2)`,
+  `SELECT 1 UNION (SELECT @p = 2)`) : affectation. La profondeur ne prouve rien, une
+  affectation entre parenthèses affecte ;
+- un mot qui commence par un chiffre ou `$` et se termine par `@p` après son premier `@`
+  (`SELECT TOP 1@p = …`) : `Lex` y voit un seul mot, SQL Server le nombre `1` puis `@p`.
+  Refusé partout. `x@p` est un identifiant pour les deux et reste accepté.
+
+Le nom de variable lui-même doit être comparable sans le serveur. Sous une collation
+insensible à la largeur et à la casse, `SET @ｐ = 7` (p pleine chasse) modifie `@p`, et
+`SET @strasse = 2` modifie `@straße`. Une surcharge est donc refusée quand le nom du
+paramètre n'est pas fait de lettres ASCII, de chiffres et de `_`, ou quand un jeton du
+fichier qui contient `@` porte un caractère non ASCII.
 
 La règle penche du côté du refus : un contexte non prévu compte comme une affectation, et le
 script est `rejected`, ce qui se voit. Les autres manières d'affecter une variable
@@ -476,6 +508,11 @@ script est `rejected`, ce qui se voit. Les autres manières d'affecter une varia
 - Une valeur qui ne passe pas la validation de son type.
 
 Le garde-fou s'applique au texte réécrit, en filet, en plus du texte d'origine.
+
+Les règles sur l'expression unique, la déclaration conditionnelle, l'affectation entre
+parenthèses, la variable collée à un nombre, les noms non ASCII, les fractions de seconde
+et les bornes de dates viennent de la relecture du code de la tâche 5 : chacun de ces cas a
+été prouvé sur un vrai SQL Server, où la valeur liée était modifiée ou perdue sans erreur.
 
 ## 12. Contrat CLI
 
