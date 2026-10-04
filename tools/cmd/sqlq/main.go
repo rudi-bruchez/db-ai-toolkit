@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/golang-sql/sqlexp"
 	mssql "github.com/microsoft/go-mssqldb"
 	_ "github.com/microsoft/go-mssqldb/azuread"
 
@@ -302,7 +303,8 @@ func execute(profile sqlq.Profile, sqlText string, args []any, o options,
 		return result, exitSQL
 	}
 
-	rows, err := conn.QueryContext(ctx, sqlText, args...)
+	retmsg := &sqlexp.ReturnMessage{}
+	rows, err := conn.QueryContext(ctx, sqlText, append(args, retmsg)...)
 	if err != nil {
 		result.ElapsedMS = time.Since(started).Milliseconds()
 		result.Error = sqlError(err, secret)
@@ -310,56 +312,74 @@ func execute(profile sqlq.Profile, sqlText string, args []any, o options,
 	}
 	defer rows.Close()
 
-	if err := collect(rows, &result, o.maxRows); err != nil {
-		result.ElapsedMS = time.Since(started).Milliseconds()
+	sqlErr, err := collect(ctx, rows, retmsg, &result, o.maxRows)
+	result.ElapsedMS = time.Since(started).Milliseconds()
+	switch {
+	case err != nil:
 		result.Error = sqlError(err, secret)
 		return result, exitSQL
+	case sqlErr != nil:
+		result.Error = sqlError(sqlErr, secret)
+		return result, exitSQL
 	}
-
-	result.ElapsedMS = time.Since(started).Milliseconds()
 	return result, exitOK
 }
 
-// collect reads the first result set into the result, then looks through any
-// further result sets for a showplan, which SET STATISTICS XML ON returns
-// after the data.
-func collect(rows *sql.Rows, result *sqlq.Result, maxRows int) error {
+// collect reads every result set and every informational message, in the order
+// the server sends them. The first non-showplan set fills the result's own
+// fields, later ones go to MoreResults, and a showplan goes to Plan. The first
+// SQL error is returned separately so the sets read before it are kept.
+func collect(ctx context.Context, rows *sql.Rows, retmsg *sqlexp.ReturnMessage,
+	result *sqlq.Result, maxRows int) (sqlErr error, err error) {
 	first := true
-	for {
-		cols, err := rows.ColumnTypes()
-		if err != nil {
-			return err
-		}
-		if isShowplan(cols) {
-			plan, err := readSingleString(rows)
-			if err != nil {
-				return err
+	for active := true; active; {
+		switch m := retmsg.Message(ctx).(type) {
+		case sqlexp.MsgNotice:
+			result.Messages = append(result.Messages, m.Message.String())
+		case sqlexp.MsgError:
+			if sqlErr == nil {
+				sqlErr = m.Error
 			}
-			result.Plan = plan
-		} else if first {
+		case sqlexp.MsgNext:
+			cols, err := rows.ColumnTypes()
+			if err != nil {
+				return sqlErr, err
+			}
+			if isShowplan(cols) {
+				plan, err := readSingleString(rows)
+				if err != nil {
+					return sqlErr, err
+				}
+				result.Plan = plan
+				continue
+			}
 			set := sqlq.NewRowSet(maxRows)
-			result.Columns = make([]sqlq.Column, len(cols))
+			columns := make([]sqlq.Column, len(cols))
 			for i, c := range cols {
-				result.Columns[i] = sqlq.Column{Name: c.Name(), Type: c.DatabaseTypeName()}
+				columns[i] = sqlq.Column{Name: c.Name(), Type: c.DatabaseTypeName()}
 			}
 			if err := scanAll(rows, cols, set); err != nil {
-				return err
+				return sqlErr, err
 			}
-			result.Rows = set.Rows
-			result.RowCount = set.RowCount
-			result.Truncated = set.Truncated
-			first = false
-		} else {
-			// Extra result sets beyond the first are drained, not reported:
-			// one query, one answer.
-			for rows.Next() {
+			if first {
+				result.Columns, result.Rows = columns, set.Rows
+				result.RowCount, result.Truncated = set.RowCount, set.Truncated
+				first = false
+			} else {
+				result.MoreResults = append(result.MoreResults, sqlq.ResultSet{
+					Columns: columns, Rows: set.Rows, RowCount: set.RowCount, Truncated: set.Truncated})
 			}
-		}
-		if !rows.NextResultSet() {
-			break
+		case sqlexp.MsgNextResultSet:
+			active = rows.NextResultSet()
 		}
 	}
-	return rows.Err()
+	// On timeout, Message returns MsgNextResultSet (sqlexp v0.1.0,
+	// messages.go), so the loop ends as if the batch had: without this check a
+	// query cut short by -timeout would exit 0 with partial rows.
+	if ctx.Err() != nil {
+		return sqlErr, ctx.Err()
+	}
+	return sqlErr, rows.Err()
 }
 
 func scanAll(rows *sql.Rows, cols []*sql.ColumnType, set *sqlq.RowSet) error {

@@ -2,6 +2,7 @@ package sqlq
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -69,5 +70,19 @@ func TestResultOmitsPlanAndErrorWhenAbsent(t *testing.T) {
 	}
 	if back["plan"] != nil {
 		t.Errorf("plan = %#v; want null when no plan was captured", back["plan"])
+	}
+}
+
+func TestMoreResultsIsAlwaysAnArray(t *testing.T) {
+	b, err := json.Marshal(Result{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"more_results":[]`) {
+		t.Errorf("empty result should carry more_results:[], got %s", b)
+	}
+	b, _ = json.Marshal(Result{MoreResults: []ResultSet{{}}})
+	if !strings.Contains(string(b), `"more_results":[{"columns":[],"rows":[],"rowcount":0,"truncated":false}]`) {
+		t.Errorf("an empty extra set should still have arrays, got %s", b)
 	}
 }
