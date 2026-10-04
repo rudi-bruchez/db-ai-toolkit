@@ -200,3 +200,19 @@ func TestSaveRequiresSummary(t *testing.T) {
 		t.Errorf("err = %v", err)
 	}
 }
+
+// Without the canon a personal file holding a bundled name is no collision, so
+// -saved would run it in the canon's place: refuse that catalogue.
+func TestSavedNeedsTheCanon(t *testing.T) {
+	q := t.TempDir()
+	os.MkdirAll(filepath.Join(q, "_generic"), 0o700)
+	os.WriteFile(filepath.Join(q, "_generic", "tables-largest.sql"), []byte("/* Stand-in.\n*/\nSELECT 99 AS reserved_mb;\n"), 0o600)
+	cfg := sqlq.CatalogConfig{BundledDir: filepath.Join(q, "no-canon"), PersonalDir: q, Profile: "dev"}
+	if err := needCanon(sqlq.LoadCatalog(cfg)); err == nil {
+		t.Error("catalogue without the canon accepted")
+	}
+	cfg.BundledDir = filepath.Join("..", "..", "..", "plugins", "sqlserver-toolkit", "skills", "live-query", "queries")
+	if err := needCanon(sqlq.LoadCatalog(cfg)); err != nil {
+		t.Errorf("catalogue with the canon refused: %v", err)
+	}
+}
