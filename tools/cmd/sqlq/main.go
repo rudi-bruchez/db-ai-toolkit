@@ -279,6 +279,11 @@ func checkSave(o options, profile sqlq.Profile, profileNames []string, sqlText s
 	if o.summary == "" {
 		return "", "", errors.New("-save-query needs -summary")
 	}
+	// The saved file carries the SQL only: a later -saved run would read at
+	// the default isolation and not reproduce this one.
+	if o.dirtyReads {
+		return "", "", errors.New("-save-query cannot keep a -dirty-reads run: the saved file would not record it; add SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED to the query instead")
+	}
 	content, err := sqlq.SavedFileContent(o.summary, sqlText)
 	if err != nil {
 		return "", "", err
