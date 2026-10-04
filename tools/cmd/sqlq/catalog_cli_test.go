@@ -216,3 +216,11 @@ func TestSavedNeedsTheCanon(t *testing.T) {
 		t.Errorf("catalogue with the canon refused: %v", err)
 	}
 }
+
+func TestSaveRefusesADirtyReadsRun(t *testing.T) {
+	saveEnv(t)
+	o := options{saveQuery: "orders-late", summary: "Late orders.", dirtyReads: true, queriesDir: t.TempDir()}
+	if _, _, err := checkSave(o, sqlq.Profile{Name: "dev"}, []string{"dev"}, "SELECT 1;"); err == nil || !strings.Contains(err.Error(), "-dirty-reads") {
+		t.Errorf("err = %v", err)
+	}
+}

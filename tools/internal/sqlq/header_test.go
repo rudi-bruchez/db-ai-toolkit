@@ -180,3 +180,11 @@ func TestMarkerReasonsDoNotQuoteTheAuthor(t *testing.T) {
 		}
 	}
 }
+
+func TestMarkerKeyGivenTwiceIsRejected(t *testing.T) {
+	for _, line := range []string{"name=a name=b", "name=a params=x params=y"} {
+		if _, err := parseMarker(line); err == nil {
+			t.Errorf("parseMarker(%q) accepted", line)
+		}
+	}
+}

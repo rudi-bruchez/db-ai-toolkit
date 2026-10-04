@@ -178,8 +178,14 @@ func parseMarker(rest string) (Marker, error) {
 		key, value, hasValue := strings.Cut(field, "=")
 		switch {
 		case key == "name" && hasValue:
+			if m.Name != "" {
+				return Marker{}, errors.New("name= given twice")
+			}
 			m.Name = value
 		case key == "params" && hasValue:
+			if m.Params != nil {
+				return Marker{}, errors.New("params= given twice")
+			}
 			for i, p := range strings.Split(value, ",") {
 				p = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(p), "@"))
 				if p == "" {
