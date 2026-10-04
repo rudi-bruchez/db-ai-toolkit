@@ -128,7 +128,7 @@ sqlq -profile prod-erp -query "<sql>" -plan
 sqlq -profile prod-erp -query "<sql>" -database Other -timeout 120
 sqlq -list-queries -profile prod-erp
 sqlq -profile prod-erp -saved tables-largest -maxrows 20
-sqlq -profile prod-erp -saved sessions-from-host -param hostname=SRV-APP01 -maxrows 50
+sqlq -profile prod-erp -saved sessions-by-host -param hostname=SRV-APP01 -maxrows 50
 sqlq -profile prod-erp -query "<sql>" -save-query orders-late -summary "Orders past their promised date."
 ```
 
