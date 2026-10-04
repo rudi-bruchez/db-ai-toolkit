@@ -339,3 +339,18 @@ func TestBracketedTypeIsNamedInTheRefusal(t *testing.T) {
 		t.Errorf("err = %v", err)
 	}
 }
+
+func TestOverrideSeesWhatTheServerSees(t *testing.T) {
+	for _, src := range []string{
+		"DECLARE @p int = 1; -- c\rSELECT @p = 99\nSELECT @p AS v;",
+		"-- c\rIF 1=0\nDECLARE @p int = 5;\nSELECT @p AS v;",
+		"SELECT 1IF 1=0\nDECLARE @p int = 5;\nSELECT @p AS v;",
+		"SELECT 1WHILE 1=0\nDECLARE @p int = 5;\nSELECT @p AS v;",
+		"DECLARE @p int = 1RETURN;\nSELECT @p AS v;",
+		"DECLARE @p int = 0xRETURN;\nSELECT @p AS v;",
+	} {
+		if _, err := AnalyseOverrides(src, []string{"p"}); err == nil {
+			t.Errorf("accepted: %q", src)
+		}
+	}
+}
