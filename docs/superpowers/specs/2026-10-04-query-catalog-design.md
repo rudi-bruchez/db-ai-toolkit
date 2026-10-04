@@ -126,10 +126,14 @@ multiples », qui en décrit le mécanisme.
 - Le premier jeu non showplan reste dans `columns`, `rows`, `rowcount`, `truncated`, comme
   aujourd'hui : rien ne change pour un appelant d'une seule requête.
 - Chaque jeu suivant non showplan s'ajoute à `more_results`, tableau d'objets
-  `{columns, rows, rowcount, truncated}`. `-maxrows` s'applique à chaque jeu.
+  `{columns, rows, rowcount, truncated, incomplete}`. `-maxrows` s'applique à chaque jeu.
 - Le showplan garde son traitement actuel (`plan`).
 - Une erreur SQL survenue après un premier jeu rend `error`, avec les jeux déjà lus : le
-  code de sortie reste `2`.
+  code de sortie reste `2`. Le jeu encore ouvert quand l'erreur arrive porte
+  `incomplete: true` (le pilote le termine proprement, et ses lignes passeraient sinon pour
+  le jeu entier) ; le premier jeu porte le même champ au niveau de l'objet. `error` garde la
+  première erreur, les suivantes vont dans `messages` sous la forme `error <numéro>: <texte>`.
+  Ajouté après la relecture de la tâche 2.
 - Cela vaut pour toutes les sources de SQL, `-query` et `-file` compris. La règle « une
   requête, une réponse » reste une discipline du skill, pas une impossibilité de l'outil.
 

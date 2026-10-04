@@ -82,7 +82,7 @@ func TestMoreResultsIsAlwaysAnArray(t *testing.T) {
 		t.Errorf("empty result should carry more_results:[], got %s", b)
 	}
 	b, _ = json.Marshal(Result{MoreResults: []ResultSet{{}}})
-	if !strings.Contains(string(b), `"more_results":[{"columns":[],"rows":[],"rowcount":0,"truncated":false}]`) {
+	if !strings.Contains(string(b), `"more_results":[{"columns":[],"rows":[],"rowcount":0,"truncated":false,"incomplete":false}]`) {
 		t.Errorf("an empty extra set should still have arrays, got %s", b)
 	}
 }

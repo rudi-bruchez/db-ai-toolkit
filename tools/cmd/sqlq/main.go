@@ -312,14 +312,23 @@ func execute(profile sqlq.Profile, sqlText string, args []any, o options,
 	}
 	defer rows.Close()
 
-	sqlErr, err := collect(ctx, rows, retmsg, &result, o.maxRows)
+	sqlErrs, err := collect(ctx, rows, retmsg, &result, o.maxRows)
 	result.ElapsedMS = time.Since(started).Milliseconds()
+	// Errors after the first go to messages, so none is lost; Error keeps the
+	// first, which is the one that explains the others.
+	for i, e := range sqlErrs {
+		if i == 0 {
+			continue
+		}
+		later := sqlError(e, secret)
+		result.Messages = append(result.Messages, fmt.Sprintf("error %d: %s", later.Number, later.Message))
+	}
 	switch {
 	case err != nil:
 		result.Error = sqlError(err, secret)
 		return result, exitSQL
-	case sqlErr != nil:
-		result.Error = sqlError(sqlErr, secret)
+	case len(sqlErrs) > 0:
+		result.Error = sqlError(sqlErrs[0], secret)
 		return result, exitSQL
 	}
 	return result, exitOK
@@ -327,28 +336,35 @@ func execute(profile sqlq.Profile, sqlText string, args []any, o options,
 
 // collect reads every result set and every informational message, in the order
 // the server sends them. The first non-showplan set fills the result's own
-// fields, later ones go to MoreResults, and a showplan goes to Plan. The first
-// SQL error is returned separately so the sets read before it are kept.
+// fields, later ones go to MoreResults, and a showplan goes to Plan. SQL errors
+// are returned separately, in order, so the sets read before them are kept. A
+// set still open when an error arrives is marked incomplete: the driver ends
+// it early and cleanly, and its rows would otherwise pass for the whole set.
 func collect(ctx context.Context, rows *sql.Rows, retmsg *sqlexp.ReturnMessage,
-	result *sqlq.Result, maxRows int) (sqlErr error, err error) {
+	result *sqlq.Result, maxRows int) (sqlErrs []error, err error) {
 	first := true
+	open := -1 // the set the server has not closed yet: 0 the first, k MoreResults[k-1]
 	for active := true; active; {
 		switch m := retmsg.Message(ctx).(type) {
 		case sqlexp.MsgNotice:
 			result.Messages = append(result.Messages, m.Message.String())
 		case sqlexp.MsgError:
-			if sqlErr == nil {
-				sqlErr = m.Error
+			sqlErrs = append(sqlErrs, m.Error)
+			switch {
+			case open == 0:
+				result.Incomplete = true
+			case open > 0:
+				result.MoreResults[open-1].Incomplete = true
 			}
 		case sqlexp.MsgNext:
 			cols, err := rows.ColumnTypes()
 			if err != nil {
-				return sqlErr, err
+				return sqlErrs, err
 			}
 			if isShowplan(cols) {
 				plan, err := readSingleString(rows)
 				if err != nil {
-					return sqlErr, err
+					return sqlErrs, err
 				}
 				result.Plan = plan
 				continue
@@ -359,27 +375,30 @@ func collect(ctx context.Context, rows *sql.Rows, retmsg *sqlexp.ReturnMessage,
 				columns[i] = sqlq.Column{Name: c.Name(), Type: c.DatabaseTypeName()}
 			}
 			if err := scanAll(rows, cols, set); err != nil {
-				return sqlErr, err
+				return sqlErrs, err
 			}
 			if first {
 				result.Columns, result.Rows = columns, set.Rows
 				result.RowCount, result.Truncated = set.RowCount, set.Truncated
 				first = false
+				open = 0
 			} else {
 				result.MoreResults = append(result.MoreResults, sqlq.ResultSet{
 					Columns: columns, Rows: set.Rows, RowCount: set.RowCount, Truncated: set.Truncated})
+				open = len(result.MoreResults)
 			}
 		case sqlexp.MsgNextResultSet:
+			open = -1
 			active = rows.NextResultSet()
 		}
 	}
-	// On timeout, Message returns MsgNextResultSet (sqlexp v0.1.0,
-	// messages.go), so the loop ends as if the batch had: without this check a
-	// query cut short by -timeout would exit 0 with partial rows.
+	// Defensive: with go-mssqldb v1.11 a timeout already ends the loop through
+	// a failing NextResultSet and surfaces in rows.Err(), but a query cut short
+	// by -timeout must never exit 0 with partial rows if that ever changes.
 	if ctx.Err() != nil {
-		return sqlErr, ctx.Err()
+		return sqlErrs, ctx.Err()
 	}
-	return sqlErr, rows.Err()
+	return sqlErrs, rows.Err()
 }
 
 func scanAll(rows *sql.Rows, cols []*sql.ColumnType, set *sqlq.RowSet) error {
