@@ -40,7 +40,7 @@ const (
 	exitUsage     = 1
 	exitSQL       = 2
 	exitRefused   = 3
-	exitConnected = 4 // connection or transport failure
+	exitConnected = 4 // could not connect or start the query
 )
 
 // preamble runs before every batch. LOCK_TIMEOUT is the anti-blocking guard:
@@ -719,12 +719,17 @@ func execute(profile sqlq.Profile, sqlText string, args []any, o options,
 		later := sqlError(sqlErrs[i+1], secret)
 		result.Messages[slot] = fmt.Sprintf("error %d: %s", later.Number, later.Message)
 	}
+	// The first SQL error wins over collect's own error, a timeout included:
+	// it is the one that explains what followed (spec § 4.2). Any failure after
+	// the query started exits 2, transport included; exit 4 is kept for a
+	// connection that failed before it, the only case that can be told apart
+	// reliably and tested.
 	switch {
-	case err != nil:
-		result.Error = sqlError(err, secret)
-		return result, exitSQL
 	case len(sqlErrs) > 0:
 		result.Error = sqlError(sqlErrs[0], secret)
+		return result, exitSQL
+	case err != nil:
+		result.Error = sqlError(err, secret)
 		return result, exitSQL
 	}
 	return result, exitOK
@@ -736,6 +741,13 @@ func execute(profile sqlq.Profile, sqlText string, args []any, o options,
 // are returned separately, in order, so the sets read before them are kept. A
 // set still open when an error arrives is marked incomplete: the driver ends
 // it early and cleanly, and its rows would otherwise pass for the whole set.
+//
+// The timeout is recognized where it is received: a MsgNextResultSet that
+// arrives once ctx has expired is the synthetic one Message returns on
+// ctx.Done(), and ends the loop with ctx.Err(). No set is marked then: a set
+// whose scan returned without error was read to its end. A set whose scan
+// fails midway (timeout or transport) is kept with the rows already read and
+// marked incomplete, unless it read none.
 //
 // o.maxMessages and o.maxResultSets cap what is stored, never what is read
 // (0 means no cap). Past a cap the loop goes on draining the server: messages
@@ -819,30 +831,34 @@ func collect(ctx context.Context, rows *sql.Rows, retmsg *sqlexp.ReturnMessage,
 			for i, c := range cols {
 				columns[i] = sqlq.Column{Name: c.Name(), Type: c.DatabaseTypeName()}
 			}
-			if err := scanAll(rows, cols, set); err != nil {
-				return sqlErrs, errSlots, err
+			scanErr := scanAll(rows, cols, set)
+			if scanErr != nil && set.RowCount == 0 {
+				// Nothing read: an empty set would claim knowledge we lack.
+				return sqlErrs, errSlots, scanErr
 			}
 			sets++
 			if first {
 				result.Columns, result.Rows = columns, set.Rows
 				result.RowCount, result.Truncated = set.RowCount, set.Truncated
+				result.Incomplete = scanErr != nil
 				first = false
 				open = 0
 			} else {
 				result.MoreResults = append(result.MoreResults, sqlq.ResultSet{
-					Columns: columns, Rows: set.Rows, RowCount: set.RowCount, Truncated: set.Truncated})
+					Columns: columns, Rows: set.Rows, RowCount: set.RowCount, Truncated: set.Truncated,
+					Incomplete: scanErr != nil})
 				open = len(result.MoreResults)
 			}
+			if scanErr != nil {
+				return sqlErrs, errSlots, scanErr
+			}
 		case sqlexp.MsgNextResultSet:
+			if ctx.Err() != nil {
+				return sqlErrs, errSlots, ctx.Err()
+			}
 			open = -1
 			active = rows.NextResultSet()
 		}
-	}
-	// Defensive: with go-mssqldb v1.11 a timeout already ends the loop through
-	// a failing NextResultSet and surfaces in rows.Err(), but a query cut short
-	// by -timeout must never exit 0 with partial rows if that ever changes.
-	if ctx.Err() != nil {
-		return sqlErrs, errSlots, ctx.Err()
 	}
 	return sqlErrs, errSlots, rows.Err()
 }

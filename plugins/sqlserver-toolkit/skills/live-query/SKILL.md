@@ -166,8 +166,9 @@ Every run prints one JSON object, on success and on failure alike:
 
 - `more_results` holds every result set after the first, each as
   `{columns, rows, rowcount, truncated, incomplete}`; `-maxrows` applies to each.
-- `incomplete: true`, on the top level or on a set, means an error cut that set
-  short: its rows are not the whole set. Never report them as complete.
+- `incomplete: true`, on the top level or on a set, means an error or the
+  timeout cut that set short: its rows are not the whole set. Never report them
+  as complete.
 - `messages` carries the server's `PRINT` and low-severity `RAISERROR` output,
   in order, plus what `sqlq` itself has to say: on a `-saved` run, the
   catalogue's own messages (a missing tsql-scripts source, a disabled personal
@@ -204,8 +205,10 @@ message}`. Quote the error number and line — that is what makes a SQL Server
 error diagnosable. `error` keeps the first SQL error; later ones are in
 `messages` as `error <n>: <text>`, and the sets read before the error are kept.
 
-Exit codes: `0` success, `1` usage or configuration, `2` SQL error,
-`3` refused by the write guard, `4` connection failure.
+Exit codes: `0` success, `1` usage or configuration, `2` any failure after
+the query started (SQL error, timeout or transport), `3` refused by the write
+guard, `4` could not connect or start the query. When a SQL error and the
+timeout both occur, `error` is the first SQL error.
 
 Two flags exist that this skill must not reach for on its own:
 
