@@ -236,3 +236,87 @@ func TestLaterErrorsKeepTheirPlaceInMessages(t *testing.T) {
 		t.Errorf("messages out of order: %q", res.Messages)
 	}
 }
+
+// labSecret returns the lab password, failing (without printing it) when there
+// is none: redacting an empty secret is a no-op, so these tests would prove
+// nothing.
+func labSecret(t *testing.T, p sqlq.Profile, resolve sqlq.SecretResolver) string {
+	t.Helper()
+	secret, err := resolve(p)
+	if err != nil {
+		t.Fatalf("resolving the lab secret failed")
+	}
+	if secret == "" {
+		t.Fatalf("the lab profile has no secret; these tests would prove nothing")
+	}
+	return secret
+}
+
+// The failure messages below print counts and booleans only: printing
+// res.Messages, res.Plan or res.Error would write the password into the test
+// log, which is the leak under test.
+
+func TestNoticesAreRedacted(t *testing.T) {
+	p, resolve := testProfile(t)
+	secret := labSecret(t, p, resolve)
+	batch := "PRINT '" + strings.ReplaceAll(secret, "'", "''") + "'; SELECT 1 AS a;"
+	res, code := execute(p, batch, nil, options{maxRows: 5, timeoutSec: 120}, resolve)
+	if code != exitOK {
+		t.Fatalf("exit %d; want %d (error present: %v)", code, exitOK, res.Error != nil)
+	}
+	leaked, marked := 0, 0
+	for _, m := range res.Messages {
+		if strings.Contains(m, secret) {
+			leaked++
+		}
+		if strings.Contains(m, "[redacted]") {
+			marked++
+		}
+	}
+	if leaked > 0 || marked == 0 {
+		t.Errorf("%d messages: %d carry the secret, %d carry [redacted]; want 0 and at least 1",
+			len(res.Messages), leaked, marked)
+	}
+}
+
+func TestPlanIsRedacted(t *testing.T) {
+	p, resolve := testProfile(t)
+	secret := labSecret(t, p, resolve)
+	batch := "SELECT COUNT(*) AS n FROM sys.objects WHERE name = '" +
+		strings.ReplaceAll(secret, "'", "''") + "';"
+	res, code := execute(p, batch, nil, options{maxRows: 5, timeoutSec: 120, wantPlan: true}, resolve)
+	if code != exitOK {
+		t.Fatalf("exit %d; want %d (error present: %v)", code, exitOK, res.Error != nil)
+	}
+	if res.Plan == nil {
+		t.Fatalf("no plan returned")
+	}
+	for i, form := range secretForms(secret) {
+		if strings.Contains(*res.Plan, form) {
+			t.Errorf("the plan carries secret form #%d", i)
+		}
+	}
+	if !strings.Contains(*res.Plan, "[redacted]") {
+		t.Errorf("the plan (%d bytes) carries no [redacted] marker", len(*res.Plan))
+	}
+}
+
+func TestErrorTextIsRedacted(t *testing.T) {
+	p, resolve := testProfile(t)
+	secret := labSecret(t, p, resolve)
+	literal := strings.ReplaceAll(strings.ReplaceAll(secret, "'", "''"), "%", "%%")
+	res, code := execute(p, "RAISERROR('"+literal+"', 16, 1);", nil,
+		options{maxRows: 5, timeoutSec: 120}, resolve)
+	if code != exitSQL {
+		t.Fatalf("exit %d; want %d", code, exitSQL)
+	}
+	if res.Error == nil {
+		t.Fatalf("no error returned")
+	}
+	leaked := strings.Contains(res.Error.Message, secret)
+	marked := strings.Contains(res.Error.Message, "[redacted]")
+	if leaked || !marked {
+		t.Errorf("error text: carries the secret %v, carries [redacted] %v; want false and true",
+			leaked, marked)
+	}
+}
