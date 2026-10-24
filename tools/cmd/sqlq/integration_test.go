@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -97,6 +98,42 @@ func TestManyMessagesDoNotHang(t *testing.T) {
 	res, code := execute(p, batch, nil, options{maxRows: 5, timeoutSec: 120}, resolve)
 	if code != exitOK || len(res.Messages) != 40 || len(res.MoreResults) != 1 {
 		t.Errorf("code %d, %d messages, %d extra sets, error %+v", code, len(res.Messages), len(res.MoreResults), res.Error)
+	}
+}
+
+// The driver's message queue holds 15 entries and is filled from the goroutine
+// that reads rows. More than 15 notices inside one result set, here one STATISTICS
+// IO line per table, must not stall the query while collect sits in scanAll.
+func TestManyNoticesInsideOneSetDoNotHang(t *testing.T) {
+	p, resolve := testProfile(t)
+	batch := "SET STATISTICS IO ON; SELECT (SELECT COUNT(*) FROM sys.objects) + (SELECT COUNT(*) FROM sys.columns) + " +
+		"(SELECT COUNT(*) FROM sys.indexes) + (SELECT COUNT(*) FROM sys.index_columns) + (SELECT COUNT(*) FROM sys.partitions) + " +
+		"(SELECT COUNT(*) FROM sys.allocation_units) + (SELECT COUNT(*) FROM sys.types) + (SELECT COUNT(*) FROM sys.schemas) + " +
+		"(SELECT COUNT(*) FROM sys.sql_modules) + (SELECT COUNT(*) FROM sys.foreign_keys) + (SELECT COUNT(*) FROM sys.database_principals) + " +
+		"(SELECT COUNT(*) FROM sys.database_permissions) + (SELECT COUNT(*) FROM sys.xml_schema_collections) + " +
+		"(SELECT COUNT(*) FROM sys.fulltext_catalogs) + (SELECT COUNT(*) FROM sys.assemblies) + (SELECT COUNT(*) FROM sys.certificates) + " +
+		"(SELECT COUNT(*) FROM sys.symmetric_keys) + (SELECT COUNT(*) FROM sys.asymmetric_keys) AS total;"
+	res, code := execute(p, batch, nil, options{maxRows: 5, timeoutSec: 10}, resolve)
+	if code != exitOK || res.Error != nil {
+		t.Fatalf("code %d, error %+v", code, res.Error)
+	}
+	if len(res.Rows) != 1 || len(res.Messages) < 16 {
+		t.Errorf("%d rows, %d messages, want 1 row and at least 16 messages", len(res.Rows), len(res.Messages))
+	}
+}
+
+// A parameterized batch runs under sp_executesql, where a PRINT emits no DONE
+// token, so the notices pile up while collect waits in rows.NextResultSet for
+// the next statement. The 16th must not stall the query either.
+func TestManyNoticesInAParameterizedBatchDoNotHang(t *testing.T) {
+	p, resolve := testProfile(t)
+	batch := "SELECT 1 AS a;\n" + strings.Repeat("PRINT 'm';\n", 20) + "SELECT @p AS b;"
+	res, code := execute(p, batch, []any{sql.Named("p", 1)}, options{maxRows: 5, timeoutSec: 10}, resolve)
+	if code != exitOK || res.Error != nil {
+		t.Fatalf("code %d, error %+v", code, res.Error)
+	}
+	if len(res.Messages) != 20 || len(res.MoreResults) != 1 {
+		t.Errorf("%d messages, %d extra sets, want 20 and 1", len(res.Messages), len(res.MoreResults))
 	}
 }
 

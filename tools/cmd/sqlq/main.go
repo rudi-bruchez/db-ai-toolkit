@@ -24,6 +24,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/golang-sql/sqlexp"
@@ -703,10 +704,11 @@ func execute(profile sqlq.Profile, sqlText string, args []any, o options,
 // it early and cleanly, and its rows would otherwise pass for the whole set.
 func collect(ctx context.Context, rows *sql.Rows, retmsg *sqlexp.ReturnMessage,
 	result *sqlq.Result, maxRows int) (sqlErrs []error, errSlots []int, err error) {
+	next := relay(ctx, retmsg)
 	first := true
 	open := -1 // the set the server has not closed yet: 0 the first, k MoreResults[k-1]
 	for active := true; active; {
-		switch m := retmsg.Message(ctx).(type) {
+		switch m := next().(type) {
 		case sqlexp.MsgNotice:
 			result.Messages = append(result.Messages, m.Message.String())
 		case sqlexp.MsgError:
@@ -765,6 +767,71 @@ func collect(ctx context.Context, rows *sql.Rows, retmsg *sqlexp.ReturnMessage,
 		return sqlErrs, errSlots, ctx.Err()
 	}
 	return sqlErrs, errSlots, rows.Err()
+}
+
+// relay drains the driver's message queue continuously and hands the messages
+// back, in arrival order, through the function it returns.
+//
+// sqlexp.ReturnMessage holds 15 messages, and go-mssqldb enqueues notices from
+// the same goroutine that feeds rows. While collect sits in scanAll waiting for
+// the end of a set, or in rows.NextResultSet waiting for the next statement,
+// nobody reads that queue: a 16th notice blocks the driver, the awaited token
+// never comes, and the query hangs until -timeout. One SELECT under SET
+// STATISTICS IO that reads a dozen and a half catalog views is enough.
+//
+// The goroutine stops after queueing the first message it receives once ctx is
+// done, normally the MsgNextResultSet that Message returns on expiry. execute
+// cancels ctx on its way out, so the goroutine never outlives the call. From
+// then on, an empty queue yields MsgNextResultSet, as Message itself would.
+//
+// ponytail: the relay queue is unbounded. It grows by the number of notices one
+// statement emits while a single set is read. A ceiling on messages belongs to
+// what collect stores in the result, not to this queue.
+func relay(ctx context.Context, retmsg *sqlexp.ReturnMessage) func() sqlexp.RawMessage {
+	var (
+		mu    sync.Mutex
+		queue []sqlexp.RawMessage
+		done  bool
+	)
+	ready := make(chan struct{}, 1)
+	signal := func() {
+		select {
+		case ready <- struct{}{}:
+		default: // a wake-up is already pending; next re-checks the queue
+		}
+	}
+	go func() {
+		for {
+			m := retmsg.Message(ctx)
+			mu.Lock()
+			queue = append(queue, m)
+			stop := ctx.Err() != nil
+			done = stop
+			mu.Unlock()
+			signal()
+			if stop {
+				return
+			}
+		}
+	}()
+	return func() sqlexp.RawMessage {
+		for {
+			mu.Lock()
+			if len(queue) > 0 {
+				m := queue[0]
+				queue[0] = nil
+				queue = queue[1:]
+				mu.Unlock()
+				return m
+			}
+			if done {
+				mu.Unlock()
+				return sqlexp.MsgNextResultSet{}
+			}
+			mu.Unlock()
+			<-ready
+		}
+	}
 }
 
 func scanAll(rows *sql.Rows, cols []*sql.ColumnType, set *sqlq.RowSet) error {
