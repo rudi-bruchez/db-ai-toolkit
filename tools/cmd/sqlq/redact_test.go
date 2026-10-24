@@ -143,3 +143,20 @@ func TestLoginFailedCarriesDoNotRetry(t *testing.T) {
 		t.Errorf("only 18456 gets the lockout advice, got %q", other.Message)
 	}
 }
+
+// A showplan quotes the statement text, and with it any literal, escaped for
+// XML the way SQL Server does it (measured: &amp; &lt; &gt; &quot; &apos;),
+// with the apostrophes still doubled as the SQL literal wrote them. None of
+// those spellings is the secret itself, so each must be a form of its own.
+func TestSecretFormsCoverXMLEscaping(t *testing.T) {
+	const secret = `a&b<c>d"e'f`
+	for _, form := range []string{
+		`a&amp;b&lt;c&gt;d&quot;e&apos;f`,
+		`a&amp;b&lt;c&gt;d&quot;e&apos;&apos;f`,
+		`a&b<c>d"e''f`,
+	} {
+		if got := redact("x "+form+" y", secret); got != "x [redacted] y" {
+			t.Errorf("redact(%q) = %q; want the form replaced", form, got)
+		}
+	}
+}

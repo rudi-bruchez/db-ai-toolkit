@@ -679,6 +679,19 @@ func execute(profile sqlq.Profile, sqlText string, args []any, o options,
 
 	sqlErrs, errSlots, err := collect(ctx, rows, retmsg, &result, o.maxRows)
 	result.ElapsedMS = time.Since(started).Milliseconds()
+	// Notices and plans are server text, and a new output channel is born
+	// unfiltered unless someone filters it: a PRINT can echo the password, and
+	// a plan quotes any literal in the query. The error slots are filled
+	// below by sqlError, which already redacts. The messages run() appends
+	// later for -saved come from the local catalogue and registry, never from
+	// the server, so they do not pass through here.
+	for i, m := range result.Messages {
+		result.Messages[i] = redact(m, secret)
+	}
+	if result.Plan != nil {
+		redacted := redact(*result.Plan, secret)
+		result.Plan = &redacted
+	}
 	// Errors after the first go to messages, so none is lost; Error keeps the
 	// first, which is the one that explains the others.
 	for i, slot := range errSlots {
@@ -1100,8 +1113,22 @@ func secretForms(secret string) []string {
 	add(strings.TrimPrefix(url.UserPassword("", secret).String(), ":"))
 	// And the query-string spelling, for a driver that reports a parameter.
 	add(url.QueryEscape(secret))
+	// A showplan quotes the statement, so a query holding the secret as a
+	// literal returns it in the plan, XML-escaped the way SQL Server escapes
+	// (measured: & < > " ' become &amp; &lt; &gt; &quot; &apos;) and, as the
+	// SQL literal or ParameterCompiledValue writes it, with its apostrophes
+	// doubled. Not xml.EscapeText: it writes &#39; and &#34;, which the server
+	// does not. A Replacer does not rescan its output, so & is safe.
+	doubled := strings.ReplaceAll(secret, "'", "''")
+	add(doubled)
+	add(xmlEscaper.Replace(secret))
+	add(xmlEscaper.Replace(doubled))
 	return forms
 }
+
+// xmlEscaper escapes text as SQL Server writes it into showplan XML.
+var xmlEscaper = strings.NewReplacer(
+	"&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&quot;", "'", "&apos;")
 
 // redactErr scrubs a secret out of a structured SQL error.
 func redactErr(e *sqlq.SQLError, secret string) *sqlq.SQLError {
