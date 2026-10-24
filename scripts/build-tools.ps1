@@ -37,6 +37,9 @@ $targets = @{
     'sqlq' = @(
         (Join-Path $repoRoot 'plugins/sqlserver-toolkit/bin')
     )
+    'sqlplan' = @(
+        (Join-Path $repoRoot 'plugins/sqlserver-toolkit/bin')
+    )
 }
 
 function Get-BinaryName([string]$cmd, [string]$goos) {

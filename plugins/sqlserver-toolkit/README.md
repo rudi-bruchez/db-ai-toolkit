@@ -12,6 +12,7 @@ Microsoft SQL Server.
 | Command | `/diagnose-errorlog <folder>` | Entry point that runs the skill on a path |
 | Tool | `errorlog-parse` (Go, in `bin/`) | Strips ERRORLOG noise before the skill reads it |
 | Tool | `sqlq` (Go, in `bin/`) | Runs a guarded read-only query and returns JSON |
+| Tool | `sqlplan` (Go, in `bin/`) | Draws execution plans in the browser |
 
 ## The `errorlog-parse` preprocessor
 
@@ -149,6 +150,24 @@ error and the exit code stays `2`; later errors go to `messages` as
 `error <n>: <text>`. `messages` also carries `PRINT` and low-severity
 `RAISERROR` output, in the order the server sent it. With `-plan` and several
 statements, only the last statement's plan is kept.
+
+### Seeing the plan
+
+`sqlplan` draws a plan in the default browser: icons of the Microsoft documentation,
+row counts on the arrows, the cost of expensive operators in color, light or dark
+theme. It reads `.sqlplan` files (UTF-8, or UTF-16 as SSMS saves them) or the JSON of
+`sqlq -plan` on stdin, writes one standalone HTML page and opens it.
+
+```bash
+sqlq -profile lab -query "<sql>" -plan | sqlplan
+sqlplan before.sqlplan after.sqlplan            # one page, both plans
+sqlplan -theme light -o plan.html -no-open slow.sqlplan
+```
+
+The page holds the plan, query text and parameter values included: treat it like the
+plan itself. The drawing library is built from
+[rudi-bruchez/query-plan](https://github.com/rudi-bruchez/query-plan) and embedded in
+the binary (`tools/internal/sqlplan/assets/`).
 
 ### Query catalogue
 
