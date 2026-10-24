@@ -57,6 +57,13 @@ func Decode(data []byte) (string, error) {
 	}
 }
 
+func nodeJS(id string) string {
+	if id == "" {
+		return "null"
+	}
+	return `"` + id + `"`
+}
+
 func checkXML(s string) (string, error) {
 	if !strings.Contains(s, "<ShowPlanXML") {
 		return "", errors.New("XML without a <ShowPlanXML> element: not an execution plan")
@@ -91,13 +98,29 @@ func utf16String(b []byte, bigEndian bool) (string, error) {
 	return string(utf16.Decode(u)), nil
 }
 
-// Page returns a standalone HTML page drawing the plans, in the given theme:
-// "light", "dark", or "auto" to follow the system.
-func Page(title string, plans []Plan, theme string) (string, error) {
+// Options shape the page.
+type Options struct {
+	// Theme is "light", "dark", or "auto" to follow the system.
+	Theme string
+	// NodeID, when set, draws only the operator of that NodeId and the operators under it.
+	NodeID string
+	// ForImage drops the plan names and makes the page report its size in its title,
+	// as "size:<width>x<height>", for a screenshot cut to the plan.
+	ForImage bool
+}
+
+// Page returns a standalone HTML page drawing the plans.
+func Page(title string, plans []Plan, opts Options) (string, error) {
+	theme := opts.Theme
 	switch theme {
 	case "light", "dark", "auto":
 	default:
 		return "", fmt.Errorf("unknown theme %q: light, dark or auto", theme)
+	}
+	for _, r := range opts.NodeID {
+		if r < '0' || r > '9' {
+			return "", fmt.Errorf("node %q: a NodeId is a number", opts.NodeID)
+		}
 	}
 	js, err := assets.ReadFile("assets/qp.min.js")
 	if err != nil {
@@ -154,17 +177,37 @@ h2:first-child { margin-top: 0; }
 <body>
 <script>
 (function () {
-  var plans = %s;
+  var plans = %s, forImage = %t, options = { theme: %q, nodeId: %s };
   plans.forEach(function (p) {
-    var h = document.body.appendChild(document.createElement("h2"));
-    h.textContent = p.name;
+    if (!forImage) {
+      var h = document.body.appendChild(document.createElement("h2"));
+      h.textContent = p.name;
+    }
     var c = document.body.appendChild(document.createElement("div"));
-    QP.showPlan(c, p.xml, { theme: %q });
+    c.style.display = "inline-block";
+    try {
+      QP.showPlan(c, p.xml, options);
+    } catch (e) {
+      c.textContent = p.name + ": " + e.message;
+      document.title = "error:" + e.message;
+      throw e;
+    }
   });
+  if (forImage) {
+    // The drawn plans, not the document: its scroll size never goes below the window's
+    var w = 0, h = 0;
+    document.querySelectorAll("body > div").forEach(function (c) {
+      var r = c.getBoundingClientRect();
+      w = Math.max(w, r.right);
+      h = Math.max(h, r.bottom);
+    });
+    var pad = parseFloat(getComputedStyle(document.body).paddingRight) || 0;
+    document.title = "size:" + Math.ceil(w + pad) + "x" + Math.ceil(h + pad);
+  }
 })();
 </script>
 </body>
 </html>
-`, theme, html.EscapeString(title), inlineCSS, js, data, theme)
+`, theme, html.EscapeString(title), inlineCSS, js, data, opts.ForImage, theme, nodeJS(opts.NodeID))
 	return b.String(), nil
 }

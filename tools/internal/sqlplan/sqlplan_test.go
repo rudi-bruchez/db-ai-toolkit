@@ -61,14 +61,14 @@ func TestDecodeRefuses(t *testing.T) {
 }
 
 func TestPage(t *testing.T) {
-	page, err := Page(`a <b> & "c"`, []Plan{{Name: "one.sqlplan", XML: plan}, {Name: "two</script>.sqlplan", XML: plan}}, "dark")
+	page, err := Page(`a <b> & "c"`, []Plan{{Name: "one.sqlplan", XML: plan}, {Name: "two</script>.sqlplan", XML: plan}}, Options{Theme: "dark"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
 		`<title>a &lt;b&gt; &amp; &#34;c&#34;</title>`,
 		`data-theme="dark"`,
-		`theme: "dark"`,
+		`theme: "dark", nodeId: null`,
 		`url('data:image/png;base64,`, // sprite inlined: the page is one file
 		`"name":"one.sqlplan"`,
 		`"name":"two\u003c/script\u003e.sqlplan"`,
@@ -88,7 +88,23 @@ func TestPage(t *testing.T) {
 }
 
 func TestPageRefusesUnknownTheme(t *testing.T) {
-	if _, err := Page("x", []Plan{{Name: "p", XML: plan}}, "blue"); err == nil {
+	if _, err := Page("x", []Plan{{Name: "p", XML: plan}}, Options{Theme: "blue"}); err == nil {
 		t.Error("theme blue accepted")
+	}
+	// The NodeId goes into the script as a string literal: only digits may get there
+	if _, err := Page("x", []Plan{{Name: "p", XML: plan}}, Options{Theme: "light", NodeID: `1"); alert(1); ("`}); err == nil {
+		t.Error("a NodeId that is not a number was accepted")
+	}
+}
+
+func TestPageForImage(t *testing.T) {
+	page, err := Page("x", []Plan{{Name: "one.sqlplan", XML: plan}}, Options{Theme: "light", NodeID: "5", ForImage: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`forImage = true`, `nodeId: "5"`, `"size:"`} {
+		if !strings.Contains(page, want) {
+			t.Errorf("page lacks %q", want)
+		}
 	}
 }
