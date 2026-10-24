@@ -86,3 +86,13 @@ func TestMoreResultsIsAlwaysAnArray(t *testing.T) {
 		t.Errorf("an empty extra set should still have arrays, got %s", b)
 	}
 }
+
+func TestMorePlansIsAlwaysAnArray(t *testing.T) {
+	b, err := json.Marshal(Result{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"more_plans":[]`) {
+		t.Errorf("empty result should carry more_plans:[], got %s", b)
+	}
+}

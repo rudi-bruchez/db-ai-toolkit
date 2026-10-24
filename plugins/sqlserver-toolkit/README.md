@@ -150,7 +150,8 @@ that set short, so its rows are not the whole set. `error` keeps the first SQL
 error and the exit code stays `2`; later errors go to `messages` as
 `error <n>: <text>`. `messages` also carries `PRINT` and low-severity
 `RAISERROR` output, in the order the server sent it. With `-plan` and several
-statements, only the last statement's plan is kept.
+statements, `plan` is the first statement's plan and the others are in
+`more_plans`, in execution order.
 
 ### Seeing the plan
 
