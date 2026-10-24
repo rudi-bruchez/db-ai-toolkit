@@ -1,0 +1,72 @@
+Slot 0 Offset 0x60 Length 32
+
+
+Record Type = PRIMARY_RECORD        Record Attributes =  NULL_BITMAP VARIABLE_COLUMNS
+
+Record Size = 32                    
+Memory Dump @0x0000000A25906060
+
+
+0000000000000000:   30000d00 b4050000 01e4c802 00030000 01002000  0...´....äÈ....... .
+
+0000000000000014:   4c696265 6c6ce920 31343630                    Libellé 1460
+
+
+Slot 0 Column 1 Offset 0x4 Length 4 Length (physical) 4
+
+
+Id = 1460                           
+
+
+Slot 0 Column 2 Offset 0x14 Length 12 Length (physical) 12
+
+
+Libelle = Libellé 1460              
+
+
+Slot 0 Column 3 Offset 0x8 Length 5 Length (physical) 5
+
+
+Montant = 1825.00                   
+
+
+Slot 0 Offset 0x0 Length 0 Length (physical) 0
+
+
+KeyHashValue = (9e3f4cdccd5f)       
+Slot 90 Offset 0xba0 Length 32
+
+
+Record Type = PRIMARY_RECORD        Record Attributes =  NULL_BITMAP VARIABLE_COLUMNS
+
+Record Size = 32                    
+Memory Dump @0x0000000A25906BA0
+
+
+0000000000000000:   30000d00 0e060000 01d6f402 00030000 01002000  0........Öô....... .
+
+0000000000000014:   4c696265 5a5a5a5a 31353530                    LibeZZZZ1550
+
+
+Slot 90 Column 1 Offset 0x4 Length 4 Length (physical) 4
+
+
+Id = 1550                           
+
+
+Slot 90 Column 2 Offset 0x14 Length 12 Length (physical) 12
+
+
+Libelle = LibeZZZZ1550              
+
+
+Slot 90 Column 3 Offset 0x8 Length 5 Length (physical) 5
+
+
+Montant = 1937.50                   
+
+
+Slot 90 Offset 0x0 Length 0 Length (physical) 0
+
+
+KeyHashValue = (4aa3d3e54ad8)       
