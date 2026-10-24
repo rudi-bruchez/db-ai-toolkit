@@ -37,7 +37,9 @@ type Result struct {
 	MoreResults []ResultSet `json:"more_results"`
 	Messages    []string    `json:"messages"`
 	Plan        *string     `json:"plan"`
-	Error       *SQLError   `json:"error"`
+	// MorePlans holds every plan after the first, in arrival order, always an array.
+	MorePlans []string  `json:"more_plans"`
+	Error     *SQLError `json:"error"`
 	// Saved is set on a -saved run only.
 	Saved *SavedRun `json:"saved,omitempty"`
 }
@@ -61,6 +63,9 @@ func (r Result) MarshalJSON() ([]byte, error) {
 	}
 	if out.Messages == nil {
 		out.Messages = []string{}
+	}
+	if out.MorePlans == nil {
+		out.MorePlans = []string{}
 	}
 	return json.Marshal(out)
 }

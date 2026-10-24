@@ -86,7 +86,7 @@ result, and `-maxrows` stays the safety net.
 
 | The user asks | Do this |
 |---|---|
-| Why is this query slow | Run it with `-plan`, then hand the `plan` field to the `sqlserver-query-plans` plugin. Do not analyse showplan XML by hand here. With several statements, only the last statement's plan is kept: run the slow one alone. When the user wants to see the plan, pipe the same run into `sqlplan`, which opens it drawn in the browser. |
+| Why is this query slow | Run it with `-plan`, then hand the `plan` field to the `sqlserver-query-plans` plugin. Do not analyse showplan XML by hand here. With several statements, `plan` is the first statement's plan and the others are in `more_plans`; run the slow one alone when you want its plan at the root. When the user wants to see the plan, pipe the same run into `sqlplan`, which draws the `plan` field (the first plan) in the browser. |
 | Anything no catalogue entry answers | Write the query yourself, but keep the output discipline below. |
 
 After an ad-hoc query that succeeded and proved useful, offer in one line to
@@ -157,7 +157,7 @@ Every run prints one JSON object, on success and on failure alike:
 {"profile":"prod-erp","server":"SRV01","database":"ERP","elapsed_ms":42,
  "columns":[{"name":"n","type":"INT"}],"rows":[{"n":1}],
  "rowcount":1,"truncated":false,"incomplete":false,"more_results":[],
- "messages":[],"plan":null,"error":null,
+ "messages":[],"plan":null,"more_plans":[],"error":null,
  "saved":{"name":"tables-largest","source":"bundled","path":"tables-largest.sql",
           "params":{},"defaults":[],"verified":null}}
 ```
@@ -170,6 +170,11 @@ Every run prints one JSON object, on success and on failure alike:
   in order, plus what `sqlq` itself has to say: on a `-saved` run, the
   catalogue's own messages (a missing tsql-scripts source, a disabled personal
   layer) are copied here.
+- `plan` is the plan of the first statement that has one; the later plans are in
+  `more_plans`, in execution order, and each plan contains the `StatementText`
+  of its statement. None is attached to a set of `more_results`, because the
+  server's stream does not allow it without guessing: a trivial statement with
+  no table has no plan, while an `UPDATE` has one and returns no rows.
 - `saved` appears on a `-saved` run only: which entry ran, the `params` you
   passed, the `defaults` left untouched, and `verified` as it was before the run.
 
@@ -287,4 +292,3 @@ means Kerberos, and the profile must supply `krb5Realm` plus one of
 - A tsql-scripts parameter can only override a one-line `DECLARE` of a simple
   type. Placeholders such as `<database>` and hard-coded object names are not
   adjustable until the script is converted.
-- With `-plan`, only the last statement's plan is kept.

@@ -692,6 +692,9 @@ func execute(profile sqlq.Profile, sqlText string, args []any, o options,
 		redacted := redact(*result.Plan, secret)
 		result.Plan = &redacted
 	}
+	for i, pl := range result.MorePlans {
+		result.MorePlans[i] = redact(pl, secret)
+	}
 	// Errors after the first go to messages, so none is lost; Error keeps the
 	// first, which is the one that explains the others.
 	for i, slot := range errSlots {
@@ -747,7 +750,11 @@ func collect(ctx context.Context, rows *sql.Rows, retmsg *sqlexp.ReturnMessage,
 				if err != nil {
 					return sqlErrs, errSlots, err
 				}
-				result.Plan = plan
+				if result.Plan == nil {
+					result.Plan = plan
+				} else if plan != nil {
+					result.MorePlans = append(result.MorePlans, *plan)
+				}
 				continue
 			}
 			set := sqlq.NewRowSet(maxRows)

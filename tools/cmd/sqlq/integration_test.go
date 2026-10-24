@@ -320,3 +320,21 @@ func TestErrorTextIsRedacted(t *testing.T) {
 			leaked, marked)
 	}
 }
+
+func TestFirstPlanStaysAtTheRoot(t *testing.T) {
+	p, resolve := testProfile(t)
+	batch := "SELECT COUNT(*) AS a FROM sys.objects; SELECT COUNT(*) AS b FROM sys.columns;"
+	res, code := execute(p, batch, nil, options{maxRows: 5, timeoutSec: 120, wantPlan: true}, resolve)
+	if code != exitOK {
+		t.Fatalf("exit %d; want %d (error present: %v)", code, exitOK, res.Error != nil)
+	}
+	if res.Plan == nil || !strings.Contains(*res.Plan, "FROM sys.objects") {
+		t.Fatalf("plan should be the first statement's (FROM sys.objects); got nil or another plan")
+	}
+	if len(res.MorePlans) != 1 {
+		t.Fatalf("more_plans has %d entries; want 1", len(res.MorePlans))
+	}
+	if !strings.Contains(res.MorePlans[0], "FROM sys.columns") {
+		t.Errorf("more_plans[0] should be the second statement's (FROM sys.columns)")
+	}
+}
