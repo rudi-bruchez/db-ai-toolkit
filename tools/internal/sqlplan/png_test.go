@@ -20,7 +20,7 @@ func TestScreenshot(t *testing.T) {
 	for _, c := range []struct {
 		node, wantErr string
 	}{{"", ""}, {"0", ""}, {"7", "No operator with NodeId 7"}} {
-		page, err := Page("t", []Plan{{Name: "p", XML: realPlan}}, Options{Theme: "light", NodeID: c.node, ForImage: true})
+		page, err := Page("t", []Plan{{Name: "p", Text: realPlan, Engine: SQLServer}}, Options{Theme: "light", NodeID: c.node, ForImage: true})
 		if err != nil {
 			t.Fatal(err)
 		}

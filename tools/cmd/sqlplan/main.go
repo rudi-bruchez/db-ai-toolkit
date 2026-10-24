@@ -1,6 +1,6 @@
-// Command sqlplan draws SQL Server execution plans in the browser: it reads
-// .sqlplan files, or the JSON of `sqlq -plan` on stdin, writes a standalone HTML
-// page and opens it with the default browser.
+// Command sqlplan draws execution plans in the browser: it reads SQL Server .sqlplan
+// files, the JSON of `sqlq -plan`, or PostgreSQL EXPLAIN output, writes a standalone
+// HTML page and opens it with the default browser.
 package main
 
 import (
@@ -28,13 +28,16 @@ func run(args []string, stdin io.Reader, stdout io.Writer) error {
        sqlplan -png out.png [-theme light|dark] [-node id] [file.sqlplan]
 
 Draws execution plans in the default browser. With no file, or "-", reads one plan
-from stdin: showplan XML, or the JSON printed by "sqlq -plan". -png writes an image
-of one plan instead, through Chrome, Chromium or Edge run headless (SQLPLAN_BROWSER
-names another one), for a document that cannot run JavaScript, such as a PDF.
+from stdin: SQL Server showplan XML, the JSON printed by "sqlq -plan", or the output
+of PostgreSQL's EXPLAIN, in JSON (best: FORMAT JSON) or text format. -png writes an
+image of one SQL Server plan instead, through Chrome, Chromium or Edge run headless
+(SQLPLAN_BROWSER names another one), for a document that cannot run JavaScript, such
+as a PDF. -png and -node are for SQL Server plans only.
 
   sqlplan plan.sqlplan
   sqlq -profile lab -query "SELECT ..." -plan | sqlplan
-  sqlplan -png lookup.png -node 5 plan.sqlplan     # operator 5 and what it reads`)
+  sqlplan -png lookup.png -node 5 plan.sqlplan     # operator 5 and what it reads
+  psql -XAtc "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) SELECT ..." | sqlplan`)
 		fs.PrintDefaults()
 	}
 	out := fs.String("o", "", "write the page to this file (default: a new temporary file)")
@@ -63,11 +66,11 @@ names another one), for a document that cannot run JavaScript, such as a PDF.
 		if err != nil {
 			return err
 		}
-		xml, err := sqlplan.Decode(data)
+		text, engine, err := sqlplan.Decode(data)
 		if err != nil {
 			return fmt.Errorf("%s: %w", name, err)
 		}
-		plans = append(plans, sqlplan.Plan{Name: filepath.Base(name), XML: xml})
+		plans = append(plans, sqlplan.Plan{Name: filepath.Base(name), Text: text, Engine: engine})
 	}
 
 	if *png != "" {

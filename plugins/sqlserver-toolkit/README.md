@@ -171,6 +171,8 @@ another one) and writes an image at twice the screen resolution, light theme unl
 `-theme dark`. `-node` takes a `NodeId` of the plan XML and keeps that operator and
 its subtree, for a page or an image.
 
+The same tool draws PostgreSQL `EXPLAIN` output: see the `postgres-toolkit` README.
+
 The page holds the plan, query text and parameter values included: treat it like the
 plan itself. The drawing library is built from
 [rudi-bruchez/query-plan](https://github.com/rudi-bruchez/query-plan) and embedded in
