@@ -1,0 +1,196 @@
+Slot 0 Offset 0x60 Length 98
+
+
+Record Type = PRIMARY_RECORD        Record Attributes =  NULL_BITMAP VARIABLE_COLUMNS
+
+Record Size = 98                    
+Memory Dump @0x0000000AFEF66060
+
+
+0000000000000000:   30000400 07000007 001d0023 0038003d 00460051  0..........#.8.=.F.Q
+
+0000000000000014:   00620054 616d696b 61486f6c 6d657332 36312057  .b.TamikaHolmes261 W
+
+0000000000000028:   65737420 46616269 656e2042 6c76642e 32313637  est Fabien Blvd.2167
+
+000000000000003C:   384d696c 7761756b 65653530 32363637 2d353132  8Milwaukee502667-512
+
+0000000000000050:   3967686b 6a333240 656f796a 766f2e6e 6574      9ghkj32@eoyjvo.net
+
+
+Prenom = [BLOB Inline Data] Slot 0 Column 1 Offset 0x17 Length 6 Length (physical) 6
+
+
+Prenom = 0x54616d696b61             
+
+
+Nom = [BLOB Inline Data] Slot 0 Column 2 Offset 0x1d Length 6 Length (physical) 6
+
+
+Nom = 0x486f6c6d6573                
+
+
+Adresse = [BLOB Inline Data] Slot 0 Column 3 Offset 0x23 Length 21 Length (physical) 21
+
+
+0000000F26F5A040:   32363120 57657374 20466162 69656e20 426c7664  261 West Fabien Blvd
+
+0000000F26F5A054:   2e                                            .      
+
+
+CP = [BLOB Inline Data] Slot 0 Column 4 Offset 0x38 Length 5 Length (physical) 5
+
+
+CP = 0x3231363738                   
+
+
+Ville = [BLOB Inline Data] Slot 0 Column 5 Offset 0x3d Length 9 Length (physical) 9
+
+
+0000000F26F5A040:   4d696c77 61756b65 65                          Milwaukee
+
+
+Tel = [BLOB Inline Data] Slot 0 Column 6 Offset 0x46 Length 11 Length (physical) 11
+
+
+0000000F26F5A040:   35303236 36372d35 313239                      502667-5129
+
+
+Email = [BLOB Inline Data] Slot 0 Column 7 Offset 0x51 Length 17 Length (physical) 17
+
+
+0000000F26F5A040:   67686b6a 33324065 6f796a76 6f2e6e65 74        ghkj32@eoyjvo.net
+
+
+Slot 34 Offset 0xddf Length 91
+
+
+Record Type = PRIMARY_RECORD        Record Attributes =  NULL_BITMAP VARIABLE_COLUMNS
+
+Record Size = 91                    
+Memory Dump @0x0000000AFEF66DDF
+
+
+0000000000000000:   30000400 07000107 0017001b 002d0032 00370042  0............-.2.7.B
+
+0000000000000014:   005b0048 6f6c7431 33204772 65656e20 48616775  .[.Holt13 Green Hagu
+
+0000000000000028:   65205374 2e373934 3837416b 726f6e38 37342d31  e St.79487Akron874-1
+
+000000000000003C:   34373835 30316d6a 7a70702e 73776176 69686c68  478501mjzpp.swavihlh
+
+0000000000000050:   40757065 6b746d2e 6f7267                      @upektm.org
+
+
+Slot 34 Column 1 Offset 0x0 Length 0 Length (physical) 0
+
+
+Prenom = [NULL]                     
+
+
+Nom = [BLOB Inline Data] Slot 34 Column 2 Offset 0x17 Length 4 Length (physical) 4
+
+
+Nom = 0x486f6c74                    
+
+
+Adresse = [BLOB Inline Data] Slot 34 Column 3 Offset 0x1b Length 18 Length (physical) 18
+
+
+0000000F26F5A040:   31332047 7265656e 20486167 75652053 742e      13 Green Hague St.
+
+
+CP = [BLOB Inline Data] Slot 34 Column 4 Offset 0x2d Length 5 Length (physical) 5
+
+
+CP = 0x3739343837                   
+
+
+Ville = [BLOB Inline Data] Slot 34 Column 5 Offset 0x32 Length 5 Length (physical) 5
+
+
+Ville = 0x416b726f6e                
+
+
+Tel = [BLOB Inline Data] Slot 34 Column 6 Offset 0x37 Length 11 Length (physical) 11
+
+
+0000000F26F5A040:   3837342d 31343738 353031                      874-1478501
+
+
+Email = [BLOB Inline Data] Slot 34 Column 7 Offset 0x42 Length 25 Length (physical) 25
+
+
+0000000F26F5A040:   6d6a7a70 702e7377 61766968 6c684075 70656b74  mjzpp.swavihlh@upekt
+
+0000000F26F5A054:   6d2e6f72 67                                   m.org  
+
+
+Slot 46 Offset 0x126e Length 107
+
+
+Record Type = PRIMARY_RECORD        Record Attributes =  NULL_BITMAP VARIABLE_COLUMNS
+
+Record Size = 107                   
+Memory Dump @0x0000000AFEF6726E
+
+
+0000000000000000:   30000400 07000007 001c0020 0038003d 0044004f  0.......... .8.=.D.O
+
+0000000000000014:   006b0041 6c6c616e 486f6c74 32363620 45617374  .k.AllanHolt266 East
+
+0000000000000028:   20576869 74652046 69727374 20576179 34363736   White First Way4676
+
+000000000000003C:   37486f30 30303030 30303030 30303030 30303069  7Ho0000000000000000i
+
+0000000000000050:   6e677265 65732e77 6673797a 6b786961 40616d61  ngrees.wfsyzkxia@ama
+
+0000000000000064:   6c637a2e 6e6574                               lcz.net
+
+
+Prenom = [BLOB Inline Data] Slot 46 Column 1 Offset 0x17 Length 5 Length (physical) 5
+
+
+Prenom = 0x416c6c616e               
+
+
+Nom = [BLOB Inline Data] Slot 46 Column 2 Offset 0x1c Length 4 Length (physical) 4
+
+
+Nom = 0x486f6c74                    
+
+
+Adresse = [BLOB Inline Data] Slot 46 Column 3 Offset 0x20 Length 24 Length (physical) 24
+
+
+0000000F26F5A040:   32363620 45617374 20576869 74652046 69727374  266 East White First
+
+0000000F26F5A054:   20576179                                       Way   
+
+
+CP = [BLOB Inline Data] Slot 46 Column 4 Offset 0x38 Length 5 Length (physical) 5
+
+
+CP = 0x3436373637                   
+
+
+Ville = [BLOB Inline Data] Slot 46 Column 5 Offset 0x3d Length 7 Length (physical) 7
+
+
+Ville = 0x486f3030303030            
+
+
+Tel = [BLOB Inline Data] Slot 46 Column 6 Offset 0x44 Length 11 Length (physical) 11
+
+
+0000000F26F5A040:   30303030 30303030 303030                      00000000000
+
+
+Email = [BLOB Inline Data] Slot 46 Column 7 Offset 0x4f Length 28 Length (physical) 28
+
+
+0000000F26F5A040:   696e6772 6565732e 77667379 7a6b7869 6140616d  ingrees.wfsyzkxia@am
+
+0000000F26F5A054:   616c637a 2e6e6574                             alcz.net
+
+

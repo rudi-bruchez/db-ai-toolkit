@@ -9,6 +9,7 @@ Microsoft SQL Server.
 |------|------|---------|
 | Skill | `errorlog-diagnostics` | Triage SQL Server ERRORLOG files from a folder |
 | Skill | `live-query` | Answer questions against a connected instance, read-only |
+| Skill | `page-salvage` | Recover the rows of a page with a bad checksum before `REPAIR_ALLOW_DATA_LOSS` (writes; sqlcmd, sysadmin) |
 | Command | `/diagnose-errorlog <folder>` | Entry point that runs the skill on a path |
 | Tool | `errorlog-parse` (Go, in `bin/`) | Strips ERRORLOG noise before the skill reads it |
 | Tool | `sqlq` (Go, in `bin/`) | Runs a guarded read-only query and returns JSON |

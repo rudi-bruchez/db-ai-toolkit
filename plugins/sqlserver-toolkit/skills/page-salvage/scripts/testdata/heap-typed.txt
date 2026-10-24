@@ -1,0 +1,206 @@
+Slot 0 Offset 0x60 Length 84
+
+
+Record Type = PRIMARY_RECORD        Record Attributes =  NULL_BITMAP VARIABLE_COLUMNS
+
+Record Size = 84                    
+Memory Dump @0x0000000A22836060
+
+
+0000000000000000:   30001500 5a010000 94fa0a01 f2a80000 04433334  0...Z...ú..ò¨...C34
+
+0000000000000014:   36080000 03002e00 36005400 4e006f00 6d002000  6.......6.T.N.o.m. .
+
+0000000000000028:   33003400 36005669 6c6c6520 35357878 78787878  3.4.6.Ville 55xxxxxx
+
+000000000000003C:   78787878 78787878 78787878 78787878 78787878  xxxxxxxxxxxxxxxxxxxx
+
+0000000000000050:   2066696e                                       fin   
+
+
+Slot 0 Column 1 Offset 0x4 Length 4 Length (physical) 4
+
+
+Id = 346                            
+
+
+Slot 0 Column 2 Offset 0x20 Length 14 Length (physical) 14
+
+
+Nom = Nom 346                       
+
+
+Slot 0 Column 3 Offset 0x2e Length 8 Length (physical) 8
+
+
+Ville = Ville 55                    
+
+
+Note = [BLOB Inline Data] Slot 0 Column 4 Offset 0x36 Length 30 Length (physical) 30
+
+
+0000000F3C15C040:   78787878 78787878 78787878 78787878 78787878  xxxxxxxxxxxxxxxxxxxx
+
+0000000F3C15C054:   78787878 78782066 696e                        xxxxxx fin
+
+
+Slot 0 Column 5 Offset 0x8 Length 3 Length (physical) 3
+
+
+Naissance = 1970-12-13              
+
+
+Slot 0 Column 6 Offset 0xb Length 5 Length (physical) 5
+
+
+Solde = 432.50                      
+
+
+Slot 0 Column 7 Offset 0x10 Length 1 (Bit position 0)
+
+
+Actif = 0                           
+
+
+Slot 0 Column 8 Offset 0x11 Length 4 Length (physical) 4
+
+
+Code = C346                         
+
+
+Slot 4 Offset 0x194 Length 94
+
+
+Record Type = PRIMARY_RECORD        Record Attributes =  NULL_BITMAP VARIABLE_COLUMNS
+
+Record Size = 94                    
+Memory Dump @0x0000000A22836194
+
+
+0000000000000000:   30001500 5e010000 98fa0a01 e6aa0000 04433335  0...^....ú..æª...C35
+
+0000000000000014:   30080004 03003c00 3c005e00 4e006f00 6d002000  0.....<.<.^.N.o.m. .
+
+0000000000000028:   33003500 30002000 c9006c00 6f00ef00 73006500  3.5.0. .É.l.o.ï.s.e.
+
+000000000000003C:   78787878 78787878 78787878 78787878 78787878  xxxxxxxxxxxxxxxxxxxx
+
+0000000000000050:   78787878 78787878 78782066 696e               xxxxxxxxxx fin
+
+
+Slot 4 Column 1 Offset 0x4 Length 4 Length (physical) 4
+
+
+Id = 350                            
+
+
+Slot 4 Column 2 Offset 0x20 Length 28 Length (physical) 28
+
+
+Nom = Nom 350 Éloïse                
+
+
+Slot 4 Column 3 Offset 0x0 Length 0 Length (physical) 0
+
+
+Ville = [NULL]                      
+
+
+Note = [BLOB Inline Data] Slot 4 Column 4 Offset 0x3c Length 34 Length (physical) 34
+
+
+0000000F3C15C040:   78787878 78787878 78787878 78787878 78787878  xxxxxxxxxxxxxxxxxxxx
+
+0000000F3C15C054:   78787878 78787878 78782066 696e               xxxxxxxxxx fin
+
+
+Slot 4 Column 5 Offset 0x8 Length 3 Length (physical) 3
+
+
+Naissance = 1970-12-17              
+
+
+Slot 4 Column 6 Offset 0xb Length 5 Length (physical) 5
+
+
+Solde = 437.50                      
+
+
+Slot 4 Column 7 Offset 0x10 Length 1 (Bit position 0)
+
+
+Actif = 0                           
+
+
+Slot 4 Column 8 Offset 0x11 Length 4 Length (physical) 4
+
+
+Code = C350                         
+
+
+Slot 27 Offset 0x7cb Length 71
+
+
+Record Type = PRIMARY_RECORD        Record Attributes =  NULL_BITMAP VARIABLE_COLUMNS
+
+Record Size = 71                    
+Memory Dump @0x0000000A228367CB
+
+
+0000000000000000:   30001500 75303030 30303030 30b60000 05433337  0...u00000000¶...C37
+
+0000000000000014:   33080000 03002e00 36004700 4e006f00 6d002000  3.......6.G.N.o.m. .
+
+0000000000000028:   33003700 33005669 6c6c6520 38327878 78787878  3.7.3.Ville 82xxxxxx
+
+000000000000003C:   78787878 78787820 66696e                      xxxxxxx fin
+
+
+Slot 27 Column 1 Offset 0x4 Length 4 Length (physical) 4
+
+
+Id = 808464501                      
+
+
+Slot 27 Column 2 Offset 0x20 Length 14 Length (physical) 14
+
+
+Nom = Nom 373                       
+
+
+Slot 27 Column 3 Offset 0x2e Length 8 Length (physical) 8
+
+
+Ville = Ville 82                    
+
+
+Note = [BLOB Inline Data] Slot 27 Column 4 Offset 0x36 Length 17 Length (physical) 17
+
+
+0000000F3C11C040:   78787878 78787878 78787878 78206669 6e        xxxxxxxxxxxxx fin
+
+
+Slot 27 Column 5 Offset 0x8 Length 3 Length (physical) 3
+
+
+Naissance = 8647-06-28              
+
+
+Slot 27 Column 6 Offset 0xb Length 5 Length (physical) 5
+
+
+Solde = INVALID COLUMN VALUE        
+
+
+Slot 27 Column 7 Offset 0x10 Length 1 (Bit position 0)
+
+
+Actif = 1                           
+
+
+Slot 27 Column 8 Offset 0x11 Length 4 Length (physical) 4
+
+
+Code = C373                         
+
+
