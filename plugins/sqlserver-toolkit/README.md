@@ -127,6 +127,7 @@ sqlq -profile prod-erp -query "SELECT TOP (10) name FROM sys.tables ORDER BY nam
 sqlq -profile prod-erp -file queries/tables-largest.sql
 sqlq -profile prod-erp -file queries/object-references.sql -param name=dbo.Orders
 sqlq -profile prod-erp -query "<sql>" -plan
+sqlq -profile prod-erp -query "<sql>" -statistics
 sqlq -profile prod-erp -query "<sql>" -database Other -timeout 120
 sqlq -list-queries -profile prod-erp
 sqlq -profile prod-erp -saved tables-largest -maxrows 20
@@ -161,6 +162,12 @@ not what is read: past a cap `sqlq` still reads everything the batch sends, so a
 later error is still reported, and sets `messages_truncated`,
 `more_results_truncated` or `more_plans_truncated` to `true`. `error` always
 keeps the first SQL error, even when the later ones are dropped.
+
+`-statistics` runs `SET STATISTICS IO ON` and `SET STATISTICS TIME ON` for the
+session, to measure a call. The output arrives in `messages` as the server wrote
+it, and `sqlq` does not parse it: the text follows the session language, so a
+parser written for English would silently find nothing under French. It counts
+toward `-maxmessages`, with one line per table read.
 
 ### Seeing the plan
 

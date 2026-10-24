@@ -415,3 +415,38 @@ func TestPlanCapStopsStoringNotReading(t *testing.T) {
 		t.Errorf("root set should be a: columns %+v, %d rows", res.Columns, len(res.Rows))
 	}
 }
+
+// The statistics text is not parsed: it follows the session language, so the
+// tests accept either wording and the second one forces French.
+
+func TestStatisticsArriveInMessages(t *testing.T) {
+	p, resolve := testProfile(t)
+	res, code := execute(p, "SELECT COUNT(*) AS n FROM sys.objects;", nil,
+		options{maxRows: 5, timeoutSec: 120, wantStatistics: true}, resolve)
+	if code != exitOK {
+		t.Fatalf("exit %d; want %d (error %+v)", code, exitOK, res.Error)
+	}
+	joined := strings.Join(res.Messages, "\n")
+	if !strings.Contains(joined, "logical reads") && !strings.Contains(joined, "lectures logiques") {
+		t.Errorf("no IO statistics in messages: %q", res.Messages)
+	}
+	if !strings.Contains(joined, "CPU time") && !strings.Contains(joined, "Temps UC") {
+		t.Errorf("no TIME statistics in messages: %q", res.Messages)
+	}
+}
+
+func TestStatisticsFollowTheSessionLanguage(t *testing.T) {
+	p, resolve := testProfile(t)
+	res, code := execute(p, "SET LANGUAGE French; SELECT COUNT(*) AS n FROM sys.objects;", nil,
+		options{maxRows: 5, timeoutSec: 120, wantStatistics: true}, resolve)
+	if code != exitOK {
+		t.Fatalf("exit %d; want %d (error %+v)", code, exitOK, res.Error)
+	}
+	joined := strings.Join(res.Messages, "\n")
+	if !strings.Contains(joined, "lectures logiques") {
+		t.Errorf("no French IO statistics in messages: %q", res.Messages)
+	}
+	if !strings.Contains(joined, "Temps UC") {
+		t.Errorf("no French TIME statistics in messages: %q", res.Messages)
+	}
+}

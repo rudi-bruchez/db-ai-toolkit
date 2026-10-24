@@ -132,6 +132,7 @@ sqlq -profile <name> -query "SELECT TOP (20) name FROM sys.tables ORDER BY name"
 sqlq -profile <name> -file "${CLAUDE_PLUGIN_ROOT}/skills/live-query/queries/tables-largest.sql"
 sqlq -profile <name> -file <path> -param name=dbo.Orders -maxrows 100
 sqlq -profile <name> -query "<sql>" -plan          # capture the actual execution plan
+sqlq -profile <name> -query "<sql>" -statistics    # SET STATISTICS IO and TIME ON, text in messages
 sqlq -profile <name> -query "<sql>" -database Other # override the profile's database
 sqlq -profile <name> -query "<sql>" -timeout 120   # default is 30 seconds
 sqlq -list-queries -profile <name>                 # the catalogue for this profile
@@ -184,6 +185,14 @@ Every run prints one JSON object, on success and on failure alike:
   first error.
 - `more_plans_truncated: true` means `-maxresultsets` was reached for plans:
   `plan` plus `more_plans` hold at most that many, and the rest were dropped.
+- `-statistics` adds `SET STATISTICS IO ON` and `SET STATISTICS TIME ON` to the
+  session, and the server's text lands in `messages`, one notice per table read
+  plus the TIME notices, so it counts toward `-maxmessages`. `sqlq` does not
+  parse it: the text follows the session language. Under `SET LANGUAGE French`
+  the notice reads `Table 'sysschobjs'. Nombre d'analyses '1', lectures
+  logiques 66, ...` and the TIME notice `Temps UC = 0 ms, temps écoulé = 0 ms`.
+  Quote the lines as they are, and read the counters from the wording in front
+  of you rather than assuming `logical reads`.
 - Past any of these caps, `sqlq` reads everything and stops storing: the batch
   runs to its end, and an error after the cap still sets `error` and exit `2`.
   `0` lifts a cap; raise it when the dropped part is what you need.
