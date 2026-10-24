@@ -148,7 +148,8 @@ div[class|='qp-icon'] {
 }
 
 .qp-statement-header-row > div {
-    width: 100%;
+    /* Absolute, it starts after the header's padding: 100% would stick out of the plan */
+    width: calc(100% - 0.6em);
     position: absolute;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -229,6 +230,12 @@ div.qp-node .qp-tt,
 
 div.qp-node:hover .qp-tt {
     visibility: visible;
+}
+
+/* With JS tooltips the tooltip shown is a copy on the body: the hidden originals leave
+   the layout, where they widened the scrollable area of the plan past its last node */
+.qp-noCssTooltip div.qp-node .qp-tt {
+    display: none;
 }
 
 .qp-tt table {
