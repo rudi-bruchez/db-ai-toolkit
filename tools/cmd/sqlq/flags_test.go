@@ -69,3 +69,25 @@ func TestOptionsRejectNonsenseValues(t *testing.T) {
 		t.Errorf("-maxrows 0 is the documented way to ask for unlimited: %v", err)
 	}
 }
+
+// -maxmessages and -maxresultsets share -maxrows' meaning of 0, and so its
+// trap: a negative value would read as "no cap" downstream.
+func TestOptionsRejectNegativeCaps(t *testing.T) {
+	base := options{maxRows: 50, timeoutSec: 30}
+
+	o := base
+	o.maxMessages = -1
+	if err := o.validate(); err == nil || !strings.Contains(err.Error(), "-maxmessages") {
+		t.Errorf("maxMessages -1: got %v; want a refusal naming -maxmessages", err)
+	}
+	o = base
+	o.maxResultSets = -1
+	if err := o.validate(); err == nil || !strings.Contains(err.Error(), "-maxresultsets") {
+		t.Errorf("maxResultSets -1: got %v; want a refusal naming -maxresultsets", err)
+	}
+	o = base
+	o.maxMessages, o.maxResultSets = 0, 0
+	if err := o.validate(); err != nil {
+		t.Errorf("0 is the documented way to ask for no cap: %v", err)
+	}
+}

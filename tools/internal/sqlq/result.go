@@ -35,11 +35,20 @@ type Result struct {
 	Incomplete bool `json:"incomplete"`
 	// MoreResults holds every result set after the first, always an array.
 	MoreResults []ResultSet `json:"more_results"`
-	Messages    []string    `json:"messages"`
-	Plan        *string     `json:"plan"`
+	// MoreResultsTruncated means -maxresultsets was reached: later sets were
+	// read to the end and dropped.
+	MoreResultsTruncated bool     `json:"more_results_truncated"`
+	Messages             []string `json:"messages"`
+	// MessagesTruncated means -maxmessages was reached: later notices and
+	// later errors were read and dropped. Error always keeps the first error.
+	MessagesTruncated bool    `json:"messages_truncated"`
+	Plan              *string `json:"plan"`
 	// MorePlans holds every plan after the first, in arrival order, always an array.
-	MorePlans []string  `json:"more_plans"`
-	Error     *SQLError `json:"error"`
+	MorePlans []string `json:"more_plans"`
+	// MorePlansTruncated means -maxresultsets was reached for plans: later
+	// plans were read and dropped.
+	MorePlansTruncated bool      `json:"more_plans_truncated"`
+	Error              *SQLError `json:"error"`
 	// Saved is set on a -saved run only.
 	Saved *SavedRun `json:"saved,omitempty"`
 }
