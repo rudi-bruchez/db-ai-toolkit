@@ -450,3 +450,69 @@ func TestStatisticsFollowTheSessionLanguage(t *testing.T) {
 		t.Errorf("no French TIME statistics in messages: %q", res.Messages)
 	}
 }
+
+// A set cut short by -timeout keeps the rows it read and says it is not whole.
+// TOP bounds the server's work: the cross join alone runs for a minute and a
+// half on the lab, and with TOP it still outlasts the one-second timeout.
+func TestSetCutByTimeoutKeepsItsRows(t *testing.T) {
+	p, resolve := testProfile(t)
+	res, code := execute(p,
+		"SELECT TOP (20000000) a.object_id FROM sys.all_columns AS a CROSS JOIN sys.all_columns AS b;", nil,
+		options{maxRows: 5, timeoutSec: 1}, resolve)
+	if code == exitOK || res.Error == nil {
+		t.Fatalf("a timed-out set must fail, got code %d", code)
+	}
+	if !res.Incomplete || res.RowCount == 0 || len(res.Rows) > 5 {
+		t.Errorf("incomplete %v, row_count %d, %d rows kept", res.Incomplete, res.RowCount, len(res.Rows))
+	}
+}
+
+// The DONE of the WAITFOR arrives before the timeout: only a MsgNextResultSet
+// received after ctx expired is the cut.
+func TestQueryEndingBeforeTheTimeoutSucceeds(t *testing.T) {
+	p, resolve := testProfile(t)
+	res, code := execute(p, "WAITFOR DELAY '00:00:01'; SELECT 1 AS a;", nil,
+		options{maxRows: 5, timeoutSec: 3}, resolve)
+	if code != exitOK || res.Error != nil || res.Incomplete || len(res.Rows) != 1 {
+		t.Errorf("code %d, error %+v, incomplete %v, %d rows", code, res.Error, res.Incomplete, len(res.Rows))
+	}
+}
+
+// The first SQL error explains the rest, the timeout included (spec § 4.2).
+func TestFirstErrorWinsOverTheTimeout(t *testing.T) {
+	p, resolve := testProfile(t)
+	res, code := execute(p,
+		"RAISERROR('first', 16, 1) WITH NOWAIT; RAISERROR('second', 16, 1) WITH NOWAIT; WAITFOR DELAY '00:00:05';", nil,
+		options{maxRows: 5, timeoutSec: 1}, resolve)
+	if code != exitSQL || res.Error == nil {
+		t.Fatalf("code %d, error %+v", code, res.Error)
+	}
+	if res.Error.Number != 50000 || res.Error.Message != "first" {
+		t.Errorf("error %+v, want 50000 first", res.Error)
+	}
+	found := false
+	for _, m := range res.Messages {
+		if m == "error 50000: second" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("messages %q lack the second error", res.Messages)
+	}
+}
+
+// The timeout falls in NextResultSet, after set a was read to its end: that set
+// is whole and must not be marked incomplete. The server buffers output until a
+// packet fills or the batch ends, so without the RAISERROR WITH NOWAIT flush set
+// a never reaches the client before the timeout and the test checks nothing.
+func TestTimeoutAfterACompleteSetLeavesItComplete(t *testing.T) {
+	p, resolve := testProfile(t)
+	res, code := execute(p, "SELECT 1 AS a; RAISERROR('', 0, 1) WITH NOWAIT; WAITFOR DELAY '00:00:05'; SELECT 2 AS b;", nil,
+		options{maxRows: 5, timeoutSec: 1}, resolve)
+	if code == exitOK || res.Error == nil {
+		t.Fatalf("a timed-out batch must fail, got code %d", code)
+	}
+	if len(res.Rows) != 1 || res.Incomplete {
+		t.Errorf("%d rows, incomplete %v", len(res.Rows), res.Incomplete)
+	}
+}

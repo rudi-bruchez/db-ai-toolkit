@@ -49,8 +49,9 @@ included, come back in this same shape: there is never a second format to parse.
 `database` names the catalog the **connection** opened in. It is not a claim about every object
 the query touched — a multi-part name can legitimately read elsewhere.
 
-Exit codes: `0` success, `1` usage or configuration, `2` SQL error, `3` refused by the write
-guard, `4` connection failure.
+Exit codes: `0` success, `1` usage or configuration, `2` any failure after the query started
+(SQL error, timeout or transport), `3` refused by the write guard, `4` could not connect or
+start the query.
 
 ### Choosing a profile
 
@@ -110,7 +111,7 @@ database names and the group taxonomy are the estate map. A human who needs them
 - **Never paste a large result verbatim.** Summarise, then show the rows carrying the answer.
 - **Pass values with `-param`, never by string concatenation.**
 - **Read `more_results`.** It carries every result set after the first; read them all before
-  concluding. A set with `incomplete: true` was cut short by an error and is not whole.
+  concluding. A set with `incomplete: true` was cut short by an error or the timeout and is not whole.
 
 ### The guard is accident prevention, not security
 

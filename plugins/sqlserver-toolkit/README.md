@@ -139,16 +139,18 @@ sqlq -profile prod-erp -query "<sql>" -save-query orders-late -summary "Orders p
 seconds) is how long the query may take before it is cancelled; raise it for a
 deliberately long diagnostic, not to wait out a blocked session.
 
-Exit codes: `0` success, `1` usage or configuration, `2` SQL error, `3` refused
-by the write guard, `4` connection failure. The JSON goes to stdout in every
+Exit codes: `0` success, `1` usage or configuration, `2` any failure after the
+query started (SQL error, timeout or transport), `3` refused by the write guard,
+`4` could not connect or start the query. The JSON goes to stdout in every
 case, so a caller never has two formats to parse.
 
 A batch can return several result sets. The first fills `columns`, `rows`,
 `rowcount` and `truncated`; every later one goes to `more_results`, each as
 `{columns, rows, rowcount, truncated, incomplete}`, with `-maxrows` applied to
-each. `incomplete: true` (on the top level for the first set) means an error cut
-that set short, so its rows are not the whole set. `error` keeps the first SQL
-error and the exit code stays `2`; later errors go to `messages` as
+each. `incomplete: true` (on the top level for the first set) means an error or
+the timeout cut that set short, so its rows are not the whole set. `error` keeps
+the first SQL error, even when the timeout follows it, and the exit code stays
+`2`; later errors go to `messages` as
 `error <n>: <text>`. `messages` also carries `PRINT` and low-severity
 `RAISERROR` output, in the order the server sent it. With `-plan` and several
 statements, `plan` is the first statement's plan and the others are in
