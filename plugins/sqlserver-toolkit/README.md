@@ -153,6 +153,15 @@ error and the exit code stays `2`; later errors go to `messages` as
 statements, `plan` is the first statement's plan and the others are in
 `more_plans`, in execution order.
 
+`-maxmessages` (default 200) and `-maxresultsets` (default 20) bound the other
+two channels from the server into the model's context; `0` lifts either cap.
+`-maxresultsets` counts data sets, the first included, and separately caps plans
+the same way: `plan` plus `more_plans`. Like `-maxrows`, they bound what is kept,
+not what is read: past a cap `sqlq` still reads everything the batch sends, so a
+later error is still reported, and sets `messages_truncated`,
+`more_results_truncated` or `more_plans_truncated` to `true`. `error` always
+keeps the first SQL error, even when the later ones are dropped.
+
 ### Seeing the plan
 
 `sqlplan` draws a plan in the default browser: icons of the Microsoft documentation,

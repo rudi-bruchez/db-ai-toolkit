@@ -79,6 +79,8 @@ func defineFlags(fs *flag.FlagSet) *options {
 	fs.StringVar(&o.file, "file", "", "file containing the SQL to run")
 	fs.StringVar(&o.database, "database", "", "override the profile's database")
 	fs.IntVar(&o.maxRows, "maxrows", 50, "maximum rows to return; 0 means unlimited")
+	fs.IntVar(&o.maxMessages, "maxmessages", 200, "maximum server messages to keep; 0 means unlimited")
+	fs.IntVar(&o.maxResultSets, "maxresultsets", 20, "maximum data result sets, and plans, to keep; 0 means unlimited")
 	fs.IntVar(&o.timeoutSec, "timeout", 30, "query timeout in seconds")
 	fs.BoolVar(&o.wantPlan, "plan", false, "capture the actual execution plan (SET STATISTICS XML ON)")
 	fs.BoolVar(&o.listProfiles, "list-profiles", false, "list the configured profiles and exit")
@@ -130,6 +132,12 @@ func (o options) validate() error {
 	if o.maxRows < 0 {
 		return fmt.Errorf("-maxrows must be 0 (unlimited) or a positive number, got %d", o.maxRows)
 	}
+	if o.maxMessages < 0 {
+		return fmt.Errorf("-maxmessages must be 0 (unlimited) or a positive number, got %d", o.maxMessages)
+	}
+	if o.maxResultSets < 0 {
+		return fmt.Errorf("-maxresultsets must be 0 (unlimited) or a positive number, got %d", o.maxResultSets)
+	}
 	if o.timeoutSec <= 0 {
 		// A negative or zero duration builds a context that has already
 		// expired, so the query is cancelled before it is sent and the error
@@ -153,6 +161,11 @@ type options struct {
 	allowWrite   bool
 	dirtyReads   bool
 	params       paramList
+
+	// maxMessages and maxResultSets cap what collect stores, never what it
+	// reads: past a cap the loop keeps draining the server and only flags.
+	maxMessages   int
+	maxResultSets int
 
 	listQueries    bool
 	saved          string
@@ -677,7 +690,7 @@ func execute(profile sqlq.Profile, sqlText string, args []any, o options,
 	}
 	defer rows.Close()
 
-	sqlErrs, errSlots, err := collect(ctx, rows, retmsg, &result, o.maxRows)
+	sqlErrs, errSlots, err := collect(ctx, rows, retmsg, &result, o)
 	result.ElapsedMS = time.Since(started).Milliseconds()
 	// Notices and plans are server text, and a new output channel is born
 	// unfiltered unless someone filters it: a PRINT can echo the password, and
@@ -718,21 +731,47 @@ func execute(profile sqlq.Profile, sqlText string, args []any, o options,
 // are returned separately, in order, so the sets read before them are kept. A
 // set still open when an error arrives is marked incomplete: the driver ends
 // it early and cleanly, and its rows would otherwise pass for the whole set.
+//
+// o.maxMessages and o.maxResultSets cap what is stored, never what is read
+// (0 means no cap). Past a cap the loop goes on draining the server: messages
+// are dropped, the rows of a surplus set are scanned into a throwaway RowSet,
+// surplus plans are read and dropped, and only the *Truncated flags change. A
+// loop that stopped reading would leave the rest of the batch unread on the
+// connection.
 func collect(ctx context.Context, rows *sql.Rows, retmsg *sqlexp.ReturnMessage,
-	result *sqlq.Result, maxRows int) (sqlErrs []error, errSlots []int, err error) {
+	result *sqlq.Result, o options) (sqlErrs []error, errSlots []int, err error) {
 	next := relay(ctx, retmsg)
 	first := true
 	open := -1 // the set the server has not closed yet: 0 the first, k MoreResults[k-1]
+	sets := 0  // data sets stored, the root included
+	roomForMessage := func() bool {
+		return o.maxMessages == 0 || len(result.Messages) < o.maxMessages
+	}
 	for active := true; active; {
+		// sqlexp.MsgRowsAffected is not handled: the preamble's SET NOCOUNT ON
+		// suppresses it, and a set's row count comes from its RowSet (spec § 7).
 		switch m := next().(type) {
 		case sqlexp.MsgNotice:
+			if !roomForMessage() {
+				result.MessagesTruncated = true
+				continue
+			}
 			result.Messages = append(result.Messages, m.Message.String())
 		case sqlexp.MsgError:
 			sqlErrs = append(sqlErrs, m.Error)
 			if len(sqlErrs) > 1 {
-				// A slot in arrival order; execute writes the scrubbed text.
-				errSlots = append(errSlots, len(result.Messages))
-				result.Messages = append(result.Messages, "")
+				// Positional pairing, errSlots[i] with sqlErrs[i+1], stays right
+				// under the cap: len(result.Messages) only grows, so once the cap
+				// is reached every later error is dropped, and the dropped ones
+				// are always a tail of sqlErrs. A dropped error must simply get
+				// no slot.
+				if roomForMessage() {
+					// A slot in arrival order; execute writes the scrubbed text.
+					errSlots = append(errSlots, len(result.Messages))
+					result.Messages = append(result.Messages, "")
+				} else {
+					result.MessagesTruncated = true
+				}
 			}
 			switch {
 			case open == 0:
@@ -750,14 +789,27 @@ func collect(ctx context.Context, rows *sql.Rows, retmsg *sqlexp.ReturnMessage,
 				if err != nil {
 					return sqlErrs, errSlots, err
 				}
-				if result.Plan == nil {
+				switch {
+				case result.Plan == nil:
 					result.Plan = plan
-				} else if plan != nil {
+				case plan == nil: // a NULL plan: nothing to keep
+				case o.maxResultSets == 0 || 1+len(result.MorePlans) < o.maxResultSets:
 					result.MorePlans = append(result.MorePlans, *plan)
+				default:
+					result.MorePlansTruncated = true
 				}
 				continue
 			}
-			set := sqlq.NewRowSet(maxRows)
+			if o.maxResultSets > 0 && sets >= o.maxResultSets {
+				// Read to the end and dropped: the server must get past this set.
+				if err := scanAll(rows, cols, sqlq.NewRowSet(1)); err != nil {
+					return sqlErrs, errSlots, err
+				}
+				result.MoreResultsTruncated = true
+				open = -1
+				continue
+			}
+			set := sqlq.NewRowSet(o.maxRows)
 			columns := make([]sqlq.Column, len(cols))
 			for i, c := range cols {
 				columns[i] = sqlq.Column{Name: c.Name(), Type: c.DatabaseTypeName()}
@@ -765,6 +817,7 @@ func collect(ctx context.Context, rows *sql.Rows, retmsg *sqlexp.ReturnMessage,
 			if err := scanAll(rows, cols, set); err != nil {
 				return sqlErrs, errSlots, err
 			}
+			sets++
 			if first {
 				result.Columns, result.Rows = columns, set.Rows
 				result.RowCount, result.Truncated = set.RowCount, set.Truncated

@@ -157,7 +157,8 @@ Every run prints one JSON object, on success and on failure alike:
 {"profile":"prod-erp","server":"SRV01","database":"ERP","elapsed_ms":42,
  "columns":[{"name":"n","type":"INT"}],"rows":[{"n":1}],
  "rowcount":1,"truncated":false,"incomplete":false,"more_results":[],
- "messages":[],"plan":null,"more_plans":[],"error":null,
+ "more_results_truncated":false,"messages":[],"messages_truncated":false,
+ "plan":null,"more_plans":[],"more_plans_truncated":false,"error":null,
  "saved":{"name":"tables-largest","source":"bundled","path":"tables-largest.sql",
           "params":{},"defaults":[],"verified":null}}
 ```
@@ -175,6 +176,17 @@ Every run prints one JSON object, on success and on failure alike:
   of its statement. None is attached to a set of `more_results`, because the
   server's stream does not allow it without guessing: a trivial statement with
   no table has no plan, while an `UPDATE` has one and returns no rows.
+- `more_results_truncated: true` means `-maxresultsets` (default 20, counting the
+  first set) was reached: the later sets were read and dropped. Say so rather
+  than report the kept sets as all of them.
+- `messages_truncated: true` means `-maxmessages` (default 200) was reached: the
+  later notices and later errors were read and dropped. `error` still holds the
+  first error.
+- `more_plans_truncated: true` means `-maxresultsets` was reached for plans:
+  `plan` plus `more_plans` hold at most that many, and the rest were dropped.
+- Past any of these caps, `sqlq` reads everything and stops storing: the batch
+  runs to its end, and an error after the cap still sets `error` and exit `2`.
+  `0` lifts a cap; raise it when the dropped part is what you need.
 - `saved` appears on a `-saved` run only: which entry ran, the `params` you
   passed, the `defaults` left untouched, and `verified` as it was before the run.
 

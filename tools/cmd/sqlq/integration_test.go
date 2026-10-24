@@ -338,3 +338,80 @@ func TestFirstPlanStaysAtTheRoot(t *testing.T) {
 		t.Errorf("more_plans[0] should be the second statement's (FROM sys.columns)")
 	}
 }
+
+// The caps limit what is stored, never what is read: a loop that stopped
+// reading at the cap would leave the server waiting on a full connection.
+// Each test below therefore checks something that arrives after the cap.
+
+func TestMessageCapStopsStoringNotReading(t *testing.T) {
+	p, resolve := testProfile(t)
+	batch := "SELECT 1 AS a;\n" + strings.Repeat("PRINT 'm';\n", 40) + "SELECT 2 AS b;"
+	res, code := execute(p, batch, nil, options{maxRows: 5, timeoutSec: 120, maxMessages: 10}, resolve)
+	if code != exitOK {
+		t.Fatalf("exit %d; want %d (error %+v)", code, exitOK, res.Error)
+	}
+	if len(res.Messages) != 10 || !res.MessagesTruncated {
+		t.Errorf("%d messages, truncated %v; want 10 and true", len(res.Messages), res.MessagesTruncated)
+	}
+	if len(res.MoreResults) != 1 {
+		t.Errorf("%d extra sets; want 1 (set b, after the 40 notices, must still be read)", len(res.MoreResults))
+	}
+}
+
+func TestResultSetCapStopsStoringNotReading(t *testing.T) {
+	p, resolve := testProfile(t)
+	batch := "SELECT 1 AS a; SELECT 2 AS b; SELECT 3 AS c; SELECT 4 AS d; RAISERROR('after the cap', 16, 1);"
+	res, code := execute(p, batch, nil, options{maxRows: 5, timeoutSec: 120, maxResultSets: 2}, resolve)
+	if code != exitSQL || res.Error == nil || !strings.Contains(res.Error.Message, "after the cap") {
+		t.Fatalf("exit %d, error %+v; want %d and 'after the cap'", code, res.Error, exitSQL)
+	}
+	if len(res.Rows) != 1 || res.Rows[0]["a"] != int64(1) {
+		t.Errorf("root set should be a: %+v", res.Rows)
+	}
+	if len(res.MoreResults) != 1 {
+		t.Fatalf("%d extra sets; want 1", len(res.MoreResults))
+	}
+	if rs := res.MoreResults[0].Rows; len(rs) != 1 || rs[0]["b"] != int64(2) {
+		t.Errorf("more_results[0] should be b: %+v", rs)
+	}
+	if !res.MoreResultsTruncated {
+		t.Errorf("more_results_truncated is false; want true")
+	}
+}
+
+func TestLaterErrorBeyondMessageCapIsDropped(t *testing.T) {
+	p, resolve := testProfile(t)
+	batch := "RAISERROR('e1', 16, 1); RAISERROR('e2', 16, 1); RAISERROR('e3', 16, 1); SELECT 1 AS a;"
+	res, code := execute(p, batch, nil, options{maxRows: 5, timeoutSec: 120, maxMessages: 1}, resolve)
+	if code != exitSQL || res.Error == nil || res.Error.Message != "e1" {
+		t.Fatalf("exit %d, error %+v; want %d and e1", code, res.Error, exitSQL)
+	}
+	if len(res.Messages) != 1 || res.Messages[0] != "error 50000: e2" {
+		t.Errorf("messages = %q; want exactly [\"error 50000: e2\"]", res.Messages)
+	}
+	if !res.MessagesTruncated {
+		t.Errorf("messages_truncated is false; want true")
+	}
+	if len(res.Rows) != 1 {
+		t.Errorf("%d rows; want 1 (the set after the errors must be read)", len(res.Rows))
+	}
+}
+
+func TestPlanCapStopsStoringNotReading(t *testing.T) {
+	p, resolve := testProfile(t)
+	batch := "SELECT COUNT(*) AS a FROM sys.objects; SELECT COUNT(*) AS b FROM sys.columns; RAISERROR('after the plans', 16, 1);"
+	res, code := execute(p, batch, nil,
+		options{maxRows: 5, timeoutSec: 120, wantPlan: true, maxResultSets: 1}, resolve)
+	if code != exitSQL || res.Error == nil || !strings.Contains(res.Error.Message, "after the plans") {
+		t.Fatalf("exit %d, error present %v; want %d and 'after the plans'", code, res.Error != nil, exitSQL)
+	}
+	if res.Plan == nil {
+		t.Errorf("no plan at the root")
+	}
+	if len(res.MorePlans) != 0 || !res.MorePlansTruncated {
+		t.Errorf("%d more plans, truncated %v; want 0 and true", len(res.MorePlans), res.MorePlansTruncated)
+	}
+	if len(res.Columns) != 1 || res.Columns[0].Name != "a" || len(res.Rows) != 1 {
+		t.Errorf("root set should be a: columns %+v, %d rows", res.Columns, len(res.Rows))
+	}
+}
