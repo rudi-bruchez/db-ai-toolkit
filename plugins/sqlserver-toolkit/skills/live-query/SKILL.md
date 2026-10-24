@@ -86,7 +86,7 @@ result, and `-maxrows` stays the safety net.
 
 | The user asks | Do this |
 |---|---|
-| Why is this query slow | Run it with `-plan`, then hand the `plan` field to the `sqlserver-query-plans` plugin. Do not analyse showplan XML by hand here. With several statements, only the last statement's plan is kept: run the slow one alone. |
+| Why is this query slow | Run it with `-plan`, then hand the `plan` field to the `sqlserver-query-plans` plugin. Do not analyse showplan XML by hand here. With several statements, only the last statement's plan is kept: run the slow one alone. When the user wants to see the plan, pipe the same run into `sqlplan`, which opens it drawn in the browser. |
 | Anything no catalogue entry answers | Write the query yourself, but keep the output discipline below. |
 
 After an ad-hoc query that succeeded and proved useful, offer in one line to

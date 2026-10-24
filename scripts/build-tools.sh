@@ -20,11 +20,12 @@ tool_targets() {
     case "$1" in
         errorlog-parse) echo "$repo_root/plugins/sqlserver-toolkit/bin" ;;
         sqlq)           echo "$repo_root/plugins/sqlserver-toolkit/bin" ;;
+        sqlplan)        echo "$repo_root/plugins/sqlserver-toolkit/bin" ;;
         *) return 1 ;;
     esac
 }
 
-TOOLS=(errorlog-parse sqlq)
+TOOLS=(errorlog-parse sqlq sqlplan)
 
 build_all=false
 if [ "${1:-}" = "--all" ]; then
