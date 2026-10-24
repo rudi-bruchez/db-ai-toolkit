@@ -162,7 +162,14 @@ theme. It reads `.sqlplan` files (UTF-8, or UTF-16 as SSMS saves them) or the JS
 sqlq -profile lab -query "<sql>" -plan | sqlplan
 sqlplan before.sqlplan after.sqlplan            # one page, both plans
 sqlplan -theme light -o plan.html -no-open slow.sqlplan
+sqlplan -png plan.png slow.sqlplan              # image cut to the plan, for a report
+sqlplan -png lookup.png -node 5 slow.sqlplan    # operator 5 and what is under it
 ```
+
+`-png` draws the plan in a headless Chrome, Chromium or Edge (`SQLPLAN_BROWSER` names
+another one) and writes an image at twice the screen resolution, light theme unless
+`-theme dark`. `-node` takes a `NodeId` of the plan XML and keeps that operator and
+its subtree, for a page or an image.
 
 The page holds the plan, query text and parameter values included: treat it like the
 plan itself. The drawing library is built from
