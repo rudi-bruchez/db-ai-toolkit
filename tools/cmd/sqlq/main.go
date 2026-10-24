@@ -83,6 +83,7 @@ func defineFlags(fs *flag.FlagSet) *options {
 	fs.IntVar(&o.maxResultSets, "maxresultsets", 20, "maximum data result sets, and plans, to keep; 0 means unlimited")
 	fs.IntVar(&o.timeoutSec, "timeout", 30, "query timeout in seconds")
 	fs.BoolVar(&o.wantPlan, "plan", false, "capture the actual execution plan (SET STATISTICS XML ON)")
+	fs.BoolVar(&o.wantStatistics, "statistics", false, "run SET STATISTICS IO and TIME ON; their output arrives in messages as the server wrote it, in the session language")
 	fs.BoolVar(&o.listProfiles, "list-profiles", false, "list the configured profiles and exit")
 	fs.BoolVar(&o.allowWrite, "allow-write", false, "permit writing statements; the profile must also be in readwrite mode")
 	fs.BoolVar(&o.dirtyReads, "dirty-reads", false, "run at READ UNCOMMITTED: avoids waiting on locks, but permits dirty reads and missing or duplicated rows")
@@ -149,18 +150,19 @@ func (o options) validate() error {
 
 // options is what one invocation was asked to do.
 type options struct {
-	profileName  string
-	profilesPath string
-	query        string
-	file         string
-	database     string
-	maxRows      int
-	timeoutSec   int
-	wantPlan     bool
-	listProfiles bool
-	allowWrite   bool
-	dirtyReads   bool
-	params       paramList
+	profileName    string
+	profilesPath   string
+	query          string
+	file           string
+	database       string
+	maxRows        int
+	timeoutSec     int
+	wantPlan       bool
+	wantStatistics bool
+	listProfiles   bool
+	allowWrite     bool
+	dirtyReads     bool
+	params         paramList
 
 	// maxMessages and maxResultSets cap what collect stores, never what it
 	// reads: past a cap the loop keeps draining the server and only flags.
@@ -674,6 +676,9 @@ func execute(profile sqlq.Profile, sqlText string, args []any, o options,
 	}
 	if o.wantPlan {
 		setup += "\nSET STATISTICS XML ON;"
+	}
+	if o.wantStatistics {
+		setup += "\nSET STATISTICS IO ON;\nSET STATISTICS TIME ON;"
 	}
 	if _, err := conn.ExecContext(ctx, setup); err != nil {
 		result.ElapsedMS = time.Since(started).Milliseconds()
