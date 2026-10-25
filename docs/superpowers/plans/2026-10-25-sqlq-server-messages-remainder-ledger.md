@@ -75,3 +75,32 @@ de doc ou de test des tâches 2, 3, 4, 6, 7, 8 qu'un second lecteur aurait vu.
 - L'autre session a commité (`c3f2581`, page-salvage) ; branche rebasée sur ce commit
   avant la révision du plan.
 - Relecture du plan par le panel, tri ci-dessus, plan révisé.
+- Exécution : tâches 0 à 8 par des implémenteurs sous-agents, une tâche à la fois
+  (toutes touchent `main.go`) ; Sonnet pour les tâches 2, 4, 6, 7 et 8. J'ai relu le
+  relais moi-même (45 lignes) au lieu d'un siège dédié, et remplacé les relectures
+  par tâche des tâches 1 et 5 par une relecture finale de toute la branche.
+- Tâche 0 : l'implémenteur a ajouté un cas que mon plan ignorait : si le dernier
+  message rangé après l'échéance est un vrai message, `next()` rend ensuite le
+  `MsgNextResultSet` synthétique au lieu d'attendre sans fin. Retenu.
+- Tâche 5 : le test « timeout après un jeu complet » tel que je l'avais écrit ne
+  pouvait rien vérifier : SQL Server garde la sortie d'une instruction dans son tampon
+  pendant un `WAITFOR`, donc le jeu `a` n'arrivait jamais. Ajout d'un
+  `RAISERROR('', 0, 1) WITH NOWAIT` avant l'attente ; la rupture 4 telle que libellée
+  ne tombe pas (un second `MsgNextResultSet` remet `open` à -1), sa variante « dernier
+  jeu rangé », qui est le défaut mesuré par les relecteurs, tombe. Retenu.
+- Relecture finale (sous-agent neuf, sondes sur le labo) : huit remarques vérifiées,
+  six hypothèses. Corrigées (258179d, f399a52) : la condition de tampon dans la doc,
+  le droit `VIEW DATABASE STATE` du repli Query Store, `registered-servers/README.md`,
+  une colonne nommée `*showplan*` prise pour un plan sans `-plan`, un `MsgNext` reçu
+  après l'échéance, le drapeau de troncature perdu sur timeout, la doc du code 4
+  (seule l'ouverture de la connexion le donne ; un préambule peut échouer pour une
+  raison SQL, la permission SHOWPLAN), le libellé de `-maxmessages` sur un `-saved`,
+  la phrase « first statement's plan » du README. Non corrigés, notés ici : la borne
+  haute calculée d'un `LIKE 'prefixe%'` dans un plan montre le secret moins son
+  dernier caractère incrémenté (entrée aussi artificielle que celle du test) ;
+  `elapsed_ms` sous-estime un appel coupé par le timeout (le pilote draine jusqu'à
+  2 × 5 s), antérieur à la branche ; la permission SHOWPLAN de `-plan` et une valeur
+  tronquée dans le texte d'une erreur 2628, non confirmées.
+- Fin : 63 lignes `--- PASS` pour `./cmd/sqlq/` (40 au départ), 206 pour
+  `./internal/sqlq/`, 320 tests sous `-race` dans le module, `go vet` et `gofmt`
+  vides.
