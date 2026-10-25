@@ -188,3 +188,25 @@ func TestFindWritesRefusesNextValueFor(t *testing.T) {
 		t.Errorf("false refusal: %+v", v)
 	}
 }
+
+// TestFindWritesAllowsQueryStoreLiteralFilters pins the query that opened the
+// original session: filtering Query Store text on '%insert %' mentions write
+// keywords only inside literals. A guard that refused it would make the tool
+// useless for Query Store analysis, and nothing would say why.
+func TestFindWritesAllowsQueryStoreLiteralFilters(t *testing.T) {
+	sql := "SELECT TOP (1) query_sql_text FROM sys.query_store_query_text WHERE query_sql_text LIKE '%insert %' OR query_sql_text LIKE '%update %' OR query_sql_text LIKE '%merge %';"
+	if v := FindWrites(sql); len(v) != 0 {
+		t.Errorf("FindWrites(%q) = %+v; want no violation", sql, v)
+	}
+}
+
+// TestFindWritesAllowsKeywordsAfterAnUnderscore pins identifiers that end in a
+// write keyword (ITEM_CREATE, ROW_INSERT) or are bracketed ([DELETE]). They
+// show up in Query Store and catalog columns; a guard that refused them would
+// make the tool unusable for that analysis, silently.
+func TestFindWritesAllowsKeywordsAfterAnUnderscore(t *testing.T) {
+	sql := "SELECT 1 AS ITEM_CREATE, 2 AS ROW_INSERT, 3 AS [DELETE], 4 AS create_date;"
+	if v := FindWrites(sql); len(v) != 0 {
+		t.Errorf("FindWrites(%q) = %+v; want no violation", sql, v)
+	}
+}
