@@ -40,7 +40,7 @@ const (
 	exitUsage     = 1
 	exitSQL       = 2
 	exitRefused   = 3
-	exitConnected = 4 // could not connect or start the query
+	exitConnected = 4 // could not connect: opening the connection failed
 )
 
 // preamble runs before every batch. LOCK_TIMEOUT is the anti-blocking guard:
@@ -702,7 +702,8 @@ func execute(profile sqlq.Profile, sqlText string, args []any, o options,
 	// a plan quotes any literal in the query. The error slots are filled
 	// below by sqlError, which already redacts. The messages run() appends
 	// later for -saved come from the local catalogue and registry, never from
-	// the server, so they do not pass through here.
+	// the server, so they do not pass through here. Rows and column names are
+	// deliberately not redacted: they are the data the caller asked for.
 	for i, m := range result.Messages {
 		result.Messages[i] = redact(m, secret)
 	}
@@ -797,11 +798,18 @@ func collect(ctx context.Context, rows *sql.Rows, retmsg *sqlexp.ReturnMessage,
 				result.MoreResults[open-1].Incomplete = true
 			}
 		case sqlexp.MsgNext:
+			// Once ctx has expired, a real MsgNext can still come out of the
+			// queue (the relay's last message, or Message picking a queued item
+			// over ctx.Done). Acting on it would read rows the driver may have
+			// closed, and report "sql: Rows are closed" instead of the timeout.
+			if ctx.Err() != nil {
+				return sqlErrs, errSlots, ctx.Err()
+			}
 			cols, err := rows.ColumnTypes()
 			if err != nil {
 				return sqlErrs, errSlots, err
 			}
-			if isShowplan(cols) {
+			if isShowplan(cols, o.wantPlan) {
 				plan, err := readSingleString(rows)
 				if err != nil {
 					return sqlErrs, errSlots, err
@@ -819,11 +827,13 @@ func collect(ctx context.Context, rows *sql.Rows, retmsg *sqlexp.ReturnMessage,
 			}
 			if o.maxResultSets > 0 && sets >= o.maxResultSets {
 				// Read to the end and dropped: the server must get past this set.
+				// The flag is set first, so a timeout during the read still
+				// reports the truncation.
+				result.MoreResultsTruncated = true
+				open = -1
 				if err := scanAll(rows, cols, sqlq.NewRowSet(1)); err != nil {
 					return sqlErrs, errSlots, err
 				}
-				result.MoreResultsTruncated = true
-				open = -1
 				continue
 			}
 			set := sqlq.NewRowSet(o.maxRows)
@@ -966,8 +976,11 @@ func normalise(v any, dbType string) any {
 	}
 }
 
-func isShowplan(cols []*sql.ColumnType) bool {
-	return len(cols) == 1 && strings.Contains(strings.ToLower(cols[0].Name()), "showplan")
+// isShowplan tells a plan set from a data set. Only a -plan run asks for
+// plans: without it, a one-column set whose name happens to contain "showplan"
+// is data the caller asked for.
+func isShowplan(cols []*sql.ColumnType, wantPlan bool) bool {
+	return wantPlan && len(cols) == 1 && strings.Contains(strings.ToLower(cols[0].Name()), "showplan")
 }
 
 func readSingleString(rows *sql.Rows) (*string, error) {

@@ -340,6 +340,26 @@ func TestFirstPlanStaysAtTheRoot(t *testing.T) {
 	}
 }
 
+// Without -plan, a one-column set whose name contains "showplan" is data, not
+// a plan: the column name alone must not divert it.
+func TestShowplanNamedColumnIsDataWithoutPlan(t *testing.T) {
+	p, resolve := testProfile(t)
+	batch := "SELECT TOP (3) name AS showplan_note FROM sys.objects ORDER BY name; SELECT 1 AS a"
+	res, code := execute(p, batch, nil, options{maxRows: 5, timeoutSec: 120}, resolve)
+	if code != exitOK {
+		t.Fatalf("exit %d; want %d (error %+v)", code, exitOK, res.Error)
+	}
+	if res.Plan != nil || len(res.MorePlans) != 0 {
+		t.Errorf("plan set %v, %d more plans; want no plan at all", res.Plan != nil, len(res.MorePlans))
+	}
+	if len(res.Columns) != 1 || res.Columns[0].Name != "showplan_note" || len(res.Rows) != 3 {
+		t.Errorf("root set should be showplan_note with 3 rows: columns %+v, %d rows", res.Columns, len(res.Rows))
+	}
+	if len(res.MoreResults) != 1 {
+		t.Errorf("%d extra sets; want 1", len(res.MoreResults))
+	}
+}
+
 // The caps limit what is stored, never what is read: a loop that stopped
 // reading at the cap would leave the server waiting on a full connection.
 // Each test below therefore checks something that arrives after the cap.
