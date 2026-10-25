@@ -115,9 +115,9 @@ Bound the query with `TOP (n)` as well.
 
 > **This is accident prevention, not security.** A lexical filter can be worked
 > around. The control that matters is the login: give the agent a dedicated one
-> with `db_datareader`, `VIEW DEFINITION` and `VIEW SERVER STATE`, and nothing
-> else — and no linked server whose connection mapping is more privileged than
-> the caller.
+> with `db_datareader` and `VIEW DEFINITION`, and nothing else (`VIEW SERVER
+> STATE` is optional, see the live-query skill), and no linked server whose
+> connection mapping is more privileged than the caller.
 
 ### Using it directly
 

@@ -5,7 +5,7 @@
 // have to rebuild connection ceremony on every turn, and cannot accidentally
 // write to production. The guard here is accident prevention, not security:
 // the control that matters is the login itself (db_datareader + VIEW
-// DEFINITION + VIEW SERVER STATE).
+// DEFINITION; VIEW SERVER STATE is optional and opens the instance DMVs).
 package main
 
 import (

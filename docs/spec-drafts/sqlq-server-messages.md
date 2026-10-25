@@ -1,19 +1,17 @@
 # sqlq — messages serveur et jeux de résultats multiples
 
-**Statut** : spécifié, pas implémenté. Rédigé le 2026-09-17 à partir d'une tâche issue d'un
-retour d'usage réel (session Bazefield du 17/09/2026, dépôt Neoen
-`bazefield/2026.09.17.monitoring/`, commit `2ea4759`). Chaque affirmation de la tâche a été
-vérifiée dans le code du dépôt et dans le cache de modules Go avant d'être reprise ici ; le § 9
-liste ce que la vérification a corrigé ou ajouté.
+**Statut** : implémentée, état au 25 octobre 2026. Le commit `67ea7fb` a livré le socle ; le plan
+`docs/superpowers/plans/2026-10-25-sqlq-server-messages-remainder.md` (registre :
+`docs/superpowers/plans/2026-10-25-sqlq-server-messages-remainder-ledger.md`) livre le reste. Les
+décisions D0 à D7 de ce plan priment sur ce document pour le § 4.2 (`messages` reste un tableau de
+chaînes), le § 4.3 (`plan` est le premier plan, les suivants vont dans `more_plans`), la contrainte 3
+(sens de `incomplete`) et le code de sortie 4 (il ne désigne plus que l'échec avant le démarrage de la
+requête). Le reste du document est conservé tel quel : c'est l'historique des revues.
 
 **Révisé deux fois le 2026-09-17**, après deux revues adverses externes : huit points puis neuf.
 La première a corrigé des affirmations fausses ; la seconde, des **décisions que le document
 décrivait sans les prendre**, dont une contradiction entre deux de ses propres contraintes. Voir
 le § 9.
-
-**Reste à trancher avant d'écrire du code** : rien sur le contrat. Le seul point encore ouvert
-est l'ordre d'intercalation des jeux showplan (§ 4.3), qui ne se décide pas — il se mesure contre
-une instance réelle, et le § 8 dit comment.
 
 > **Convention de langue.** Le code, les messages, les clés JSON et l'aide restent **en
 > anglais**. Ce document de spécification est en français, comme `docs/reviews/`.

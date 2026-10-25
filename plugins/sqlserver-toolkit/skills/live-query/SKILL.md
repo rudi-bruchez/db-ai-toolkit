@@ -302,12 +302,25 @@ this toolkit that handles secrets.
 
 > **The guard in `sqlq` is accident prevention, not security.** A lexical filter
 > can be worked around. The control that matters is the login: give the agent a
-> dedicated one with `db_datareader`, `VIEW DEFINITION` and `VIEW SERVER STATE`,
-> and nothing else.
+> dedicated one with `db_datareader` and `VIEW DEFINITION`, and nothing else.
+> `VIEW SERVER STATE` is optional, see "Permissions and the Query Store" below.
 
 On Windows, `integrated` means SSPI and needs no setup. On Linux and macOS it
 means Kerberos, and the profile must supply `krb5Realm` plus one of
 `krb5ConfigFile`, `krb5KeytabFile` or `krb5CredCacheFile`.
+
+## Permissions and the Query Store
+
+`VIEW SERVER STATE` is not required. It opens the instance DMVs, among them
+`sys.dm_exec_sql_text`, which returns the text of running queries with their
+literal values. Without it the catalogs, the database DMVs (with `VIEW DATABASE
+STATE`) and the Query Store remain.
+
+When the instance DMVs are closed, `sys.query_store_runtime_stats` gives
+`avg_logical_io_reads` and `avg_duration` as an ordinary result set, with
+`VIEW DATABASE STATE`. These are averages over an aggregation interval, written
+with a delay: a historical hint to find the expensive queries, not the
+measurement of one call. To measure a call, use `-statistics`.
 
 ## Known limits
 
