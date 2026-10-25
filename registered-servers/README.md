@@ -53,8 +53,9 @@ agent. On a shared account, the agent's activity cannot be separated from anyone
 
 A dedicated login is not only about reducing rights. It is what makes the audit trail true.
 
-> **Give the agent a login that *cannot* write — `db_datareader`, `VIEW DEFINITION`,
-> `VIEW SERVER STATE`, and nothing else — register that login in SSMS, and import only it. If
+> **Give the agent a login that *cannot* write (`db_datareader` and `VIEW DEFINITION`, and
+> nothing else), register that login in SSMS, and import only it. `VIEW SERVER STATE` is
+> optional: it opens the instance DMVs, including the text of running queries. If
 > the only thing standing between the agent and your production is this tool, your production
 > is not protected.**
 
