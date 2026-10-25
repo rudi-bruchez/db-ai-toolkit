@@ -50,8 +50,8 @@ included, come back in this same shape: there is never a second format to parse.
 the query touched — a multi-part name can legitimately read elsewhere.
 
 Exit codes: `0` success, `1` usage or configuration, `2` any failure after the query started
-(SQL error, timeout or transport), `3` refused by the write guard, `4` could not connect or
-start the query.
+(SQL error, timeout or transport), `3` refused by the write guard, `4` could not connect
+(opening the connection failed). A failure of the session preamble or of the batch exits `2`.
 
 ### Choosing a profile
 
@@ -112,6 +112,11 @@ database names and the group taxonomy are the estate map. A human who needs them
 - **Pass values with `-param`, never by string concatenation.**
 - **Read `more_results`.** It carries every result set after the first; read them all before
   concluding. A set with `incomplete: true` was cut short by an error or the timeout and is not whole.
+  Rows and errors survive a timeout only if the server already sent them: SQL Server buffers a
+  statement's output until a network packet fills or the batch ends, so with
+  `SELECT 1/0; WAITFOR DELAY ...` under a short `-timeout` the result is just the timeout. Put
+  `RAISERROR('', 0, 1) WITH NOWAIT;` before a long statement to flush what precedes it, or run
+  the slow statement alone.
 
 ### The guard is accident prevention, not security
 

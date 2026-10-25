@@ -183,7 +183,8 @@ Every run prints one JSON object, on success and on failure alike:
   than report the kept sets as all of them.
 - `messages_truncated: true` means `-maxmessages` (default 200) was reached: the
   later notices and later errors were read and dropped. `error` still holds the
-  first error.
+  first error. The cap applies to server messages: on a `-saved` run `sqlq` can
+  add its own notes (catalog, registry) beyond it.
 - `more_plans_truncated: true` means `-maxresultsets` was reached for plans:
   `plan` plus `more_plans` hold at most that many, and the rest were dropped.
 - `-statistics` adds `SET STATISTICS IO ON` and `SET STATISTICS TIME ON` to the
@@ -207,8 +208,16 @@ error diagnosable. `error` keeps the first SQL error; later ones are in
 
 Exit codes: `0` success, `1` usage or configuration, `2` any failure after
 the query started (SQL error, timeout or transport), `3` refused by the write
-guard, `4` could not connect or start the query. When a SQL error and the
-timeout both occur, `error` is the first SQL error.
+guard, `4` could not connect (opening the connection failed); a failure of the
+session preamble or of the batch exits `2`. When a SQL error and the timeout
+both occur, `error` is the first SQL error, and the rows read before a timeout
+are kept, but only for output the server already sent. SQL Server buffers a
+statement's output until a network packet fills or the batch ends: with
+`SELECT 1/0; WAITFOR DELAY ...` under a short `-timeout`, the error and the
+earlier rows never arrive and the result is just the timeout. Put
+`RAISERROR('', 0, 1) WITH NOWAIT;` before a long statement to flush what
+precedes it (it adds one blank line to `messages`), or run the slow statement
+alone.
 
 Two flags exist that this skill must not reach for on its own:
 
@@ -317,9 +326,11 @@ literal values. Without it the catalogs, the database DMVs (with `VIEW DATABASE
 STATE`) and the Query Store remain.
 
 When the instance DMVs are closed, `sys.query_store_runtime_stats` gives
-`avg_logical_io_reads` and `avg_duration` as an ordinary result set, with
-`VIEW DATABASE STATE`. These are averages over an aggregation interval, written
-with a delay: a historical hint to find the expensive queries, not the
+`avg_logical_io_reads` and `avg_duration` as an ordinary result set. It needs
+`VIEW DATABASE STATE` (on SQL Server 2022 and later, `VIEW DATABASE PERFORMANCE
+STATE`, which it includes), and the recommended minimal login does not have it:
+without it, the query fails with error 262 or 297. These are averages over an
+aggregation interval, written with a delay: a historical hint to find the expensive queries, not the
 measurement of one call. To measure a call, use `-statistics`.
 
 ## Known limits

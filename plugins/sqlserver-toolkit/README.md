@@ -141,8 +141,9 @@ deliberately long diagnostic, not to wait out a blocked session.
 
 Exit codes: `0` success, `1` usage or configuration, `2` any failure after the
 query started (SQL error, timeout or transport), `3` refused by the write guard,
-`4` could not connect or start the query. The JSON goes to stdout in every
-case, so a caller never has two formats to parse.
+`4` could not connect (opening the connection failed). A failure of the
+session preamble or of the batch itself exits `2`. The JSON goes to stdout in
+every case, so a caller never has two formats to parse.
 
 A batch can return several result sets. The first fills `columns`, `rows`,
 `rowcount` and `truncated`; every later one goes to `more_results`, each as
@@ -150,11 +151,17 @@ A batch can return several result sets. The first fills `columns`, `rows`,
 each. `incomplete: true` (on the top level for the first set) means an error or
 the timeout cut that set short, so its rows are not the whole set. `error` keeps
 the first SQL error, even when the timeout follows it, and the exit code stays
-`2`; later errors go to `messages` as
+`2`. This, like the rows kept from a set the timeout cut short, holds only for
+output the server already sent: SQL Server buffers a statement's output until a
+network packet fills or the batch ends, so with `SELECT 1/0; WAITFOR DELAY ...` under a
+short `-timeout` the error and the earlier rows never arrive, and the result is
+just the timeout. Put `RAISERROR('', 0, 1) WITH NOWAIT;` before a long statement
+to flush what precedes it (it adds one blank line to `messages`), or run the
+slow statement alone. Later errors go to `messages` as
 `error <n>: <text>`. `messages` also carries `PRINT` and low-severity
 `RAISERROR` output, in the order the server sent it. With `-plan` and several
-statements, `plan` is the first statement's plan and the others are in
-`more_plans`, in execution order.
+statements, `plan` is the plan of the first statement that has one and the
+others are in `more_plans`, in execution order.
 
 `-maxmessages` (default 200) and `-maxresultsets` (default 20) bound the other
 two channels from the server into the model's context; `0` lifts either cap.
