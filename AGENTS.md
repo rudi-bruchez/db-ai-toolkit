@@ -119,7 +119,7 @@ database names and the group taxonomy are the estate map. A human who needs them
 stop an agent that goes around the tool, and it removes no permission on the server. It also
 protects **integrity only** — every `SELECT` passes it by design, and fifty rows of a personnel
 table are fifty identifiable people. The control that matters is the login: a dedicated one
-with `db_datareader`, `VIEW DEFINITION` and `VIEW SERVER STATE`, and nothing else.
+with `db_datareader` and `VIEW DEFINITION`, and nothing else. `VIEW SERVER STATE` is optional: it opens the instance DMVs, including the text of running queries, literals included.
 
 ### Profiles
 
