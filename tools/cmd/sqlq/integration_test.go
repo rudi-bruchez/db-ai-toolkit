@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -514,5 +515,145 @@ func TestTimeoutAfterACompleteSetLeavesItComplete(t *testing.T) {
 	}
 	if len(res.Rows) != 1 || res.Incomplete {
 		t.Errorf("%d rows, incomplete %v", len(res.Rows), res.Incomplete)
+	}
+}
+
+func TestInvalidObjectIsASQLError(t *testing.T) {
+	p, resolve := testProfile(t)
+	res, code := execute(p, "SELECT 1 AS a FROM dbo.sqlq_no_such_table;", nil,
+		options{maxRows: 5, timeoutSec: 120}, resolve)
+	if code != exitSQL {
+		t.Fatalf("exit %d; want %d", code, exitSQL)
+	}
+	if res.Error == nil || res.Error.Number != 208 {
+		t.Fatalf("error %+v; want number 208", res.Error)
+	}
+	if len(res.Rows) != 0 {
+		t.Errorf("%d rows; want 0", len(res.Rows))
+	}
+}
+
+func TestEmptySetThenPopulatedSet(t *testing.T) {
+	p, resolve := testProfile(t)
+	res, code := execute(p, "SELECT 1 AS a WHERE 1 = 0; SELECT 2 AS b;", nil,
+		options{maxRows: 5, timeoutSec: 120}, resolve)
+	if code != exitOK {
+		t.Fatalf("exit %d; want %d", code, exitOK)
+	}
+	if len(res.Rows) != 0 || res.RowCount != 0 || len(res.Columns) != 1 {
+		t.Errorf("first set: %d rows, rowcount %d, %d columns; want 0, 0, 1", len(res.Rows), res.RowCount, len(res.Columns))
+	}
+	if len(res.MoreResults) != 1 || res.MoreResults[0].RowCount != 1 {
+		t.Fatalf("more_results %+v; want one set of one row", res.MoreResults)
+	}
+	if res.Incomplete || res.MoreResults[0].Incomplete {
+		t.Errorf("no set should be incomplete")
+	}
+}
+
+func TestNoticesAroundASetKeepTheirOrder(t *testing.T) {
+	p, resolve := testProfile(t)
+	res, code := execute(p, "PRINT 'before'; SELECT 1 AS a; PRINT 'after';", nil,
+		options{maxRows: 5, timeoutSec: 120}, resolve)
+	if code != exitOK {
+		t.Fatalf("exit %d; want %d", code, exitOK)
+	}
+	if len(res.Messages) != 2 || res.Messages[0] != "before" || res.Messages[1] != "after" {
+		t.Errorf("messages %q; want [before after]", res.Messages)
+	}
+	if len(res.Rows) != 1 {
+		t.Errorf("%d rows; want 1", len(res.Rows))
+	}
+}
+
+// The expected key sets follow the json tags of the structs, so a field
+// renamed or dropped fails here; a few names are also written out so that a
+// mistake in the reflection cannot leave the test empty.
+func TestCombinedOutputShape(t *testing.T) {
+	p, resolve := testProfile(t)
+	batch := "PRINT 'n'; SELECT COUNT(*) AS a FROM sys.objects; SELECT COUNT(*) AS b FROM sys.columns; RAISERROR('boom', 16, 1);"
+	res, code := execute(p, batch, nil, options{maxRows: 5, timeoutSec: 120, wantPlan: true}, resolve)
+	if code != exitSQL {
+		t.Fatalf("exit %d; want %d", code, exitSQL)
+	}
+	raw, err := json.Marshal(res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var top map[string]any
+	if err := json.Unmarshal(raw, &top); err != nil {
+		t.Fatal(err)
+	}
+
+	tags := func(v any) map[string]bool {
+		out := map[string]bool{}
+		rt := reflect.TypeOf(v)
+		for i := 0; i < rt.NumField(); i++ {
+			name, _, _ := strings.Cut(rt.Field(i).Tag.Get("json"), ",")
+			if name != "" && name != "-" {
+				out[name] = true
+			}
+		}
+		return out
+	}
+	sameKeys := func(label string, got map[string]any, want map[string]bool) {
+		t.Helper()
+		for k := range want {
+			if _, ok := got[k]; !ok {
+				t.Errorf("%s lacks key %q", label, k)
+			}
+		}
+		for k := range got {
+			if !want[k] {
+				t.Errorf("%s has unexpected key %q", label, k)
+			}
+		}
+	}
+
+	// saved is omitted when empty, so it is not in this output.
+	wantTop := tags(sqlq.Result{})
+	delete(wantTop, "saved")
+	sameKeys("result", top, wantTop)
+	if len(wantTop) < 10 {
+		t.Fatalf("only %d result keys derived from the struct; reflection is broken", len(wantTop))
+	}
+	for _, k := range []string{"more_plans", "messages_truncated", "more_results", "more_results_truncated", "more_plans_truncated", "incomplete", "plan", "error"} {
+		if _, ok := top[k]; !ok {
+			t.Errorf("result lacks key %q", k)
+		}
+	}
+
+	more, ok := top["more_results"].([]any)
+	if !ok || len(more) != 1 {
+		t.Fatalf("more_results %v; want an array of one set", top["more_results"])
+	}
+	set, ok := more[0].(map[string]any)
+	if !ok {
+		t.Fatalf("more_results[0] is %T", more[0])
+	}
+	wantSet := tags(sqlq.ResultSet{})
+	sameKeys("result set", set, wantSet)
+	for _, k := range []string{"columns", "rows", "rowcount", "truncated", "incomplete"} {
+		if _, ok := set[k]; !ok {
+			t.Errorf("result set lacks key %q", k)
+		}
+	}
+
+	if plans, ok := top["more_plans"].([]any); !ok || len(plans) != 1 {
+		t.Errorf("more_plans %v; want an array of one plan", top["more_plans"])
+	}
+	if s, ok := top["plan"].(string); !ok || s == "" {
+		t.Errorf("plan is %v; want a non-empty string", top["plan"])
+	}
+	if msgs, ok := top["messages"].([]any); !ok || len(msgs) != 1 || msgs[0] != "n" {
+		t.Errorf("messages %v; want [n]", top["messages"])
+	}
+	if e, ok := top["error"].(map[string]any); !ok || e["number"] != float64(50000) {
+		t.Errorf("error %v; want number 50000", top["error"])
+	}
+	for _, k := range []string{"truncated", "more_results_truncated", "messages_truncated", "more_plans_truncated"} {
+		if top[k] != false {
+			t.Errorf("%s is %v; want false", k, top[k])
+		}
 	}
 }
