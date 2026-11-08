@@ -48,8 +48,14 @@ For local development you can also point Claude Code at a plugin directly with
 
 ### Build the Go tools
 
-The SQL Server plugin ships two Go tools: `errorlog-parse`, a token-saving
-ERRORLOG preprocessor, and `sqlq`, a guarded read-only query runner. Build them
+The SQL Server plugin ships its Go tools: `errorlog-parse`, a token-saving
+ERRORLOG preprocessor, `sqlq`, a guarded read-only query runner, `sqlplan`, an
+execution plan viewer, and `godta`, an index advisor that measures each
+candidate with a hypothetical index before recommending it, on the server or
+on a lab instance where it restores a schema and statistics clone of the
+database (`godta clone`, then `godta evaluate --target lab`; the lab restores
+the clone again from its file when it is gone, and drops the clones a newer one
+replaced, leaving their files on the host for you to remove). Build them
 (requires the [Go toolchain](https://go.dev/dl/)):
 
 ```powershell

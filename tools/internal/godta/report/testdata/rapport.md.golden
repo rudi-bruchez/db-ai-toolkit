@@ -1,0 +1,116 @@
+# goDTA report: godta_it_golden on lab01
+
+## Context
+
+- Server: lab01, SQL Server 16.0.4250.1 (major 16, RTM), Developer Edition (64-bit)
+- Database: godta_it_golden, compatibility level 160, Query Store READ_WRITE
+- Workload source: Query Store, from 2026-11-07 08:00:00 to 2026-11-08 08:00:00 (UTC)
+- Capture mode: ALL
+- Queries read: 5, writes: 1
+- Score formula: gain = sum((before - after) x executions); maintenance = sum(operator cost x executions); recommended when gain >= 10% of the cost and maintenance <= gain / 2
+- Costs are the optimizer's estimated costs, in its own units; a gain is a cost difference times executions.
+
+## What is missing
+
+- godta_cs: columnstore table: not evaluated
+
+## Warnings
+
+- Query Store capture mode is ALL
+- query 99 failed to compile: error 8180
+
+## Recommended indexes
+
+### 1. new index, candidate a1b2c3d4e5f6
+
+- Index: `[dbo].[godta_t] ([a] ASC, [b] ASC) INCLUDE ([c])`
+- Origin: algorithm
+- Rules: eq-first, include-outputs
+- Gain: 900.00, maintenance: 12.50, estimated size: 21.40 MB
+- Queries:
+  - query_id 11 (read), 100 executions, cost 10.00 before, 1.00 after: `SELECT c FROM dbo.godta_t WHERE a = @a AND b = @b`
+  - query_id 21 (write), 10 executions, cost 2.00 before, 2.00 after, index maintenance 1.25 per execution: `UPDATE dbo.godta_t SET c = c + 'x' WHERE a = 500`
+- Note: estimates use sampled statistics; a real index has full-scan statistics
+
+```sql
+CREATE NONCLUSTERED INDEX [IX_godta_t_a_b_a1b2c3] ON [dbo].[godta_t] ([a] ASC, [b] ASC) INCLUDE ([c]) WITH (ONLINE = ON)
+```
+
+### 2. widen nix_t_b, candidate 0f0f0f0f0f0f
+
+- Index: `[dbo].[godta_t] ([b] ASC) INCLUDE ([c])`
+- Origin: AI suggestion
+- Reason given: query 12 looks up c after a seek on b
+- Gain: 300.00, maintenance: 3.00, estimated size: 9.50 MB
+- Existing index nix_t_b: `[dbo].[godta_t] ([b] ASC), nonclustered, compression PAGE, fill factor 90, on PRIMARY`; seeks 4, scans 1, lookups 0, updates 9, leaf inserts 3, leaf updates 0, leaf deletes 0 (indicative: DMV counters since the last restart or rebuild, not over the window)
+- Queries:
+  - query_id 12 (read), 40 executions, cost 8.50 before, 1.00 after: `SELECT TOP 10 c FROM dbo.godta_t WHERE b = 3`
+
+```sql
+CREATE NONCLUSTERED INDEX [nix_t_b] ON [dbo].[godta_t] ([b] ASC) INCLUDE ([c]) WITH (DROP_EXISTING = ON, ONLINE = ON, DATA_COMPRESSION = PAGE, FILLFACTOR = 90) ON [PRIMARY]
+```
+
+### 3. replace nix_h_x, candidate abcabcabcabc
+
+- Index: `[dbo].[godta_h] ([x] ASC, [y] ASC)`
+- Origin: missing index DMV
+- Gain: 150.00, maintenance: 1.00, estimated size: 8.00 MB
+- Existing index nix_h_x: `[dbo].[godta_h] ([x] ASC), nonclustered, compression ROW, on PRIMARY`; seeks 120, scans 0, lookups 0, updates 2, leaf inserts 0, leaf updates 0, leaf deletes 0 (indicative: DMV counters since the last restart or rebuild, not over the window)
+- Queries:
+  - query_id 13 (read), 25 executions, cost 7.00 before, 1.00 after: `SELECT y FROM dbo.godta_h WHERE x = 42 AND y > 'a'`
+
+```sql
+CREATE NONCLUSTERED INDEX [IX_godta_h_x_y_abcabc] ON [dbo].[godta_h] ([x] ASC, [y] ASC) WITH (ONLINE = ON, DATA_COMPRESSION = ROW) ON [PRIMARY]
+IF EXISTS (SELECT 1 FROM sys.indexes WHERE object_id = OBJECT_ID(N'[dbo].[godta_h]') AND name = N'IX_godta_h_x_y_abcabc') DROP INDEX [nix_h_x] ON [dbo].[godta_h]
+```
+
+## To discuss
+
+### 1. new index, candidate dddddddddddd
+
+- Index: `[dbo].[godta_t] ([c] ASC) INCLUDE ([a])`
+- Origin: algorithm
+- Gain: 4.00, maintenance: 3.00, estimated size: 30.00 MB
+- Queries:
+  - query_id 14 (read), 5 executions, cost 2.00 before, 1.20 after: `SELECT a FROM dbo.godta_t WHERE c = '7'`
+- Note: made redundant by a1b2c3d4e5f6
+
+## Rejected
+
+### 1. new index, candidate eeeeeeeeeeee
+
+- Index: `[dbo].[godta_t] ([pad] ASC)`
+- Origin: AI suggestion
+- Reason given: pad is searched
+- Gain: 0.00, maintenance: 0.00, estimated size: 200.00 MB
+- Queries:
+  - query_id 15 (read), 2 executions, cost 3.00 before, 3.00 after: `SELECT 'pad' FROM dbo.godta_t WHERE pad = ''`
+
+## Not evaluated
+
+### 1. new index, candidate ffffffffffff
+
+- Index: `[dbo].[godta_h] ([y] ASC)`
+- Origin: algorithm
+- Status: not evaluated: timeout
+- Queries:
+  - query_id 13 (read), 25 executions, not evaluated: timeout: `SELECT y FROM dbo.godta_h WHERE x = 42 AND y > 'a'`
+
+## Statistics created by the engine during the evaluation
+
+- [dbo].[godta_t].[_WA_Sys_00000003_0123ABCD]
+
+## Hypothetical indexes found before the run
+
+- [dbo].[godta_t].[_dta_index_godta_t_5_1]
+
+## Redundancies among the existing indexes
+
+Observations only: no gain is computed for them and the script does nothing about them.
+
+- [dbo].[godta_r].[ix_r2] is an exact duplicate of [dbo].[godta_r].[ix_r1]
+- the keys of [dbo].[godta_r].[ix_r1] are a prefix of the keys of [dbo].[godta_r].[ix_r3]
+- [dbo].[godta_r].[ix_r4] has the same keys as [dbo].[godta_r].[ix_r1], with other included columns
+- the keys of [dbo].[godta_r].[ix_r2] are a prefix of the keys of [dbo].[godta_r].[ix_r3]
+- [dbo].[godta_r].[ix_r4] has the same keys as [dbo].[godta_r].[ix_r2], with other included columns
+- the keys of [dbo].[godta_r].[ix_r4] are a prefix of the keys of [dbo].[godta_r].[ix_r3]
