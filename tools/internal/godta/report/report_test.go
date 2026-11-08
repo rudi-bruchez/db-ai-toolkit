@@ -327,6 +327,38 @@ func TestPlanCacheWording(t *testing.T) {
 	}
 }
 
+// TestPlanCacheQueryHash: from the plan cache, a query is named by its
+// query_hash, with the Query Store query_ids it covers, never by the bigint
+// goDTA made of the hash.
+func TestPlanCacheQueryHash(t *testing.T) {
+	w := fixture("godta_it_golden")
+	w.Source = model.SourcePlanCache
+	const fake = -7793925287569940523
+	w.Queries[0].QueryID, w.Queries[0].Hash, w.Queries[0].QueryIDs = fake, "0x93D8F6AC4A11D2D5", []int64{3, 8}
+	w.Queries[1].QueryID, w.Queries[1].Hash = 2744070552120781213, "0x2614A0E2B3C4D59D"
+	r := recs()[0]
+	r.Queries = []model.Measure{measure(fake, 10, 1), {QueryID: 2744070552120781213, Status: "not evaluated: timeout"}}
+	rep, _, res := write(t, w, []model.Recommendation{r})
+	for _, want := range []string{"query_hash 0x93D8F6AC4A11D2D5 (Query Store query_id 3, 8) (read)", "query_hash 0x2614A0E2B3C4D59D (read)"} {
+		if !strings.Contains(rep, want) {
+			t.Errorf("rapport.md lacks %q:\n%s", want, rep)
+		}
+	}
+	for _, bad := range []string{"-7793925287569940523", "2744070552120781213"} {
+		if strings.Contains(rep, bad) || strings.Contains(res, bad) {
+			t.Errorf("the made-up identifier %s is shown", bad)
+		}
+	}
+	var got Result
+	if err := json.Unmarshal([]byte(res), &got); err != nil {
+		t.Fatal(err)
+	}
+	q := got.Recommendations[0].Queries[0]
+	if q.QueryID != 0 || q.QueryHash != "0x93D8F6AC4A11D2D5" || len(q.QueryIDs) != 2 {
+		t.Errorf("result.json query: %+v, want the hash and its query_ids, no query_id", q)
+	}
+}
+
 func TestRedundancies(t *testing.T) {
 	got := Redundancies(fixture("x").Tables[tblR])
 	want := []string{
