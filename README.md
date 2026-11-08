@@ -51,7 +51,9 @@ For local development you can also point Claude Code at a plugin directly with
 The SQL Server plugin ships its Go tools: `errorlog-parse`, a token-saving
 ERRORLOG preprocessor, `sqlq`, a guarded read-only query runner, `sqlplan`, an
 execution plan viewer, and `godta`, an index advisor that measures each
-candidate with a hypothetical index before recommending it. Build them
+candidate with a hypothetical index before recommending it, on the server or
+on a lab instance where it restores a schema and statistics clone of the
+database (`godta clone`, then `godta evaluate --target lab`). Build them
 (requires the [Go toolchain](https://go.dev/dl/)):
 
 ```powershell

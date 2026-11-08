@@ -173,6 +173,8 @@ godta evaluate   --project <dir> --profile <name> --target server --allow-write 
 godta report     --project <dir>
 godta cleanup    --project <dir> --profile <name> --dry-run
 godta cleanup    --project <dir> --profile <name> --allow-write --plan <plan-cleanup.json>
+godta clone      --project <dir> --profile <name> --dry-run, then --allow-write --plan <plan-clone.json> --host-dir <dir>
+godta evaluate   --project <dir> --target lab --lab-profile <name> --host-dir <dir> --container-dir <dir> --allow-write
 ```
 
 The rules for an agent:
@@ -180,6 +182,9 @@ The rules for an agent:
 - On a profile marked `"environment": "prod"`, name the profile to the user and wait for an
   explicit yes before the first `godta` command that connects, `collect` included: `collect`
   writes nothing, but it reads the Query Store and the catalog of every selected database.
+- `clone` writes on the source too (statistics, a clone database, a backup file, all removed
+  at the end) and follows the same two steps. `evaluate --target lab` writes on the lab only:
+  no plan, but a lab profile with `"environment": "lab"` and `--allow-write`.
 - `evaluate --target server` and `cleanup` write on the server: hypothetical indexes, the
   statistics the engine creates while compiling, drops of leftovers. Each runs in two steps.
   The `--dry-run` writes an execution plan (`plan-evaluate.json` per database,

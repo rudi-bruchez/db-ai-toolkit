@@ -779,6 +779,25 @@ func ForClone(w *model.Workload, cands []model.Candidate, runID string, fp []Tab
 	return p
 }
 
+// WithChunk returns the clone plan p with ChunkBytes set to n, and the side
+// effect that states the number of reads of the file written again for n,
+// so that the plan shown says what the transfer will do. n <= 0 leaves p as
+// it is. Call it before Seal: ChunkBytes is under the checksum.
+func (p Plan) WithChunk(n int64) Plan {
+	if n <= 0 || p.Phase != PhaseClone {
+		return p
+	}
+	p.ChunkBytes = n
+	p.SideEffects = slices.Clone(p.SideEffects)
+	prefix, _, _ := strings.Cut(cloneSideEffects[4], "%")
+	for i, s := range p.SideEffects {
+		if strings.HasPrefix(s, prefix) {
+			p.SideEffects[i] = fmt.Sprintf(cloneSideEffects[4], p.ChunkBytes, p.MaxBytes)
+		}
+	}
+	return p
+}
+
 func journalAs(e workspace.Entry, state string) *workspace.Entry {
 	e.State = state
 	return &e

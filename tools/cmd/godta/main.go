@@ -12,9 +12,13 @@
 //	godta evaluate    --target server --dry-run, then --allow-write --plan <file>
 //	godta report      score and write rapport.md, indexes.sql, result.json (offline)
 //	godta cleanup     --dry-run, then --allow-write --plan <file>
+//	godta clone       --dry-run, then --allow-write --plan <file> --host-dir <dir>
+//	godta evaluate    --target lab --lab-profile <name> --allow-write ...
 //
-// A write phase needs a readwrite profile, --allow-write and the execution
-// plan its --dry-run wrote, and executes that plan only (spec section 7).
+// A write phase on the source needs a readwrite profile, --allow-write and
+// the execution plan its --dry-run wrote, and executes that plan only (spec
+// section 7). evaluate --target lab writes on the lab only: no plan, the lab
+// guards instead (package lab).
 package main
 
 import (
@@ -65,6 +69,10 @@ const (
 	// planned, --suggestions included: the write phase reads it, never
 	// candidates.json, so that what runs is what the plan was made from.
 	evaluateCandidatesFile = "candidates-evaluate.json"
+	// labCandidatesFile is the candidate list evaluate --target lab
+	// measured, --suggestions included; report reads it with
+	// evaluate-lab.json.
+	labCandidatesFile = "candidates-lab.json"
 	// databasesFile, in the server directory, is what collect kept and
 	// skipped.
 	databasesFile = "databases.json"
@@ -237,7 +245,7 @@ func run(ctx context.Context, args []string, d deps) int {
 	case cmdCleanup:
 		err = a.cleanup(args[1:])
 	case cmdClone:
-		err = usagef("clone is not available yet")
+		err = a.clone(args[1:])
 	case "-h", "-help", "--help", "help":
 		a.out.Command = "help"
 		a.out.OK = true
@@ -249,7 +257,7 @@ func run(ctx context.Context, args []string, d deps) int {
 	return a.finish(err)
 }
 
-var subcommands = []string{cmdCollect, cmdCandidates, cmdEvaluate, cmdReport, cmdCleanup}
+var subcommands = []string{cmdCollect, cmdCandidates, cmdEvaluate, cmdReport, cmdCleanup, cmdClone}
 
 // finish turns the result of a command into the exit code and prints.
 func (a *app) finish(err error) int {
@@ -380,11 +388,17 @@ func (a *app) selected(name string) bool {
 // selectProfile picks the profile: --profile from the profiles file, or the
 // GODTA_* variables.
 func (a *app) selectProfile() (sqlq.Profile, error) {
+	return a.profileNamed(a.c.profile)
+}
+
+// profileNamed is the profile name of the profiles file, or the GODTA_*
+// variables when name is empty.
+func (a *app) profileNamed(name string) (sqlq.Profile, error) {
 	profiles := a.c.profiles
 	if profiles == "" {
 		profiles = os.Getenv("MSSQL_PROFILES")
 	}
-	p, err := conn.Select(profiles, a.c.profile, os.Getenv)
+	p, err := conn.Select(profiles, name, os.Getenv)
 	if err != nil {
 		return sqlq.Profile{}, usagef("%v", err)
 	}
@@ -697,7 +711,7 @@ type evaluateFile struct {
 // execution plan, --allow-write --plan executes it.
 func (a *app) evaluate(args []string) error {
 	fs := flag.NewFlagSet(cmdEvaluate, flag.ContinueOnError)
-	target := fs.String("target", "", "where to evaluate: server (lab is not available yet)")
+	target := fs.String("target", "", "where to evaluate: server, or lab (a clone restored on the lab)")
 	dryRun := fs.Bool("dry-run", false, "write the execution plan, plan-evaluate.json, and execute nothing")
 	allowWrite := fs.Bool("allow-write", false, "permit the writes of the plan; needs a readwrite profile and --plan")
 	var plans listFlag
@@ -706,17 +720,40 @@ func (a *app) evaluate(args []string) error {
 	maxCombined := fs.Int("max-combined", evaluate.DefaultMaxCombined, "largest group of candidates of a table measured together")
 	lockTimeout := fs.Duration("lock-timeout", 2*time.Second, "lock timeout of the creation of the hypothetical indexes")
 	compileTimeout := fs.Duration("compile-timeout", 60*time.Second, "time limit of each compilation")
+	var lo labOptions
+	fs.StringVar(&lo.profile, "lab-profile", "", "lab profile (--target lab): readwrite, \"environment\": \"lab\"")
+	fs.StringVar(&lo.hostDir, "host-dir", "", "host directory clone wrote the backup file into, mounted in the lab container (--target lab)")
+	fs.StringVar(&lo.containerDir, "container-dir", "", "the same directory as the lab container sees it (--target lab)")
+	fs.StringVar(&lo.dataDir, "data-dir", "", "data directory of the restored files on the lab (default: the lab's InstanceDefaultDataPath)")
 	if err := a.parse(fs, args); err != nil {
 		return err
 	}
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 	switch *target {
 	case "server":
+		for _, name := range []string{"lab-profile", "host-dir", "container-dir", "data-dir"} {
+			if set[name] {
+				return usagef("--%s is a flag of --target lab", name)
+			}
+		}
 	case "lab":
-		return usagef("--target lab is not available yet")
+		if *dryRun || len(plans) > 0 {
+			return usagef("--target lab has no execution plan: it writes on the lab only, behind the lab guards; pass --allow-write")
+		}
+		if set["max-combined"] {
+			return usagef("--max-combined is a flag of --target server: the lab measures with the default, %d", evaluate.DefaultMaxCombined)
+		}
+		if *lockTimeout <= 0 || *compileTimeout <= 0 {
+			return usagef("--lock-timeout and --compile-timeout must be positive")
+		}
+		lo.allowWrite, lo.suggestions = *allowWrite, *suggestions
+		lo.compileTimeout, lo.lockMS = *compileTimeout, int(lockTimeout.Milliseconds())
+		return a.evaluateLab(lo)
 	case "":
-		return usagef("--target is required: server")
+		return usagef("--target is required: server or lab")
 	default:
-		return usagef("--target %q: want server", *target)
+		return usagef("--target %q: want server or lab", *target)
 	}
 	if *dryRun && (*allowWrite || len(plans) > 0) {
 		return usagef("--dry-run writes the plan and executes nothing: it takes neither --allow-write nor --plan")
@@ -933,8 +970,14 @@ func (a *app) evaluateOne(p sqlq.Profile, inst conn.Instance, file string, plan 
 // summary across databases (offline).
 func (a *app) report(args []string) error {
 	fs := flag.NewFlagSet(cmdReport, flag.ContinueOnError)
+	target := fs.String("target", "", "which evaluation to score: server or lab (default: server when evaluate-server.json exists, else lab)")
 	if err := a.parse(fs, args); err != nil {
 		return err
+	}
+	switch *target {
+	case "", "server", "lab":
+	default:
+		return usagef("--target %q: want server or lab", *target)
 	}
 	list, err := a.workloads("")
 	if err != nil {
@@ -946,7 +989,7 @@ func (a *app) report(args []string) error {
 	var rows []model.SummaryRow
 	for _, l := range list {
 		r := newResult(l.w)
-		row, err := a.reportOne(l)
+		row, err := a.reportOne(l, *target)
 		if err != nil {
 			a.dbFailed(&r, err)
 			a.out.Databases = append(a.out.Databases, r)
@@ -971,12 +1014,33 @@ func (a *app) report(args []string) error {
 	return nil
 }
 
-func (a *app) reportOne(l loaded) (model.SummaryRow, error) {
+// evaluationFiles gives the evaluation report reads in dir and the candidate
+// list it was made from: target's, or, when target is empty, the server's
+// when it exists, else the lab's.
+func (a *app) evaluationFiles(dir, target string) (evalFile, candFile string) {
+	server := [2]string{workspace.EvaluateServerFile, evaluateCandidatesFile}
+	labf := [2]string{workspace.EvaluateLabFile, labCandidatesFile}
+	pick := server
+	switch target {
+	case "lab":
+		pick = labf
+	case "":
+		if _, err := os.Stat(filepath.Join(dir, server[0])); err != nil {
+			if _, err := os.Stat(filepath.Join(dir, labf[0])); err == nil {
+				pick = labf
+			}
+		}
+	}
+	return pick[0], pick[1]
+}
+
+func (a *app) reportOne(l loaded, target string) (model.SummaryRow, error) {
 	row := model.SummaryRow{Server: l.w.Server.ServerName, Database: l.w.Database.Name}
 	var ev evaluateFile
 	var cands []model.Candidate
 	evaluated := true
-	if err := a.ws.ReadJSON(l.dir, workspace.EvaluateServerFile, &ev); err != nil {
+	evalFile, candFile := a.evaluationFiles(l.dir, target)
+	if err := a.ws.ReadJSON(l.dir, evalFile, &ev); err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			return row, err
 		}
@@ -984,7 +1048,7 @@ func (a *app) reportOne(l loaded) (model.SummaryRow, error) {
 		if err := a.ws.ReadJSON(l.dir, workspace.CandidatesFile, &cands); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return row, err
 		}
-	} else if err := a.ws.ReadJSON(l.dir, evaluateCandidatesFile, &cands); err != nil {
+	} else if err := a.ws.ReadJSON(l.dir, candFile, &cands); err != nil {
 		return row, err
 	}
 	recs := score.Score(l.w, cands, ev.Measures, score.DefaultThresholds())

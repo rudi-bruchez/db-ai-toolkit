@@ -106,6 +106,7 @@ type ref struct {
 	showplanCost  float64
 	showplanShape string
 	before        float64
+	beforeRows    float64
 	shape         string
 	status        string
 	errText       string
@@ -318,7 +319,13 @@ func lastStatement(p *showplan.Plan) *showplan.Statement {
 // those of its accesses, the base tables of a substituted indexed view
 // (which appear nowhere else in the plan), and those of its writes, sorted
 // by object_id.
-func tablesOf(w *model.Workload, st *showplan.Statement) []*model.Table {
+//
+// A table qualified by a database is the workload's when the database is the
+// workload's or current, the database the session compiles in: the plans of
+// a lab clone name the clone, not the source database the workload was
+// collected from, and a table of theirs left out would leave its real
+// indexes undeclared, hence hidden under AUTOPILOT.
+func tablesOf(w *model.Workload, st *showplan.Statement, current string) []*model.Table {
 	if st == nil {
 		return nil
 	}
@@ -332,7 +339,8 @@ func tablesOf(w *model.Workload, st *showplan.Statement) []*model.Table {
 	}
 	var out []*model.Table
 	for _, o := range objs {
-		if o.Table == "" || (o.Database != "" && !strings.EqualFold(o.Database, w.Database.Name)) {
+		if o.Table == "" || (o.Database != "" && !strings.EqualFold(o.Database, w.Database.Name) &&
+			(current == "" || !strings.EqualFold(o.Database, current))) {
 			continue
 		}
 		if t := candidate.TableByName(w, o.Schema, o.Table); t != nil && !slices.Contains(out, t) {
@@ -386,7 +394,7 @@ func (r *run) reference(ctx context.Context, id int64) (*ref, error) {
 // error is returned; the others go to rf.status.
 func measureReference(ctx context.Context, s *Session, w *model.Workload, rf *ref, runID string) error {
 	st := lastStatement(rf.q.Plan)
-	if hasColumnstore(tablesOf(w, st)) {
+	if hasColumnstore(tablesOf(w, st, s.dbName)) {
 		rf.status = StatusColumnstore
 		return nil
 	}
@@ -408,7 +416,7 @@ func measureReference(ctx context.Context, s *Session, w *model.Workload, rf *re
 		return fail(err)
 	}
 	rf.showplanCost, rf.showplanShape = sp.Cost, showplan.Shape(*sp)
-	rf.tables = tablesOf(w, sp)
+	rf.tables = tablesOf(w, sp, s.dbName)
 	if hasColumnstore(rf.tables) {
 		rf.status = StatusColumnstore
 		return nil
@@ -417,7 +425,7 @@ func measureReference(ctx context.Context, s *Session, w *model.Workload, rf *re
 	if err != nil {
 		return fail(err)
 	}
-	rf.before, rf.shape = ap.Cost, showplan.Shape(*ap)
+	rf.before, rf.shape, rf.beforeRows = ap.Cost, showplan.Shape(*ap), rootRows(ap)
 	if rf.shape != rf.showplanShape || !showplan.SameCost(rf.before, rf.showplanCost) {
 		rf.status = StatusReferenceMismatch
 		rf.errText = fmt.Sprintf("SHOWPLAN_XML cost %g, AUTOPILOT cost %g; shape %s under SHOWPLAN_XML, %s under AUTOPILOT",
@@ -561,7 +569,7 @@ func stamp(e workspace.Entry, state string) workspace.Entry {
 // a write, its maintenance (step 6).
 func (r *run) measureOne(ctx context.Context, pc *planned, id int64) (model.Measure, error) {
 	rf := r.refs[id]
-	m := model.Measure{QueryID: id, Candidate: pc.id, Before: rf.before, Shape: rf.shape, Notes: slices.Clone(pc.notes)}
+	m := model.Measure{QueryID: id, Candidate: pc.id, Before: rf.before, BeforeRows: rf.beforeRows, Shape: rf.shape, Notes: slices.Clone(pc.notes)}
 	switch {
 	case pc.status != "":
 		m.Status, m.Error = pc.status, pc.errText
@@ -581,7 +589,7 @@ func (r *run) measureOne(ctx context.Context, pc *planned, id int64) (model.Meas
 		m.Status, m.Error = status, err.Error()
 		return m, nil
 	}
-	m.After, m.Shape = after.Cost, showplan.Shape(*after)
+	m.After, m.AfterRows, m.Shape = after.Cost, rootRows(after), showplan.Shape(*after)
 	m.UsedHypothetical = used(after, []*planned{pc})
 	m.Status = StatusMeasured
 	if !rf.write {
@@ -633,7 +641,7 @@ func (r *run) measureCombined(ctx context.Context, group []*planned) error {
 		for _, pc := range group {
 			tables = withTable(tables, pc.t)
 		}
-		m := model.Measure{QueryID: id, Combined: slices.Clone(ids), Before: rf.before, Notes: slices.Clone(notes)}
+		m := model.Measure{QueryID: id, Combined: slices.Clone(ids), Before: rf.before, BeforeRows: rf.beforeRows, Notes: slices.Clone(notes)}
 		after, err := compileDeclared(ctx, r.s, rf.rp, tables, hide, group)
 		if err != nil {
 			status, fatal := classify(ctx, err)
@@ -642,13 +650,21 @@ func (r *run) measureCombined(ctx context.Context, group []*planned) error {
 			}
 			m.Status, m.Error = status, err.Error()
 		} else {
-			m.After, m.Shape = after.Cost, showplan.Shape(*after)
+			m.After, m.AfterRows, m.Shape = after.Cost, rootRows(after), showplan.Shape(*after)
 			m.UsedHypothetical = used(after, group)
 			m.Status = StatusMeasured
 		}
 		r.res.Measures = append(r.res.Measures, m)
 	}
 	return nil
+}
+
+// rootRows is the estimated rows of the root operator of st, 0 without one.
+func rootRows(st *showplan.Statement) float64 {
+	if st == nil || st.Root == nil {
+		return 0
+	}
+	return st.Root.EstimateRows
 }
 
 func withTable(ts []*model.Table, t *model.Table) []*model.Table {

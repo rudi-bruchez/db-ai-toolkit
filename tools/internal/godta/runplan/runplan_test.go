@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -425,5 +426,21 @@ func TestCloneStatsJoinAndGroupColumns(t *testing.T) {
 		if len(got) != 1 || got[0].Table != tc.table || len(got[0].Columns) != 1 || got[0].Columns[0] != 1 || got[0].Multi {
 			t.Errorf("%s: CloneStats %+v, want one statistics on table %d column 1", tc.name, got, tc.table)
 		}
+	}
+}
+
+// TestWithChunk: the chunk size goes into the plan, and the side effect that
+// counts the reads names it, not the default.
+func TestWithChunk(t *testing.T) {
+	p := runplan.ForClone(workload(), nil, runID, fingerprints(), `/var/opt/mssql/data`, true, 0).WithChunk(64 << 10)
+	if p.ChunkBytes != 64<<10 {
+		t.Errorf("ChunkBytes %d, want %d", p.ChunkBytes, 64<<10)
+	}
+	all := strings.Join(p.SideEffects, "\n")
+	if !strings.Contains(all, "65536 bytes") || strings.Contains(all, strconv.FormatInt(runplan.DefaultChunkBytes, 10)+" bytes") {
+		t.Errorf("side effects do not name the chunk of 65536 bytes: %v", p.SideEffects)
+	}
+	if n := len(p.SideEffects); n != len(runplan.ForClone(workload(), nil, runID, fingerprints(), `/x`, true, 0).SideEffects) {
+		t.Errorf("WithChunk changed the number of side effects: %d", n)
 	}
 }
