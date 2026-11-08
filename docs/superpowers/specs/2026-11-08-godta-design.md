@@ -2,8 +2,9 @@
 
 Date : 2026-11-08
 Statut : révisé après la relecture du panel (agy et codex, prompts directif et neutre, plus un
-sous-agent Claude), mesures faites sur SQL Server 2022 CU26. Le traitement de chaque constat est
-en §14. Prochaine étape : le spike de §11, puis le plan d'implémentation.
+sous-agent Claude), puis après le spike de §11, mené sur SQL Server 2019 CU32, 2022 CU26 et
+2025 CU7. Le traitement de chaque constat du panel est en §14, les résultats du spike en §15.
+Approuvé par Rudi le 2026-11-08. Prochaine étape : le plan d'implémentation.
 
 ## 1. Le besoin
 
@@ -316,15 +317,22 @@ Cette phase vient après la génération des candidats, parce qu'elle en dépend
 
 1. Statistiques : pour chaque candidat, `CREATE STATISTICS godta_<run>_<n>` sur ses colonnes de
    clé dans l'ordre (densités du préfixe et histogramme de la première colonne) ; pour chaque
-   colonne sans statistique utilisée par une requête retenue (prédicat, jointure, regroupement,
-   tri), une statistique d'une colonne, puisque le labo n'en créera pas. Échantillonnage par
-   défaut du moteur. C'est une lecture échantillonnée de la table et une écriture de
-   métadonnées, listée dans le plan d'exécution.
+   colonne sans statistique, clé d'un candidat ou colonne utilisée par une requête retenue
+   (prédicat, jointure, regroupement, tri), une statistique d'une colonne, puisque le labo n'en
+   créera pas. La statistique multicolonne seule ne suffit pas : sans les histogrammes d'une
+   colonne que la source crée d'elle-même à la compilation, le clone estime 633 lignes là où la
+   source en estime 24 858, 9 et 143 (mesuré sur 2025, §15). Échantillonnage par défaut du
+   moteur. C'est une lecture échantillonnée de la table (183 ms pour 7,8 millions de lignes) et
+   une écriture de métadonnées sous verrou `Sch-S`, sans recompilation des plans en cache
+   (mesuré), listée dans le plan d'exécution.
 2. `DBCC CLONEDATABASE (<base>, godta_<run>_<base>) WITH NO_QUERYSTORE` (option disponible
    depuis 2016 SP1). Le clone copie les statistiques existantes, dont celles de l'étape 1. Le
    Query Store n'est pas copié : `collect` l'a déjà lu sur la source, et le copier grossirait le
    fichier et exporterait des textes pour rien. `DBCC CLONEDATABASE` exige `sysadmin`.
-3. Suppression des statistiques de l'étape 1 sur la source.
+3. Suppression des statistiques de l'étape 1 sur la source. `DROP STATISTICS` prend `Sch-M` sur
+   la table et fait recompiler ses plans en cache à leur prochaine exécution (mesuré :
+   `plan_generation_num` passe de 1 à 2) : même délai de verrou court, mêmes tentatives et même
+   journalisation pour `cleanup` que le `DROP INDEX` de §8.5.
 4. `BACKUP DATABASE` du clone, compressé, dans le répertoire de sauvegarde par défaut de
    l'instance ou dans `--backup-dir`, chemin journalisé avant.
 5. Rapatriement du fichier par la connexion SQL, `OPENROWSET(BULK …, SINGLE_BLOB)`, sans partage
@@ -337,12 +345,20 @@ Cette phase vient après la génération des candidats, parce qu'elle en dépend
    chaque fichier logique vers le répertoire de données du labo (les chemins de la source, souvent
    Windows, n'existent pas sur le conteneur), puis `ALTER DATABASE … SET READ_WRITE` (un clone est
    en lecture seule ; sans ce passage, la création d'un index hypothétique échoue, erreur 3906),
-   puis `AUTO_CREATE_STATISTICS OFF` et `AUTO_UPDATE_STATISTICS OFF` sur le clone : sinon chaque
-   compilation sur le labo peut créer ou recalculer des statistiques à partir de tables vides
-   (colonnes de jointure, de regroupement, de tri, suggestions de l'IA) et fausser le coût de
-   référence comme le coût candidat. Microsoft ne prend en charge un clone que comme copie en
-   lecture seule pour le diagnostic : l'usage en écriture qu'en fait goDTA sort de ce cadre,
-   c'est assumé et limité au labo.
+   puis `AUTO_CREATE_STATISTICS OFF` et `AUTO_UPDATE_STATISTICS OFF` sur le clone, avant toute
+   compilation. Le clone copie les compteurs de modification des statistiques : une statistique
+   dont le compteur dépasse le seuil est recalculée à la première compilation à partir de la
+   table vide, et perd son histogramme (mesuré : 1 000 lignes avant, `NULL` après, estimation
+   retombée à 31,6). Une statistique auto-créée sur le clone est vide et n'apporte rien.
+   Ensuite, les configurations à l'échelle de la base de la source
+   (`sys.database_scoped_configurations`, lues par `collect`) sont reportées sur le clone, que
+   `DBCC CLONEDATABASE` ne copie pas : un `MAXDOP` de 2 sur la source et de 0 sur le clone
+   donnait 23,50 contre 22,66 pour le même balayage parallèle, et l'égalité revient une fois la
+   valeur reportée (mesuré). Le `MAXDOP` effectif de la source (configuration de la base, sinon
+   de l'instance, borné par son nombre de processeurs) est reporté tel quel ; si le labo a moins
+   de processeurs que ce `MAXDOP`, les plans parallèles diffèrent et le rapport le dit.
+   Microsoft ne prend en charge un clone que comme copie en lecture seule pour le diagnostic :
+   l'usage en écriture qu'en fait goDTA sort de ce cadre, c'est assumé et limité au labo.
 
 goDTA ne gère pas le conteneur lui-même (ni démarrage ni arrêt) : il se connecte au profil du
 labo.
@@ -366,22 +382,36 @@ Mécanisme, sur une connexion épinglée, chaque instruction dans son propre lot
    court. La valeur `-1` est obligatoire : sans valeur, l'index est créé sans statistique et
    l'estimation est fausse même sur une base pleine (mesuré par quatre relecteurs). Sur le labo,
    la table est vide : l'index obtient un objet de statistiques vide (en-tête à `NULL`, mesuré),
-   en concurrence avec la statistique `godta_*` copiée sur les mêmes colonnes. Rien ne garantit
-   aujourd'hui que l'optimiseur choisisse la seconde ; c'est le point 2 du spike, qui compare
-   aussi une autre voie : poser sur l'index hypothétique du labo le flux de la statistique
-   `godta_*` (`UPDATE STATISTICS … WITH STATS_STREAM`, même liste de colonnes) ;
+   et l'optimiseur estime à partir des statistiques `godta_*` copiées par le clone : coûts et
+   estimations identiques à ceux de la source sur 2019, 2022 et 2025 (§15). Poser sur l'index
+   hypothétique le flux `STATS_STREAM` de la statistique de mêmes colonnes ne change rien
+   (mesuré) et n'est pas fait. Sur la source, les statistiques de l'index hypothétique sont
+   échantillonnées, alors que celles d'un index réel sont calculées sur toute la table à sa
+   création : les estimations changent après la création réelle (25 992 lignes estimées avec
+   l'hypothétique, 10 963 avec le réel, mesuré). Le rapport le dit à côté des gains ;
 3. `DBCC AUTOPILOT(0, <db>, <table>, <index_id>, <pages>)` pour l'index hypothétique, avec un
-   nombre de pages estimé (lignes × largeur de ligne de l'index / 8 060 octets environ) : sans ce
-   paramètre, l'index est compté comme une seule page et toute lecture d'intervalle paraît
-   gratuite ;
-4. `DBCC AUTOPILOT(0, <db>, <table>, <index_id>, <pages>)` pour chaque index réel non cluster
-   de chaque table que la requête lit (lues dans son plan, jointures comprises) et des vues
-   indexées qu'elle peut utiliser, avec leur nombre de pages réel
-   (`sys.dm_db_partition_stats`). Un index réel non déclaré est caché à l'optimiseur sous
-   `AUTOPILOT` (vérifié par le contrôleur : un seek sur l'index réel à 0,0037 devient un balayage
-   à 0,436). C'est aussi ce qui permet de mesurer un `DROP` : pour évaluer un remplacement, on ne
-   déclare pas l'index remplacé. Le comportement de l'index cluster et des tas sous `AUTOPILOT`
-   (visibles d'office, mesuré pour un index cluster) et des vues indexées est à confirmer (§11) ;
+   nombre de pages de données estimé : lignes × (octets moyens des clés et des inclus + clé de
+   l'index cluster + 8 octets d'en-tête de ligne + 2 octets d'emplacement) / 8 096 octets, les
+   largeurs moyennes venant des statistiques. Mesuré : 3 308 pages estimées contre 3 314 réelles,
+   coût égal à 0,1 % près. Sans ce paramètre (ou avec 0), l'index hypothétique compte comme
+   presque vide et une lecture d'intervalle paraît gratuite (0,015 contre 0,041, mesuré) ; non
+   déclaré, il est invisible ;
+4. `DBCC AUTOPILOT(0, <db>, <table>, <index_id>, 0)` pour chaque index réel non cluster de chaque
+   table que la requête lit (lues dans son plan, jointures comprises), filtrés compris. Avec
+   `pages` à 0, le moteur prend la taille réelle de l'index (coût identique à celui d'un plan
+   ordinaire, mesuré) ; une valeur explicite remplace la taille réelle et doit alors être le
+   nombre de pages de données (`in_row_data_page_count`), pas de pages utilisées (2 pages
+   déclarées au lieu d'1 faisaient passer un coût de 0,0037 à 0,0044, mesuré). Les vues indexées
+   se déclarent par le type 6 : `DBCC AUTOPILOT(6, <db>, <vue>, 1, 0)` ; déclarées par le type 0,
+   elles restent invisibles (mesuré sur les trois versions). Un index réel non déclaré est caché
+   à l'optimiseur sous `AUTOPILOT` (un seek sur l'index réel à 0,0037 devient un balayage à
+   0,436). C'est aussi ce qui permet de mesurer un `DROP` : pour évaluer un remplacement, on ne
+   déclare pas l'index remplacé. L'index cluster et le tas sont visibles sans déclaration
+   (mesuré). Les index columnstore ne sont pas pris en charge : toute requête sur une table à
+   index columnstore cluster échoue sous `AUTOPILOT` (erreur 2510, « Invalid DTA command »),
+   déclaré ou non ; un index columnstore non cluster déclaré provoque la même erreur, non
+   déclaré il est caché et le contrôle de l'étape 8 écarte la mesure. Ces requêtes sont listées
+   « non évaluables (columnstore) », sans tentative ;
 5. `SET AUTOPILOT ON`, seul dans son lot ; le résultat de ce lot est vérifié avant de continuer.
    S'il a échoué, la requête suivante s'exécuterait pour de bon : goDTA s'arrête ;
 6. la requête rejouée ; le résultat doit être un document `ShowPlanXML`, sinon goDTA abandonne la
@@ -390,7 +420,10 @@ Mécanisme, sur une connexion épinglée, chaque instruction dans son propre lot
 8. la même séquence sans l'index candidat donne le coût de référence, dans les mêmes conditions.
    Contrôle obligatoire : ce coût de référence et la forme du plan doivent être identiques à ceux
    d'un simple `SET SHOWPLAN_XML ON` de la même requête sans `AUTOPILOT`. Un écart signifie qu'une
-   déclaration manque ; la mesure est alors écartée, jamais publiée ;
+   déclaration manque ; la mesure est alors écartée, jamais publiée. Mesuré sur toutes les
+   requêtes rejouables de la base de démonstration (1 913 sur 2022, 1 892 sur 2025) : identité
+   exacte sur les tables utilisateur, sauf trois `INSERT … WITH (TABLOCK)` dans un tas, plan
+   parallèle en `SHOWPLAN_XML` et série sous `AUTOPILOT` (coût doublé). Le contrôle les écarte ;
 9. `DROP INDEX` de l'index hypothétique.
 
 Avant le rejeu, la session reçoit les options `SET` du `context_settings_id` de la requête
@@ -399,21 +432,43 @@ Go ne sont pas celles des applications, et un index filtré ou une vue indexée 
 sous les options requises. Une procédure temporaire de rejeu est créée sous ces mêmes options,
 puisqu'elle fige `ANSI_NULLS` et `QUOTED_IDENTIFIER` à sa création.
 
-Rejeu des requêtes : c'est le point le moins sûr (§11). Mesuré : le texte du Query Store
-`(@P1 int)SELECT …` tel quel échoue (erreurs 1050 et 137) ; `EXEC sp_executesql` sous
-`AUTOPILOT` ne rend aucun plan de l'instruction interne ; un appel paramétré de `go-mssqldb`
-(RPC) ne rend rien ; `DECLARE @P1 … = valeur` fait perdre la valeur reniflée ; `OPTIMIZE FOR`
-refuse les types `MAX` (erreur 4132). En revanche, `EXEC` d'une procédure stockée sous
-`AUTOPILOT` compile son corps avec les valeurs passées comme valeurs reniflées. La piste à
-mesurer : envelopper chaque requête paramétrée dans une procédure temporaire (`#godta_…`) dont
-les paramètres reprennent sa déclaration, et l'appeler avec les `ParameterCompiledValue` du
-plan. Une requête non paramétrée se rejoue telle quelle. Une requête qui ne peut pas être rejouée
-(table temporaire, variables locales d'une procédure absentes de `ParameterList`, texte incomplet)
-est listée comme telle.
+Rejeu des requêtes. Le texte du Query Store `(@P1 int)SELECT …` tel quel échoue (erreurs 1050
+et 137) ; `EXEC sp_executesql` sous `AUTOPILOT` ne rend aucun plan de l'instruction interne ; un
+appel paramétré de `go-mssqldb` (RPC) ne rend rien ; `DECLARE @P1 … = valeur` fait perdre la
+valeur reniflée ; `OPTIMIZE FOR` refuse les types `MAX` (erreur 4132). goDTA enveloppe donc
+chaque requête paramétrée dans une procédure temporaire (`#godta_…`) dont les paramètres
+reprennent sa déclaration, et l'appelle avec les `ParameterCompiledValue` du plan, nommées
+(`@p = valeur`). Mesuré sur 2019, 2022 et 2025 : le plan rendu est celui de l'instruction
+interne, compilée avec ces valeurs reniflées ; 122 des 139 requêtes paramétrées de la base de
+démonstration qui lisent des tables de la base sans table temporaire ni columnstore se rejouent
+avec un plan identique au `SHOWPLAN_XML` (88 %, §15). Règles tirées des échecs :
 
-Les instructions `INSERT`, `UPDATE`, `DELETE`, `MERGE` ne sont évaluées que si le spike prouve,
-sur chacune de ces formes, qu'elles ne sont que compilées sous `AUTOPILOT` (mesuré pour un
-`UPDATE` : données inchangées). Sinon elles servent au seul coût de maintenance.
+- la clause `OPTION (PLAN PER VALUE(…))` que le Query Store ajoute aux variantes d'une requête
+  optimisée par le PSP (2022 et suivantes) est retirée du texte avant le rejeu (erreur 102
+  sinon) ;
+- un texte préfixé dont les variables n'ont pas de `ParameterCompiledValue` est une instruction
+  d'un lot ad hoc qui lit des variables locales (paramétrage `None`) : il se rejoue en lot, les
+  variables déclarées sans valeur (`DECLARE @n int; …`), pour garder l'estimation sans valeur
+  reniflée de l'original, et non par la procédure, qui reniflerait `NULL`. Un texte qui déclare
+  lui-même la variable de son préfixe (erreur 134) se rejoue tel quel, sans le préfixe ;
+- les paramètres et littéraux d'une procédure temporaire prennent le classement de `tempdb` :
+  quand le classement de la base diffère de celui de l'instance, une expression sans colonne
+  peut échouer (erreurs 457 et 468, deux requêtes) ; elle est listée « non rejouable
+  (classement) » ;
+- table temporaire, variable table, objet d'une autre base ou disparu : « non rejouable », avec
+  la raison.
+
+Une requête non paramétrée se rejoue telle quelle. Le plan rejoué diffère souvent du dernier plan
+du Query Store (statistiques, données ou niveau de compatibilité ont changé depuis) : c'est le
+plan rejoué qui sert de référence, jamais celui du Query Store.
+
+Les instructions `INSERT`, `UPDATE`, `DELETE`, `MERGE` et `BULK INSERT` ne sont que compilées
+sous `AUTOPILOT` (mesuré : 232 instructions d'écriture rejouées sur 2022, 212 sur 2025, les
+quatre formes sur 2019, aucune ligne écrite selon `sys.dm_db_index_operational_stats`, détecteur
+vérifié par un vrai `UPDATE`). Elles sont évaluées comme les lectures : elles peuvent profiter
+d'un candidat pour trouver leurs lignes, et leur plan sous `AUTOPILOT` contient la maintenance
+de l'index hypothétique déclaré (opérateurs `Index Insert`, `Index Update`, `Index Delete` sur
+lui, mesuré sur 2019 et 2022), qui donne le coût de maintenance de §8.6.
 
 Effets mesurés sur le serveur, à dire dans le plan d'exécution :
 
@@ -426,8 +481,9 @@ Effets mesurés sur le serveur, à dire dans le plan d'exécution :
   verrou laisserait l'index derrière : goDTA la retente avec un délai court et fixe et une pause
   entre deux tentatives (jamais un délai qui s'allonge, qui allongerait d'autant la file
   d'attente), puis, après la dernière, la journalise pour `cleanup` ;
-- les plans en cache des tables touchées ne sont pas invalidés (mesuré : même `plan_handle`,
-  `plan_generation_num` inchangé) ;
+- les plans en cache des tables touchées ne sont pas invalidés par l'index hypothétique (mesuré :
+  même `plan_handle`, `plan_generation_num` inchangé) ; `CREATE STATISTICS` ne les invalide pas
+  non plus, `DROP STATISTICS` les fait recompiler (§8.4) ;
 - les suggestions d'index manquants de la table sont effacées par la création : `collect` doit
   donc passer avant, ce que l'ordre des phases garantit ;
 - la compilation peut auto-créer des statistiques `_WA_Sys_*` sur des colonnes sans statistique.
@@ -445,11 +501,16 @@ Pour chaque index recommandé :
 
 - gain : somme sur les requêtes concernées de (coût estimé avant − coût estimé après) × nombre
   d'exécutions sur la fenêtre (Query Store), ou depuis la compilation (cache de plans, signalé) ;
-- coût de maintenance, sur la même fenêtre : lignes écrites dans la table par les requêtes
-  d'écriture du Query Store (exécutions × `avg_rowcount`), tirées de leurs plans (§8.2). Pour un
-  `UPDATE`, ne comptent que ceux qui modifient une colonne de l'index ou la clé cluster
-  (modifier la clé cluster maintient tous les index non cluster) ; un index non cluster n'est
-  pas maintenu quand l'`UPDATE` ne touche aucune de ses colonnes (mesuré). Les compteurs des DMV
+- coût de maintenance, sur la même fenêtre : pour chaque requête d'écriture du Query Store sur la
+  table (§8.2), rejouée sous `AUTOPILOT` avec le candidat déclaré, le coût estimé de l'opérateur
+  qui maintient l'index hypothétique (`Index Insert`, `Index Update`, `Index Delete`, coût de
+  l'opérateur sans ses enfants) × exécutions. Le moteur décide lui-même quels `UPDATE` touchent
+  l'index (une colonne de l'index ou la clé cluster ; un index non cluster n'est pas maintenu
+  quand l'`UPDATE` ne touche aucune de ses colonnes, mesuré). Le coût total de l'instruction
+  d'écriture ne sert pas : elle peut utiliser le candidat pour trouver ses lignes et devenir
+  moins chère (23,48 sans le candidat, 3,96 avec, maintenance comprise, mesuré), ce qui entre
+  dans le gain. Pour une écriture non rejouable, la maintenance retombe sur les lignes écrites
+  (exécutions × `avg_rowcount`), marquées comme estimation grossière. Les compteurs des DMV
   (`leaf_*_count` en lignes, `user_updates` en instructions, remis à zéro par une
   reconstruction ou l'éviction des métadonnées, sans horodatage) ne sont affichés qu'à titre
   indicatif, jamais rapportés à la fenêtre. En repli sur le cache de plans, la maintenance n'a
@@ -521,7 +582,9 @@ coût estimé est écartée avec ses chiffres.
 ## 11. Le spike, avant le plan
 
 Le plan d'implémentation ne s'écrit qu'avec les résultats de ce spike, mené sur `sql2022` et
-`sql2025` du labo, et si possible une instance 2016 ou 2019 (version plancher).
+`sql2025` du labo, et si possible une instance 2016 ou 2019 (version plancher). Mené le
+2026-11-08 sur 2019 CU32, 2022 CU26 et 2025 CU7 ; résultats en §15, qui disent aussi ce qui reste
+ouvert. La liste ci-dessous est gardée telle qu'elle a été posée.
 
 Déjà établi par le panel sur 2022 CU26 (à reconfirmer sur 2025) : `STATISTICS_ONLY = -1`, la
 syntaxe `DBCC AUTOPILOT (typeid [, dbid [, {maxQueryCost | tabid [, indid [, pages [, flag [,
@@ -610,6 +673,19 @@ Par Claude, à vérifier à la lecture :
 - rowstore non cluster seulement, rapports en Markdown ;
 - un spike de mesure (§11) avant le plan.
 
+Par Claude, après le spike (§15) :
+
+- requêtes sur une table à index columnstore listées « non évaluables », sans contournement ;
+- coût de maintenance lu dans les plans d'écriture rejoués sous `AUTOPILOT`, `avg_rowcount` en
+  repli seulement ;
+- index réels déclarés avec `pages` à 0, vues indexées par le type 6 ;
+- configurations à l'échelle de la base reportées sur le clone ;
+- statistiques d'une colonne pour chaque clé de candidat sans statistique, en plus de la
+  multicolonne ;
+- version plancher mesurée : 2019. 2016 et 2017 restent dans le périmètre de §4 mais n'ont pas
+  été mesurés faute d'instance au labo : à mesurer avant de les déclarer pris en charge (question
+  posée à Rudi : quelles versions tournent chez Neoen).
+
 ## 14. Relecture du panel
 
 Panel du 2026-11-08 sur le commit `7cd6647` : agy (Gemini 4 Argon) directif et neutre, codex
@@ -671,3 +747,46 @@ chargé de les attaquer, sans instance SQL Server. Traitement :
 | Indications dans les modules ; dérive de schéma entre validation et exécution ; effets des statistiques `godta_*` | `sys.sql_modules`, empreinte de schéma dans le plan d'exécution, point 8 du spike, §7.1, §8.2 |
 
 Aucun constat rejeté.
+
+## 15. Résultats du spike
+
+Mené le 2026-11-08 sur trois instances du labo : `sqltop-test-2019` (2019 CU32), `sql2022`
+(2022 CU26), `sql2025` (2025 CU7), sur une copie restaurée de `PachaDataFormation` (2022 et 2025)
+et une base construite pour l'occasion (2019), jamais sur la base de référence. Outil : un petit
+programme Go sur `go-mssqldb` v1.11.0, une connexion épinglée (`*sql.Conn`), chaque instruction
+dans son lot, ce que goDTA fera. Scripts et sorties dans le répertoire de travail de la session,
+non versionnés. Tout a été supprimé et les trois instances arrêtées à la fin.
+
+| Point | Résultat | Versions |
+|---|---|---|
+| 1. Rejeu par procédure temporaire | marche : plan de l'instruction interne, valeurs reniflées reprises. 122 des 139 requêtes paramétrées dans le périmètre rejouées avec un plan identique au `SHOWPLAN_XML` (88 %) ; 1 716 requêtes ad hoc aussi. Échecs : `OPTION (PLAN PER VALUE)` du PSP (5), variable déclarée par le texte (6), classement de `tempdb` (2), divers (4). Hors périmètre : tables temporaires et variables table (968), autres bases ou objets disparus (141), catalogue système (72), columnstore (54) | 2019, 2022, 2025 |
+| 2. Statistiques sur le labo | le coût d'un index hypothétique sur le clone est identique à celui de la source, y compris sur une colonne sans statistique avant le clone et sur des colonnes corrélées, à trois conditions : statistiques `godta_*` d'une colonne en plus de la multicolonne, `MAXDOP` de la base reporté, statistiques automatiques coupées avant toute compilation. Sans `godta_*` : 1 000 lignes estimées au lieu de 24 ; multicolonne seule : 633 au lieu de 24 858, 9 et 143 | 2019 (clone sauvegardé et restauré), 2022, 2025 |
+| 3. Écritures sous `AUTOPILOT` | compilées seulement : `INSERT`, `UPDATE`, `DELETE`, `MERGE`, `BULK INSERT`, aucune ligne écrite ; leur plan contient la maintenance de l'index hypothétique déclaré | 2019, 2022, 2025 |
+| 4. Version plancher | `STATISTICS_ONLY = -1`, `AUTOPILOT` (types 0, 5, 6), procédure temporaire, clone `NO_QUERYSTORE`, `OPENROWSET`, `IsClone` après restauration : identiques sur 2019. 2016, 2017 et Managed Instance non mesurés | 2019 |
+| 5. Pages | estimation 3 308 contre 3 314 réelles, coût égal à 0,1 % ; index réel à `pages` 0 : taille réelle ; valeur explicite : pages de données, pas pages utilisées ; hypothétique à 0 : sous-estimé | 2022 |
+| 6. Statistiques automatiques, objet vide, `STATS_STREAM` | l'optimiseur se sert des `godta_*` copiées malgré l'objet vide de l'index hypothétique ; `STATS_STREAM` sur l'hypothétique n'apporte rien ; une statistique auto-créée sur le clone est vide ; la mise à jour automatique efface une statistique copiée dont le compteur de modifications dépasse le seuil | 2022, 2025 |
+| 7. Jointures, tas, vues indexées, contrôle | jointures et tas sans difficulté ; vue indexée visible seulement par le type 6 ; index filtré déclaré normalement ; columnstore : erreur 2510 ; contrôle `AUTOPILOT` contre `SHOWPLAN_XML` identique sur les tables utilisateur sauf `INSERT … TABLOCK` parallèle (3 requêtes) | 2019, 2022, 2025 |
+| 8. `CREATE` et `DROP STATISTICS` | création sous `Sch-S`, sans recompilation, 183 ms pour 7,8 millions de lignes échantillonnées ; suppression sous `Sch-M`, recompilation des plans de la table | 2022 |
+| 9. `xp_delete_files`, `xp_delete_file` | les deux suppriment un fichier de sauvegarde sur Linux ; Windows non mesuré | 2019, 2022, 2025 |
+
+Découvertes hors liste, reportées dans le texte :
+
+- le clone garde le nombre de lignes et de pages des tables (`sys.dm_db_partition_stats`), donc
+  les pages des index réels n'ont pas à être transportées ;
+- le clone copie les compteurs de modification des statistiques (§8.4) ;
+- `DBCC CLONEDATABASE` ne copie pas les configurations à l'échelle de la base (§8.4) ;
+- les statistiques d'un index hypothétique sont échantillonnées, celles d'un index réel non
+  (§8.5) ;
+- le coût de maintenance se lit directement dans les plans d'écriture (§8.6).
+
+Restent ouverts, à traiter dans le plan ou avant de déclarer la prise en charge :
+
+- 2016, 2017 et Managed Instance ;
+- `xp_delete_files` sous Windows ;
+- l'écart entre source et labo dû au matériel : nombre de processeurs inférieur au `MAXDOP`
+  effectif, mémoire disponible pour les allocations (`EstimatedAvailableMemoryGrant`), non
+  mesuré entre deux instances différentes (toutes les mesures source contre clone l'ont été sur
+  la même instance, sauf 2019 où le labo était une base restaurée sur la même instance) ;
+- les deux règles de rejeu sans mesure directe : variables locales d'un lot ad hoc rejouées en
+  lot, texte qui déclare sa propre variable rejoué sans préfixe ; elles reçoivent un test dans
+  le plan.
