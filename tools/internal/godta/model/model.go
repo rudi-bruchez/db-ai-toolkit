@@ -231,7 +231,9 @@ const (
 
 // Measure is the evaluation of one query against one candidate, or against
 // a combination (Candidate empty, Combined filled) (task 10).
-// UsedHypothetical names the hypothetical indexes the plan after reads.
+// UsedHypothetical names the hypothetical indexes the plan after reads, by
+// candidate ID like Combined (not by index name): score matches it against
+// Candidate.ID.
 // Status is "measured" or one of the "not evaluated: ..." statuses.
 type Measure struct {
 	QueryID          int64    `json:"query_id"`
