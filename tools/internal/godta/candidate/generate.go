@@ -564,10 +564,14 @@ func ID(c model.Candidate) string {
 // BindQueries gives each candidate that has no query (those of the AI and of
 // sqlferret, or a missing index group of the DMV) every query, read or
 // write, whose plan reads its table, directly or through an indexed view.
-// The input is not changed.
+// Every candidate, with queries or without, also receives every write whose
+// plan writes its table: its maintenance is measured on the writes of the
+// table (spec section 8.6), and a write such as INSERT ... VALUES writes the
+// table without reading it. The input is not changed.
 func BindQueries(cands []model.Candidate, w *model.Workload) []model.Candidate {
 	r := newResolver(w)
 	readers := map[int][]int64{}
+	writers := map[int][]int64{}
 	for _, list := range [][]model.Query{w.Queries, w.Writes} {
 		for _, q := range list {
 			if q.Plan == nil {
@@ -581,15 +585,23 @@ func BindQueries(cands []model.Candidate, w *model.Workload) []model.Candidate {
 						}
 					}
 				}
+				for _, wr := range st.Writes {
+					for _, o := range wr.Objs {
+						if t := r.table(o); t != nil {
+							writers[t.ObjectID] = append(writers[t.ObjectID], q.QueryID)
+						}
+					}
+				}
 			}
 		}
 	}
 	out := slices.Clone(cands)
 	for i := range out {
-		if len(out[i].Queries) > 0 {
-			continue
+		qs := slices.Clone(out[i].Queries)
+		if len(qs) == 0 {
+			qs = append(qs, readers[out[i].Table]...)
 		}
-		qs := slices.Clone(readers[out[i].Table])
+		qs = append(qs, writers[out[i].Table]...)
 		slices.Sort(qs)
 		out[i].Queries = slices.Compact(qs)
 	}

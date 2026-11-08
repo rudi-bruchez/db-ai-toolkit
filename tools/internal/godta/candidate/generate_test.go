@@ -376,6 +376,43 @@ func TestBindQueries(t *testing.T) {
 	}
 }
 
+// TestBindQueriesIncludesPureWrites: INSERT ... VALUES writes godta_t without
+// reading it (its plan reads only godta_v, for the view's maintenance). It is
+// bound to a candidate on godta_t, which has no query, and to one that has
+// queries, since the maintenance of every candidate of the table is measured
+// from the writes of the table (spec section 8.6). A candidate on godta_h is
+// not given it.
+func TestBindQueriesIncludesPureWrites(t *testing.T) {
+	w := workload()
+	insert := loadPlan(t, "insert_narrow.sqlplan")
+	for _, st := range insert.Statements {
+		for _, a := range st.Accesses {
+			if a.Obj.Table == "godta_t" || slices.ContainsFunc(a.ViewBase, func(o showplan.ObjRef) bool { return o.Table == "godta_t" }) {
+				t.Fatalf("the fixture reads godta_t (%+v): it no longer tests a pure write", a.Obj)
+			}
+		}
+	}
+	w.Writes = []model.Query{{QueryID: 5, IsWrite: true, Plan: insert}}
+	in := []model.Candidate{
+		{Table: tblT, Keys: keys(asc(colC)), Origin: OriginAI},
+		{Table: tblT, Keys: keys(asc(colB)), Origin: OriginAlgorithm, Queries: []int64{99}},
+		{Table: tblH, Keys: keys(asc(1)), Origin: OriginAI},
+	}
+	out := BindQueries(in, w)
+	if !slices.Equal(out[0].Queries, []int64{5}) {
+		t.Errorf("Queries %v, want [5]: the INSERT writes godta_t", out[0].Queries)
+	}
+	if !slices.Equal(out[1].Queries, []int64{5, 99}) {
+		t.Errorf("Queries %v, want [5 99]: a write of the table joins the candidate's own queries", out[1].Queries)
+	}
+	if len(out[2].Queries) != 0 {
+		t.Errorf("Queries %v, want none: the INSERT does not write godta_h", out[2].Queries)
+	}
+	if !slices.Equal(in[1].Queries, []int64{99}) {
+		t.Errorf("input changed: %v", in[1].Queries)
+	}
+}
+
 func TestMissingIndexDMVBecomesCandidate(t *testing.T) {
 	w := workload()
 	w.MissingIndexes = []model.MissingIndexDMV{{Table: tblT, Equality: []int{colB}, Include: []int{colC, colID}}}
