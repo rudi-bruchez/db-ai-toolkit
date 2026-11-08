@@ -547,12 +547,12 @@ var noStatsTypes = []string{"xml", "text", "ntext", "image", "geography", "geome
 // multicolumn statistics per candidate of two keys or more, on its keys in
 // order (the same keys once per table); then one single-column statistics
 // per column without statistics of its own, a key of a candidate or a column
-// a query of the workload seeks, filters or sorts on, in the order they
-// first appear. "Of its own" means an existing statistics object led by the
-// column (the histogram is on the first column): the multicolumn statistics
-// clone creates do not count, since the lab drops them (step 8). Covered
-// candidates, tables not in the workload, columnstore tables and indexed
-// views get none.
+// a query of the workload seeks, filters, joins, groups or sorts on, in the
+// order they first appear. "Of its own" means an existing statistics object
+// led by the column (the histogram is on the first column): the multicolumn
+// statistics clone creates do not count, since the lab drops them (step 8).
+// Covered candidates, tables not in the workload, columnstore tables and
+// indexed views get none.
 func CloneStats(w *model.Workload, cands []model.Candidate) []StatSpec {
 	var out []StatSpec
 	usable := func(t *model.Table) bool {
@@ -634,8 +634,8 @@ func CloneStats(w *model.Workload, cands []model.Candidate) []StatSpec {
 }
 
 // queryColumns calls f for each column of a table of w that a statement of
-// p seeks on, compares in a residual predicate, or sorts on. The plan reader
-// does not give join or grouping columns apart from these.
+// p seeks on, compares in a residual predicate, joins on, groups by or sorts
+// on.
 func queryColumns(w *model.Workload, p *showplan.Plan, f func(t *model.Table, id int)) {
 	if p == nil {
 		return
@@ -647,6 +647,8 @@ func queryColumns(w *model.Workload, p *showplan.Plan, f func(t *model.Table, id
 			refs = append(refs, a.PredEq...)
 			refs = append(refs, a.PredRange...)
 		}
+		refs = append(refs, st.JoinCols...)
+		refs = append(refs, st.GroupCols...)
 		for _, s := range st.Sorts {
 			refs = append(refs, s.Cols...)
 		}

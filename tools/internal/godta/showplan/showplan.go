@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -40,8 +41,16 @@ type Statement struct {
 	Writes   []Write
 	Missing  []MissingIndex
 	Sorts    []SortReq
-	Parallel bool // some operator runs in parallel
-	Root     *RelOp
+	// JoinCols are the table columns a join compares: the hash keys and
+	// probe residual of a Hash Match join or an Adaptive Join, the join
+	// columns and residual of a Merge Join, the outer references and the
+	// predicate of a Nested Loops. GroupCols are the table columns a Stream
+	// Aggregate groups by, or a Hash Match aggregate hashes on (it has no
+	// GroupBy element, measured on 2022). Computed values (Expr1001) and
+	// bookmarks name no table and are left out; each column comes once.
+	JoinCols, GroupCols []ColRef
+	Parallel            bool // some operator runs in parallel
+	Root                *RelOp
 }
 
 // Param is a parameter as compiled, CompiledValue as written in the XML once
@@ -188,6 +197,8 @@ type relState struct {
 	setDepth  int
 	sortIdx   int // index in Sorts, -1
 	ivDepth   int // IndexedViewInfo
+	joinDepth int // a child of the operator that lists join columns
+	grpDepth  int // a child of the operator that lists grouping columns
 }
 
 type stmtState struct {
@@ -391,6 +402,12 @@ func (p *parser) start(t xml.StartElement) {
 		case "SetPredicate":
 			r.setDepth = d
 		}
+		switch columnRole(r.opName, r.node.LogicalOp, n) {
+		case roleJoin:
+			r.joinDepth = d
+		case roleGroup:
+			r.grpDepth = d
+		}
 		return
 	}
 	if r.ivDepth > 0 && d == r.ivDepth+1 && n == "Object" && r.access >= 0 {
@@ -415,6 +432,16 @@ func (p *parser) start(t xml.StartElement) {
 		p.predicateStart(ss, t, n, parent, d)
 		return
 	}
+	if (r.joinDepth > 0 || r.grpDepth > 0) && n == "ColumnReference" {
+		if c := colRef(t); c.Table != "" {
+			if r.joinDepth > 0 {
+				addCol(&st.JoinCols, c)
+			} else {
+				addCol(&st.GroupCols, c)
+			}
+		}
+		return
+	}
 	if r.setDepth > 0 && r.write >= 0 && n == "ColumnReference" && parent == "Assign" && childIdx == 0 {
 		// A wide Index Update assigns the index row's own columns (id1020),
 		// which name no table: only the columns of the table are kept
@@ -433,6 +460,54 @@ func (p *parser) start(t xml.StartElement) {
 	if r.sortIdx >= 0 && parent == "OrderByColumn" && n == "ColumnReference" && d == r.opDepth+3 {
 		s := &st.Sorts[r.sortIdx]
 		s.Cols = append(s.Cols, colRef(t))
+	}
+}
+
+const (
+	roleNone = iota
+	roleJoin
+	roleGroup
+)
+
+// columnRole says whether child, a direct child of the operator element op
+// of a RelOp of logical operator logical, lists join columns, grouping
+// columns or neither. A Hash Match or a Merge Join also serves for unions and
+// distinct: only the join and aggregate forms count.
+func columnRole(op, logical, child string) int {
+	join := strings.Contains(logical, "Join")
+	switch op {
+	case "Hash":
+		switch {
+		case join && (child == "HashKeysBuild" || child == "HashKeysProbe" || child == "ProbeResidual"):
+			return roleJoin
+		case (strings.Contains(logical, "Aggregate") || logical == "Flow Distinct") &&
+			(child == "HashKeysBuild" || child == "GroupBy"):
+			return roleGroup
+		}
+	case "Merge":
+		if join && (child == "InnerSideJoinColumns" || child == "OuterSideJoinColumns" || child == "Residual") {
+			return roleJoin
+		}
+	case "NestedLoops":
+		if child == "OuterReferences" || child == "Predicate" {
+			return roleJoin
+		}
+	case "AdaptiveJoin":
+		switch child {
+		case "HashKeysBuild", "HashKeysProbe", "OuterReferences", "Predicate":
+			return roleJoin
+		}
+	case "StreamAggregate":
+		if child == "GroupBy" {
+			return roleGroup
+		}
+	}
+	return roleNone
+}
+
+func addCol(cols *[]ColRef, c ColRef) {
+	if !slices.Contains(*cols, c) {
+		*cols = append(*cols, c)
 	}
 }
 
@@ -581,6 +656,14 @@ func (p *parser) end() {
 		r.predDepth = 0
 	case r.setDepth:
 		r.setDepth = 0
+	}
+	// Apart from the switch: a Predicate of a Nested Loops sets predDepth
+	// and joinDepth to the same depth.
+	if d == r.joinDepth {
+		r.joinDepth = 0
+	}
+	if d == r.grpDepth {
+		r.grpDepth = 0
 	}
 	if n == "Compare" && len(ss.compares) > 0 && ss.compares[len(ss.compares)-1].depth == d {
 		c := ss.compares[len(ss.compares)-1]

@@ -11,6 +11,11 @@ import (
 )
 
 // The fixtures come from testdata/capture/main.go, run on the lab instance.
+// join_merge, join_loop_pred, group_stream and group_hash were captured by
+// hand under SET SHOWPLAN_XML ON on SQL Server 2022 (a throwaway database
+// godta_fix_joins with two tables ja and jb), with MERGE JOIN, LOOP JOIN,
+// ORDER GROUP and HASH GROUP hints; merge and stream aggregate read ordered
+// indexes, so no Sort gives their columns another way.
 
 func load(t *testing.T, name string) *Plan {
 	t.Helper()
@@ -309,5 +314,58 @@ func TestParseUTF16(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("UTF-16 read differs from UTF-8 read:\n%+v\n%+v", got, want)
+	}
+}
+
+// joinGroup returns the Table.Column names of the join and grouping columns
+// of the one planned statement of a fixture.
+func joinGroup(t *testing.T, name string) (join, group []string) {
+	t.Helper()
+	s := planned(t, load(t, name))
+	for _, c := range s.JoinCols {
+		join = append(join, c.Table+"."+c.Column)
+	}
+	for _, c := range s.GroupCols {
+		group = append(group, c.Table+"."+c.Column)
+	}
+	return join, group
+}
+
+// TestJoinColumns: the columns each join operator compares, once each, and
+// only those of a table.
+func TestJoinColumns(t *testing.T) {
+	for _, tc := range []struct {
+		file string
+		want []string
+	}{
+		{"join.sqlplan", []string{"godta_h.x", "godta_t.a"}}, // Hash Match: HashKeysBuild, HashKeysProbe
+		{"join_merge.sqlplan", []string{"jb.k", "ja.k"}},     // Merge Join: inner, outer side, residual
+		{"join_loop_pred.sqlplan", []string{"ja.v", "jb.w"}}, // Nested Loops: Predicate
+		{"insert_narrow.sqlplan", []string{"godta_t.a"}},     // Nested Loops: OuterReferences
+		{"seek_lookup.sqlplan", nil},                         // OuterReferences of a bookmark only
+		{"group_hash.sqlplan", nil},                          // a Hash Match aggregate is no join
+	} {
+		join, _ := joinGroup(t, tc.file)
+		if !slices.Equal(join, tc.want) {
+			t.Errorf("%s: JoinCols %v, want %v", tc.file, join, tc.want)
+		}
+	}
+}
+
+// TestGroupColumns: the grouping columns of a Stream Aggregate (GroupBy) and
+// of a Hash Match aggregate (HashKeysBuild), and none for a hash join.
+func TestGroupColumns(t *testing.T) {
+	for _, tc := range []struct {
+		file string
+		want []string
+	}{
+		{"group_stream.sqlplan", []string{"ja.g"}},
+		{"group_hash.sqlplan", []string{"ja.g"}},
+		{"join.sqlplan", nil},
+	} {
+		_, group := joinGroup(t, tc.file)
+		if !slices.Equal(group, tc.want) {
+			t.Errorf("%s: GroupCols %v, want %v", tc.file, group, tc.want)
+		}
 	}
 }
