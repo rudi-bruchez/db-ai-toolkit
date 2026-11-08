@@ -29,7 +29,7 @@ func asc(id int) model.KeyCol { return model.KeyCol{ColumnID: id} }
 // here, for the redundancies.
 func fixture(db string) *model.Workload {
 	return &model.Workload{
-		Server: conn.Instance{ServerName: "lab01", Edition: "Developer Edition (64-bit)", EngineEdition: 3,
+		Server: conn.Instance{ServerName: "lab01", Edition: "Developer Edition (64-bit)", EngineEdition: 3, IsEnterpriseFeatures: true,
 			Major: 16, Level: "RTM", Version: "16.0.4250.1"},
 		Database: model.DBInfo{ID: 7, Name: db, Collation: "Latin1_General_CI_AS", Compat: 160, QueryStoreState: "READ_WRITE"},
 		Window: model.Window{From: time.Date(2026, 11, 7, 8, 0, 0, 0, time.UTC),
@@ -435,6 +435,7 @@ func TestMeasuredPeriodLine(t *testing.T) {
 // with its table.
 func TestPartitionSchemeTarget(t *testing.T) {
 	w := fixture("godta_it_golden")
+	w.Server.IsEnterpriseFeatures = false // the ON clause alone, without ONLINE
 	tt, th := w.Tables[tblT], w.Tables[tblH]
 	tt.Indexes[2].DataSpace, tt.Indexes[2].PartitionColumn = "ps]t", 1
 	th.Indexes[1].DataSpace, th.Indexes[1].PartitionColumn = "ps_h", 2
@@ -450,5 +451,56 @@ func TestPartitionSchemeTarget(t *testing.T) {
 	}
 	if strings.Contains(script, "remove the ON clause") {
 		t.Errorf("indexes.sql still tells to remove the ON clause:\n%s", script)
+	}
+}
+
+// createLines returns the CREATE INDEX statements of a script.
+func createLines(script string) []string {
+	var out []string
+	for _, l := range strings.Split(script, "\n") {
+		if strings.HasPrefix(l, "CREATE ") {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// TestScriptOnlineOnEnterprise: on an edition with Enterprise features every
+// CREATE INDEX of the script, DROP_EXISTING included, builds online, and the
+// script does not say it builds offline.
+func TestScriptOnlineOnEnterprise(t *testing.T) {
+	w := fixture("godta_it_golden")
+	w.Server.IsEnterpriseFeatures = true
+	_, script, _ := write(t, w, recs())
+	lines := createLines(script)
+	if len(lines) != 3 {
+		t.Fatalf("%d CREATE statements, want 3:\n%s", len(lines), script)
+	}
+	for _, l := range lines {
+		if !strings.Contains(l, "ONLINE = ON") {
+			t.Errorf("not online: %s", l)
+		}
+	}
+	if !strings.Contains(script, "WITH (DROP_EXISTING = ON, ONLINE = ON, DATA_COMPRESSION = PAGE, FILLFACTOR = 90) ON [PRIMARY]") {
+		t.Errorf("the widened index is not rebuilt online with its options:\n%s", script)
+	}
+	if strings.Contains(script, "offline") {
+		t.Errorf("an online script says it builds offline:\n%s", script)
+	}
+}
+
+// TestScriptOfflineSaysSo: without Enterprise features no statement asks for
+// ONLINE, which the edition would refuse, and the script says the builds are
+// offline and lock the table for their whole duration.
+func TestScriptOfflineSaysSo(t *testing.T) {
+	w := fixture("godta_it_golden")
+	w.Server.IsEnterpriseFeatures = false
+	w.Server.Edition = "Standard Edition (64-bit)"
+	_, script, _ := write(t, w, recs())
+	if strings.Contains(script, "ONLINE") {
+		t.Errorf("an edition without online builds gets ONLINE:\n%s", script)
+	}
+	if !strings.Contains(script, "-- Standard Edition (64-bit) builds indexes offline") {
+		t.Errorf("the script does not say the builds are offline on this edition:\n%s", script)
 	}
 }

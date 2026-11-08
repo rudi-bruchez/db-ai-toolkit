@@ -177,6 +177,9 @@ type item struct {
 	skip     string
 	// status is what a not evaluated candidate says instead of numbers.
 	status string
+	// online is the instance's IsEnterpriseFeatures: the script builds
+	// with ONLINE = ON only where the edition supports it.
+	online bool
 }
 
 // sections in their order in the report.
@@ -272,7 +275,7 @@ func build(w *model.Workload, recs []model.Recommendation, evaluated bool) ([]*i
 		if t == nil {
 			return nil, fmt.Errorf("report: candidate %s: table %d is not in the workload", r.Candidate.ID, r.Candidate.Table)
 		}
-		it := &item{rec: r, table: t, section: sectionOf(r)}
+		it := &item{rec: r, table: t, section: sectionOf(r), online: w.Server.IsEnterpriseFeatures}
 		if it.section == "not_evaluated" {
 			it.status = notEvaluatedStatus(r, evaluated)
 		}
@@ -335,6 +338,7 @@ func (it *item) plan() error {
 		if err != nil {
 			return err
 		}
+		def.Online = it.online
 		it.stmts = []string{tsql.CreateIndex(def)}
 	case model.DecisionWiden, model.DecisionReplace:
 		e := it.existing
@@ -353,6 +357,7 @@ func (it *item) plan() error {
 		}
 		def.DataCompression = e.Compression
 		def.FillFactor = e.FillFactor
+		def.Online = it.online
 		if def.OnTarget, err = onTarget(t, *e); err != nil {
 			return err
 		}
@@ -879,6 +884,12 @@ func renderScript(w *model.Workload, items []*item) string {
 	p("-- Statements have no terminating semicolon; each batch ends with a GO line\n")
 	p("-- (sqlcmd, SSMS). Read every block and run only what you decided to run.\n")
 	p("-- A replaced index is dropped after its replacement is created, and only if it exists.\n")
+	if w.Server.IsEnterpriseFeatures {
+		p("-- Every CREATE INDEX, DROP_EXISTING included, builds with ONLINE = ON (Enterprise features).\n")
+	} else {
+		p("-- %s builds indexes offline: each CREATE INDEX below, DROP_EXISTING included,\n", w.Server.Edition)
+		p("-- takes its locks on the table for the whole build.\n")
+	}
 	p("\nUSE %s\nGO\n", tsql.QuoteName(w.Database.Name))
 	p("-- CREATE INDEX needs these options on a table with an indexed view or a computed column.\n")
 	p("SET ANSI_NULLS ON\nSET ANSI_PADDING ON\nSET ANSI_WARNINGS ON\nSET ARITHABORT ON\n")

@@ -32,7 +32,9 @@ type KeyCol struct {
 // OnTarget the target of the ON clause, built by the caller with QuoteName (a
 // filegroup, [PRIMARY], or a partition scheme and its column, [ps]([c])).
 // DataCompression is NONE, ROW or PAGE (empty means the default); FillFactor 0
-// means the default.
+// means the default. Online adds ONLINE = ON to CreateIndex and
+// CreateIndexDropExisting: only an edition with Enterprise features builds
+// online, the others refuse the option.
 type IndexDef struct {
 	Table           Obj
 	Name            string
@@ -43,6 +45,7 @@ type IndexDef struct {
 	DataCompression string
 	FillFactor      int
 	OnTarget        string
+	Online          bool
 }
 
 // indexHead writes CREATE [UNIQUE] NONCLUSTERED INDEX ... ON t (keys)
@@ -110,6 +113,9 @@ func createIndex(ix IndexDef, dropExisting bool) string {
 	var opts []string
 	if dropExisting {
 		opts = append(opts, "DROP_EXISTING = ON")
+	}
+	if ix.Online {
+		opts = append(opts, "ONLINE = ON")
 	}
 	switch c := strings.ToUpper(ix.DataCompression); c {
 	case "", "NONE":

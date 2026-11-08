@@ -33,7 +33,7 @@
 - Note: estimates use sampled statistics; a real index has full-scan statistics
 
 ```sql
-CREATE NONCLUSTERED INDEX [IX_godta_t_a_b_a1b2c3] ON [dbo].[godta_t] ([a] ASC, [b] ASC) INCLUDE ([c])
+CREATE NONCLUSTERED INDEX [IX_godta_t_a_b_a1b2c3] ON [dbo].[godta_t] ([a] ASC, [b] ASC) INCLUDE ([c]) WITH (ONLINE = ON)
 ```
 
 ### 2. widen nix_t_b, candidate 0f0f0f0f0f0f
@@ -47,7 +47,7 @@ CREATE NONCLUSTERED INDEX [IX_godta_t_a_b_a1b2c3] ON [dbo].[godta_t] ([a] ASC, [
   - query_id 12 (read), 40 executions, cost 8.50 before, 1.00 after: `SELECT TOP 10 c FROM dbo.godta_t WHERE b = 3`
 
 ```sql
-CREATE NONCLUSTERED INDEX [nix_t_b] ON [dbo].[godta_t] ([b] ASC) INCLUDE ([c]) WITH (DROP_EXISTING = ON, DATA_COMPRESSION = PAGE, FILLFACTOR = 90) ON [PRIMARY]
+CREATE NONCLUSTERED INDEX [nix_t_b] ON [dbo].[godta_t] ([b] ASC) INCLUDE ([c]) WITH (DROP_EXISTING = ON, ONLINE = ON, DATA_COMPRESSION = PAGE, FILLFACTOR = 90) ON [PRIMARY]
 ```
 
 ### 3. replace nix_h_x, candidate abcabcabcabc
@@ -60,7 +60,7 @@ CREATE NONCLUSTERED INDEX [nix_t_b] ON [dbo].[godta_t] ([b] ASC) INCLUDE ([c]) W
   - query_id 13 (read), 25 executions, cost 7.00 before, 1.00 after: `SELECT y FROM dbo.godta_h WHERE x = 42 AND y > 'a'`
 
 ```sql
-CREATE NONCLUSTERED INDEX [IX_godta_h_x_y_abcabc] ON [dbo].[godta_h] ([x] ASC, [y] ASC) WITH (DATA_COMPRESSION = ROW) ON [PRIMARY]
+CREATE NONCLUSTERED INDEX [IX_godta_h_x_y_abcabc] ON [dbo].[godta_h] ([x] ASC, [y] ASC) WITH (ONLINE = ON, DATA_COMPRESSION = ROW) ON [PRIMARY]
 IF EXISTS (SELECT 1 FROM sys.indexes WHERE object_id = OBJECT_ID(N'[dbo].[godta_h]') AND name = N'IX_godta_h_x_y_abcabc') DROP INDEX [nix_h_x] ON [dbo].[godta_h]
 ```
 

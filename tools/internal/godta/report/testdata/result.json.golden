@@ -36,7 +36,7 @@
       "definition": "[dbo].[godta_t] ([a] ASC, [b] ASC) INCLUDE ([c])",
       "index_name": "IX_godta_t_a_b_a1b2c3",
       "statements": [
-        "CREATE NONCLUSTERED INDEX [IX_godta_t_a_b_a1b2c3] ON [dbo].[godta_t] ([a] ASC, [b] ASC) INCLUDE ([c])"
+        "CREATE NONCLUSTERED INDEX [IX_godta_t_a_b_a1b2c3] ON [dbo].[godta_t] ([a] ASC, [b] ASC) INCLUDE ([c]) WITH (ONLINE = ON)"
       ],
       "origin": "algorithm",
       "rules": [
@@ -82,7 +82,7 @@
       "definition": "[dbo].[godta_t] ([b] ASC) INCLUDE ([c])",
       "index_name": "nix_t_b",
       "statements": [
-        "CREATE NONCLUSTERED INDEX [nix_t_b] ON [dbo].[godta_t] ([b] ASC) INCLUDE ([c]) WITH (DROP_EXISTING = ON, DATA_COMPRESSION = PAGE, FILLFACTOR = 90) ON [PRIMARY]"
+        "CREATE NONCLUSTERED INDEX [nix_t_b] ON [dbo].[godta_t] ([b] ASC) INCLUDE ([c]) WITH (DROP_EXISTING = ON, ONLINE = ON, DATA_COMPRESSION = PAGE, FILLFACTOR = 90) ON [PRIMARY]"
       ],
       "origin": "ai",
       "reason": "query 12 looks up c after a seek on b",
@@ -126,7 +126,7 @@
       "definition": "[dbo].[godta_h] ([x] ASC, [y] ASC)",
       "index_name": "IX_godta_h_x_y_abcabc",
       "statements": [
-        "CREATE NONCLUSTERED INDEX [IX_godta_h_x_y_abcabc] ON [dbo].[godta_h] ([x] ASC, [y] ASC) WITH (DATA_COMPRESSION = ROW) ON [PRIMARY]",
+        "CREATE NONCLUSTERED INDEX [IX_godta_h_x_y_abcabc] ON [dbo].[godta_h] ([x] ASC, [y] ASC) WITH (ONLINE = ON, DATA_COMPRESSION = ROW) ON [PRIMARY]",
         "IF EXISTS (SELECT 1 FROM sys.indexes WHERE object_id = OBJECT_ID(N'[dbo].[godta_h]') AND name = N'IX_godta_h_x_y_abcabc') DROP INDEX [nix_h_x] ON [dbo].[godta_h]"
       ],
       "origin": "missing_index",
