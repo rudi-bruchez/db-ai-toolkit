@@ -529,3 +529,85 @@ func TestCleanupIncludeKeepsClone(t *testing.T) {
 		}
 	}
 }
+
+// plan is the sealed cleanup plan of entries, as the dry run writes it.
+func (e *env) plan(entries []workspace.Entry) runplan.Plan {
+	p := runplan.ForCleanup(entries)
+	p.MachineName = e.inst.MachineName
+	return p.Seal()
+}
+
+// TestCleanupRefusesRealIndexOfJournaledName: a real index carries a name
+// the journal lists, as a hypothetical index and as statistics (every index
+// has statistics of its name). Run refuses both entries: the index is still
+// there and both stay pending.
+func TestCleanupRefusesRealIndexOfJournaledName(t *testing.T) {
+	for _, kind := range []string{workspace.KindHypotheticalIndex, workspace.KindStatistics} {
+		t.Run(kind, func(t *testing.T) {
+			e := newEnv(t)
+			dbName, db := e.smallDB()
+			name := runplan.IndexName(workspace.NewRunID(), 1)
+			e.exec(db, tsql.CreateIndex(tsql.IndexDef{Table: godtaH, Name: name, Keys: []tsql.KeyCol{{Name: "x"}}}))
+			e.record(e.entry(dbName, kind, name, workspace.StateCreated))
+
+			removed, err := cleanup.Run(e.ctx, e.server, e.open, e.ws, e.plan([]workspace.Entry{e.entry(dbName, kind, name, workspace.StateCreated)}))
+			if err == nil || !strings.Contains(err.Error(), "not of the journaled kind") {
+				t.Errorf("Run: %v, want a refusal of the real index", err)
+			}
+			if len(removed) != 0 {
+				t.Errorf("removed %+v, want none", removed)
+			}
+			if n := indexCount(t, e.ctx, db, name); n != 1 {
+				t.Errorf("real index %s: %d left, want 1", name, n)
+			}
+			if !e.pendingNamed(name) {
+				t.Errorf("%s no longer pending", name)
+			}
+		})
+	}
+}
+
+// TestCleanupDropTimesOut: a session holds a shared table lock while Run
+// drops a journaled hypothetical index of that table. The drop gives up
+// after the short lock timeout, well before the test's own deadline, and the
+// entry stays pending: cleanup does not wait behind a reader with every new
+// query queued behind its Sch-M request (spec section 8.5).
+func TestCleanupDropTimesOut(t *testing.T) {
+	e := newEnv(t)
+	dbName, db := e.smallDB()
+	name := runplan.IndexName(workspace.NewRunID(), 1)
+	e.hypothetical(db, name)
+	en := e.entry(dbName, workspace.KindHypotheticalIndex, name, workspace.StateCreated)
+	e.record(en)
+
+	holder, err := db.BeginTx(e.ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Rollback()
+	var one int
+	if err := holder.QueryRowContext(e.ctx, "SELECT TOP (1) 1 FROM dbo.godta_h WITH (TABLOCK, HOLDLOCK)").Scan(&one); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(e.ctx, 20*time.Second)
+	defer cancel()
+	start := time.Now()
+	removed, err := cleanup.Run(ctx, e.server, e.open, e.ws, e.plan([]workspace.Entry{en}))
+	took := time.Since(start)
+	t.Logf("Run took %s: %v", took, err)
+	if err == nil || !strings.Contains(err.Error(), "1222") && !strings.Contains(strings.ToLower(err.Error()), "lock request time out") {
+		t.Errorf("Run: %v, want a lock timeout (1222)", err)
+	}
+	if took > 10*time.Second {
+		t.Errorf("Run took %s, want the drop to give up after the %d ms lock timeout", took, runplan.DropLockTimeoutMS)
+	}
+	if len(removed) != 0 || !e.pendingNamed(name) {
+		t.Errorf("removed %+v, pending %v; want nothing removed and %s pending", removed, e.pendingNamed(name), name)
+	}
+	if err := holder.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if n := indexCount(t, e.ctx, db, name); n != 1 {
+		t.Errorf("%s: %d after the timed out drop, want 1", name, n)
+	}
+}
