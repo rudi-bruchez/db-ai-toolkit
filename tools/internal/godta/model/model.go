@@ -188,7 +188,11 @@ type Index struct {
 	DataPages   int64  `json:"data_pages"`
 	Compression string `json:"compression"`
 	FillFactor  int    `json:"fill_factor"`
-	DataSpace   string `json:"data_space"`
+	// DataSpace is the name of the index's filegroup or partition scheme;
+	// PartitionColumn, the column_id of its partitioning column, is set only
+	// on a partition scheme, which an ON clause names with that column.
+	DataSpace       string `json:"data_space"`
+	PartitionColumn int    `json:"partition_column,omitempty"`
 	// NamedIn says where the index is named: "query_store_text",
 	// "sql_module:<schema.object>", "plan_guide:<name>",
 	// "forced_plan:<query_id>".
