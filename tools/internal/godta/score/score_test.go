@@ -145,6 +145,39 @@ func TestCombinedRedundant(t *testing.T) {
 	}
 }
 
+// TestCombinedCostsNotScored (review finding 14): a combined measure records
+// no maintenance, so its costs are not in the terms of the measures of one
+// candidate, whose write gain is Before - (After - Maintenance). The score
+// must read only which hypothetical indexes the combined plan uses: adding
+// combined measures with other costs and no maintenance changes neither the
+// gain, nor the maintenance, nor the decision of any candidate.
+func TestCombinedCostsNotScored(t *testing.T) {
+	write := func(c string) model.Measure {
+		m := measured(2, c, 5, 5.5)
+		m.Maintenance = 0.5
+		return m
+	}
+	alone := []model.Measure{measured(1, "A", 10, 1), write("A"), measured(1, "B", 10, 2), write("B")}
+	combined := append(slices.Clone(alone),
+		model.Measure{QueryID: 1, Combined: []string{"A", "B"}, Before: 10, After: 9.9,
+			UsedHypothetical: []string{"A", "B"}, Status: StatusMeasured},
+		model.Measure{QueryID: 2, Combined: []string{"A", "B"}, Before: 5, After: 50,
+			UsedHypothetical: []string{"A", "B"}, Status: StatusMeasured})
+	cands := []model.Candidate{cand("A", 1, 2), cand("B", 1, 2)}
+	want := Score(workload(), cands, alone, DefaultThresholds())
+	got := Score(workload(), cands, combined, DefaultThresholds())
+	for i := range want {
+		w, g := want[i], got[i]
+		if g.Gain != w.Gain || g.Maintenance != w.Maintenance || g.Decision != w.Decision || !slices.Equal(g.Notes, w.Notes) {
+			t.Errorf("%s: gain %v maintenance %v decision %q notes %q, want %v %v %q %q without the combined measures",
+				w.Candidate.ID, g.Gain, g.Maintenance, g.Decision, g.Notes, w.Gain, w.Maintenance, w.Decision, w.Notes)
+		}
+	}
+	if want[0].Maintenance != 5 || want[0].Gain != 900 {
+		t.Errorf("A alone: gain %v maintenance %v, want 900 and 5", want[0].Gain, want[0].Maintenance)
+	}
+}
+
 func TestUnreliableNeverRecommended(t *testing.T) {
 	c := []model.Candidate{cand("A", 1)}
 	m := measured(1, "A", 10, 1)
