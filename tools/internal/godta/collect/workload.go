@@ -1,0 +1,650 @@
+package collect
+
+import (
+	"cmp"
+	"context"
+	"database/sql"
+	"encoding/binary"
+	"fmt"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+	"unicode/utf16"
+
+	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/conn"
+	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/model"
+	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/showplan"
+	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/tsql"
+	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/sqlq"
+)
+
+// Warnings.
+const (
+	WarnPlanCache       = "plan cache counters are cumulative since compilation"
+	WarnQueryStoreEmpty = "query store has no query in the window"
+	WarnNoTable         = "the workload has queries but no table of this database was resolved from their plans: nothing can be proposed"
+)
+
+// WarnPlanName is the warning of a database whose plans were compiled under
+// another name: n queries name its tables under it.
+func WarnPlanName(name string, n int) string {
+	queries := fmt.Sprintf("%d queries", n)
+	if n == 1 {
+		queries = "1 query"
+	}
+	return fmt.Sprintf("the plans of %s were compiled under the name %s, so the database was renamed or restored under another name: references to %s are read as this database", queries, name, name)
+}
+
+// WarnPlanNamesSeveral is the warning of plans that name the tables of
+// several other databases: none is read as this one.
+func WarnPlanNamesSeveral(names []string) string {
+	return fmt.Sprintf("the plans name the tables of several other databases (%s): none is read as this database, and their references are left out", strings.Join(names, ", "))
+}
+
+// WarnPlanNameMissing is the warning of plans that name the tables of one
+// other database, some of which this database does not have: it is not read
+// as this one.
+func WarnPlanNameMissing(name string, missing []string) string {
+	const shown = 5
+	list := strings.Join(missing[:min(shown, len(missing))], ", ")
+	if len(missing) > shown {
+		list += fmt.Sprintf(" and %d more", len(missing)-shown)
+	}
+	return fmt.Sprintf("the plans name the tables of the database %s, and %s are not in this database: %s is not read as this database, and its references are left out", name, list, name)
+}
+
+// systemDatabases are left out of the names a plan may know this database by.
+var systemDatabases = []string{"master", "model", "msdb", "tempdb", "mssqlsystemresource"}
+
+// systemSchemas hold the catalog, which every database has: a reference to
+// them says nothing of which database a plan was compiled for.
+var systemSchemas = []string{"sys", "INFORMATION_SCHEMA"}
+
+func containsFold(list []string, s string) bool {
+	return slices.ContainsFunc(list, func(n string) bool { return strings.EqualFold(n, s) })
+}
+
+// planNames returns the name the plans of w were compiled under when it is
+// not the current one, and the warning to give. Only references to user
+// objects count: a schema other than sys and INFORMATION_SCHEMA, in a
+// database that is not a system one. goDTA's own catalog reads, compiled
+// under the current name, name only the catalog. The alias is the one other
+// name with such references, provided every table referenced under it is in
+// here, the current database's catalog; whether the current name has user
+// references too does not matter, a renamed database that keeps running has
+// old plans under the old name and new ones under the new name. Two or more
+// other names, or a table missing here, give no alias and a warning naming
+// them: their references stay excluded.
+func planNames(w *model.Workload, here map[tableName]int) ([]string, string) {
+	var names []string                     // other names, first spelling, in order
+	tables := map[string][]tableName{}     // by lower-case name
+	queries := map[string]map[int64]bool{} // by lower-case name
+	for _, list := range [][]model.Query{w.Queries, w.Writes} {
+		for _, q := range list {
+			if q.Plan == nil {
+				continue
+			}
+			add := func(o showplan.ObjRef) {
+				if o.Database == "" || o.Table == "" || containsFold(systemSchemas, o.Schema) ||
+					containsFold(systemDatabases, o.Database) || strings.EqualFold(o.Database, w.Database.Name) {
+					return
+				}
+				k := strings.ToLower(o.Database)
+				if _, ok := queries[k]; !ok {
+					names = append(names, o.Database)
+					queries[k] = map[int64]bool{}
+				}
+				queries[k][q.QueryID] = true
+				t := tableName{o.Schema, o.Table}
+				if !slices.Contains(tables[k], t) {
+					tables[k] = append(tables[k], t)
+				}
+			}
+			for _, st := range q.Plan.Statements {
+				for _, a := range st.Accesses {
+					add(a.Obj)
+					for _, b := range a.ViewBase {
+						add(b)
+					}
+				}
+				for _, wr := range st.Writes {
+					for _, o := range wr.Objs {
+						add(o)
+					}
+				}
+			}
+		}
+	}
+	switch len(names) {
+	case 0:
+		return nil, ""
+	case 1:
+	default:
+		return nil, WarnPlanNamesSeveral(names)
+	}
+	name := names[0]
+	k := strings.ToLower(name)
+	var missing []string
+	for _, t := range tables[k] {
+		if _, ok := here[t]; !ok {
+			missing = append(missing, tsql.Obj{Schema: t.schema, Name: t.table}.Quoted())
+		}
+	}
+	if len(missing) > 0 {
+		return nil, WarnPlanNameMissing(name, missing)
+	}
+	return []string{name}, WarnPlanName(name, len(queries[k]))
+}
+
+// Database collects one database. db is a pool opened on that database
+// (conn.Open with info.Name): every catalog query is in one- or two-part
+// names and reads the connection's database.
+func Database(ctx context.Context, db *sql.DB, inst conn.Instance, info model.DBInfo, opt Options) (*model.Workload, error) {
+	opt = opt.withDefaults()
+	w := &model.Workload{Server: inst, Window: opt.Window, Tables: map[int]*model.Table{}}
+	if err := readDBInfo(ctx, db, info, w); err != nil {
+		return nil, err
+	}
+	switch w.Database.QueryStoreState {
+	case "READ_WRITE", "READ_ONLY":
+		all, measured, err := queryStoreQueries(ctx, db, opt)
+		if err != nil {
+			return nil, err
+		}
+		if len(all) > 0 {
+			w.Source = model.SourceQueryStore
+			w.Measured = measured
+			if err := splitAndDetail(ctx, db, w, all, opt.TopN, queryStoreDetail); err != nil {
+				return nil, err
+			}
+			break
+		}
+		w.Warnings = append(w.Warnings, WarnQueryStoreEmpty)
+		fallthrough
+	default:
+		w.Source = model.SourcePlanCache
+		w.Warnings = append(w.Warnings, WarnPlanCache)
+		all, handles, err := planCacheQueries(ctx, db)
+		if err != nil {
+			return nil, err
+		}
+		detail := func(ctx context.Context, db *sql.DB, qs []*model.Query) error {
+			return planCacheDetail(ctx, db, qs, handles)
+		}
+		if err := splitAndDetail(ctx, db, w, all, opt.TopN, detail); err != nil {
+			return nil, err
+		}
+	}
+	parsePlans(w)
+	// The alias of a renamed database is checked against its catalog: the
+	// tables and views are read before it, and resolved after it.
+	objects, err := readObjects(ctx, db)
+	if err != nil {
+		return nil, err
+	}
+	names, warning := planNames(w, objects)
+	w.Database.PlanNames = names
+	if warning != "" {
+		w.Warnings = append(w.Warnings, warning)
+	}
+	if err := readCatalog(ctx, db, w, objects); err != nil {
+		return nil, err
+	}
+	warnNoTable(w)
+	return w, nil
+}
+
+// warnNoTable warns when w has queries but no table was resolved: whatever
+// the cause, the empty result that follows is not silent.
+func warnNoTable(w *model.Workload) {
+	if len(w.Queries)+len(w.Writes) > 0 && len(w.Tables) == 0 {
+		w.Warnings = append(w.Warnings, WarnNoTable)
+	}
+}
+
+// readDBInfo reads the database the pool reached and checks it is the one
+// asked for, then its Query Store state and capture mode.
+func readDBInfo(ctx context.Context, db *sql.DB, info model.DBInfo, w *model.Workload) error {
+	var d model.DBInfo
+	var clone int
+	err := db.QueryRowContext(ctx, `SELECT /* godta:internal */ DB_ID(), DB_NAME(),
+  ISNULL(CAST(DATABASEPROPERTYEX(DB_NAME(), 'Collation') AS nvarchar(128)), N''),
+  (SELECT compatibility_level FROM sys.databases WHERE database_id = DB_ID()),
+  ISNULL(CAST(DATABASEPROPERTYEX(DB_NAME(), 'IsClone') AS int), 0);`).
+		Scan(&d.ID, &d.Name, &d.Collation, &d.Compat, &clone)
+	if err != nil {
+		return fmt.Errorf("reading the database: %w", err)
+	}
+	if d.Name != info.Name {
+		return fmt.Errorf("the connection reached database %q, not %q", d.Name, info.Name)
+	}
+	d.IsClone = clone == 1
+	var state, mode sql.NullString
+	var interval sql.NullInt64
+	err = db.QueryRowContext(ctx, `SELECT /* godta:internal */ actual_state_desc, query_capture_mode_desc, interval_length_minutes
+FROM sys.database_query_store_options;`).Scan(&state, &mode, &interval)
+	if err != nil && err != sql.ErrNoRows {
+		return fmt.Errorf("reading the query store options: %w", err)
+	}
+	d.QueryStoreState = cmp.Or(state.String, "OFF")
+	if d.QueryStoreState != "OFF" {
+		w.CaptureMode = mode.String
+		d.QueryStoreIntervalMinutes = int(interval.Int64)
+	}
+	w.Database = d
+	return nil
+}
+
+// queryStoreAggregate totals the runtime statistics of each query over the
+// intervals that overlap the window. The Query Store cannot split an
+// interval: each is summed whole, and the first start and the last end of
+// the intervals summed are read with the totals, the period the counters
+// really cover. Only columns present since 2016 are
+// read. set_options is varbinary(8), converted to bigint here. The text is
+// cut to 4000 characters, enough to tell a write from a read; the full text
+// comes with the detail of the queries kept. goDTA's own queries, which carry
+// tsql.Marker (or tsql.LegacyMarker, from an earlier build), are left out.
+const queryStoreAggregate = `WITH /* godta:internal */ a AS (
+  SELECT p.query_id,
+    SUM(rs.count_executions) AS execs,
+    SUM(rs.avg_cpu_time * rs.count_executions) / 1000.0 AS cpu_ms,
+    SUM(rs.avg_logical_io_reads * rs.count_executions) AS reads,
+    SUM(rs.avg_duration * rs.count_executions) / 1000.0 AS duration_ms,
+    SUM(rs.avg_rowcount * rs.count_executions) / NULLIF(SUM(rs.count_executions), 0) AS avg_rows,
+    MIN(i.start_time) AS first_start, MAX(i.end_time) AS last_end
+  FROM sys.query_store_plan p
+  JOIN sys.query_store_runtime_stats rs ON rs.plan_id = p.plan_id
+  JOIN sys.query_store_runtime_stats_interval i ON i.runtime_stats_interval_id = rs.runtime_stats_interval_id
+  WHERE i.end_time > @p1 AND i.start_time < @p2
+  GROUP BY p.query_id)
+SELECT q.query_id, q.query_hash, ISNULL(q.object_id, 0), q.context_settings_id,
+  CONVERT(bigint, cs.set_options), cs.date_first, cs.date_format,
+  LEFT(qt.query_sql_text, 4000),
+  a.execs, a.cpu_ms, a.reads, a.duration_ms, ISNULL(a.avg_rows, 0), a.first_start, a.last_end
+FROM a
+JOIN sys.query_store_query q ON q.query_id = a.query_id
+JOIN sys.query_store_query_text qt ON qt.query_text_id = q.query_text_id
+JOIN sys.query_context_settings cs ON cs.context_settings_id = q.context_settings_id
+WHERE qt.query_sql_text NOT LIKE N'%` + tsql.Marker + `%' AND qt.query_sql_text NOT LIKE N'%` + tsql.LegacyMarker + `%'
+ORDER BY q.query_id;`
+
+// queryStoreQueries returns the queries of the window, and the period their
+// counters cover: from the first start to the last end of the intervals
+// summed for them, nil without a query.
+func queryStoreQueries(ctx context.Context, db *sql.DB, opt Options) ([]model.Query, *model.Window, error) {
+	rows, err := db.QueryContext(ctx, queryStoreAggregate, opt.Window.From.UTC(), opt.Window.Until.UTC())
+	if err != nil {
+		return nil, nil, fmt.Errorf("reading the query store: %w", err)
+	}
+	defer rows.Close()
+	var out []model.Query
+	var measured *model.Window
+	for rows.Next() {
+		var q model.Query
+		var hash []byte
+		var first, last time.Time
+		if err := rows.Scan(&q.QueryID, &hash, &q.ObjectID, &q.ContextSettingsID,
+			&q.SetOptions, &q.DateFirst, &q.DateFormat, &q.Text,
+			&q.Executions, &q.CPUms, &q.Reads, &q.Duration, &q.AvgRowcount, &first, &last); err != nil {
+			return nil, nil, fmt.Errorf("reading the query store: %w", err)
+		}
+		q.Hash = hexHash(hash)
+		if statementKind(q.Text) == "" {
+			continue
+		}
+		q.IsWrite = isWriteText(q.Text)
+		out = append(out, q)
+		first, last = first.UTC(), last.UTC()
+		if measured == nil {
+			measured = &model.Window{From: first, Until: last}
+			continue
+		}
+		if first.Before(measured.From) {
+			measured.From = first
+		}
+		if last.After(measured.Until) {
+			measured.Until = last
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("reading the query store: %w", err)
+	}
+	return out, measured, nil
+}
+
+// detailFunc fills the full text and the plan of the queries kept.
+type detailFunc func(ctx context.Context, db *sql.DB, qs []*model.Query) error
+
+// splitAndDetail keeps the top N reads and every write, then reads their
+// text and plan.
+func splitAndDetail(ctx context.Context, db *sql.DB, w *model.Workload, all []model.Query, topN int, detail detailFunc) error {
+	var reads []model.Query
+	for _, q := range all {
+		if q.IsWrite {
+			w.Writes = append(w.Writes, q)
+		} else {
+			reads = append(reads, q)
+		}
+	}
+	w.Queries = dedupTopN(reads, topN)
+	var ptrs []*model.Query
+	for i := range w.Queries {
+		ptrs = append(ptrs, &w.Queries[i])
+	}
+	for i := range w.Writes {
+		ptrs = append(ptrs, &w.Writes[i])
+	}
+	return detail(ctx, db, ptrs)
+}
+
+// dedupTopN keeps the top n by executions, CPU, reads and duration, the
+// union of the four, each query once, sorted by QueryID. Ties go to the
+// lower QueryID.
+func dedupTopN(qs []model.Query, n int) []model.Query {
+	keys := []func(model.Query) float64{
+		func(q model.Query) float64 { return float64(q.Executions) },
+		func(q model.Query) float64 { return q.CPUms },
+		func(q model.Query) float64 { return q.Reads },
+		func(q model.Query) float64 { return q.Duration },
+	}
+	seen := map[int64]bool{}
+	var out []model.Query
+	for _, key := range keys {
+		ranked := slices.Clone(qs)
+		slices.SortStableFunc(ranked, func(a, b model.Query) int {
+			if c := cmp.Compare(key(b), key(a)); c != 0 {
+				return c
+			}
+			return cmp.Compare(a.QueryID, b.QueryID)
+		})
+		for _, q := range ranked[:min(n, len(ranked))] {
+			if !seen[q.QueryID] {
+				seen[q.QueryID] = true
+				out = append(out, q)
+			}
+		}
+	}
+	slices.SortFunc(out, func(a, b model.Query) int { return cmp.Compare(a.QueryID, b.QueryID) })
+	return out
+}
+
+// idList writes integers as a comma-separated list for an IN clause. They
+// are formatted from Go integers, never from text.
+func idList[T int | int64](ids []T) string {
+	parts := make([]string, len(ids))
+	for i, id := range ids {
+		parts[i] = strconv.FormatInt(int64(id), 10)
+	}
+	return strings.Join(parts, ",")
+}
+
+// queryStoreDetail reads the full text and the last plan of each query.
+func queryStoreDetail(ctx context.Context, db *sql.DB, qs []*model.Query) error {
+	if len(qs) == 0 {
+		return nil
+	}
+	byID := map[int64]*model.Query{}
+	var ids []int64
+	for _, q := range qs {
+		byID[q.QueryID] = q
+		ids = append(ids, q.QueryID)
+	}
+	rows, err := db.QueryContext(ctx, `SELECT /* godta:internal */ q.query_id, qt.query_sql_text, ISNULL(lp.query_plan, N'')
+FROM sys.query_store_query q
+JOIN sys.query_store_query_text qt ON qt.query_text_id = q.query_text_id
+OUTER APPLY (SELECT TOP (1) p.query_plan FROM sys.query_store_plan p
+  WHERE p.query_id = q.query_id ORDER BY p.last_execution_time DESC, p.plan_id DESC) lp
+WHERE q.query_id IN (`+idList(ids)+`);`)
+	if err != nil {
+		return fmt.Errorf("reading the query store plans: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var text, plan string
+		if err := rows.Scan(&id, &text, &plan); err != nil {
+			return fmt.Errorf("reading the query store plans: %w", err)
+		}
+		if q := byID[id]; q != nil {
+			q.Text, q.PlanXML = text, plan
+		}
+	}
+	return rows.Err()
+}
+
+// planCacheAggregate groups the cached statements of the connection's
+// database by query_hash. The database of a plan is its dbid attribute:
+// sys.dm_exec_sql_text gives NULL for an ad hoc batch. One statement per
+// hash, the last executed, gives the text and the plan.
+const planCacheAggregate = `WITH /* godta:internal */ s AS (
+  SELECT qs.query_hash, qs.sql_handle, qs.plan_handle, qs.statement_start_offset, qs.statement_end_offset,
+    qs.execution_count, qs.total_worker_time, qs.total_logical_reads, qs.total_elapsed_time, qs.total_rows,
+    pa.set_options, pa.date_first, pa.date_format,
+    ROW_NUMBER() OVER (PARTITION BY qs.query_hash ORDER BY qs.last_execution_time DESC, qs.plan_handle, qs.statement_start_offset) AS rn
+  FROM sys.dm_exec_query_stats qs
+  CROSS APPLY (SELECT
+      MAX(CASE WHEN attribute = N'dbid' THEN CONVERT(int, value) END) AS dbid,
+      MAX(CASE WHEN attribute = N'set_options' THEN CONVERT(bigint, value) END) AS set_options,
+      MAX(CASE WHEN attribute = N'date_first' THEN CONVERT(int, value) END) AS date_first,
+      MAX(CASE WHEN attribute = N'date_format' THEN CONVERT(int, value) END) AS date_format
+    FROM sys.dm_exec_plan_attributes(qs.plan_handle)) pa
+  WHERE pa.dbid = DB_ID())
+SELECT s.query_hash,
+  SUM(s.execution_count), SUM(s.total_worker_time) / 1000.0, SUM(s.total_logical_reads) * 1.0,
+  SUM(s.total_elapsed_time) / 1000.0, SUM(s.total_rows) * 1.0 / NULLIF(SUM(s.execution_count), 0),
+  MAX(CASE WHEN s.rn = 1 THEN s.sql_handle END), MAX(CASE WHEN s.rn = 1 THEN s.plan_handle END),
+  MAX(CASE WHEN s.rn = 1 THEN s.statement_start_offset END), MAX(CASE WHEN s.rn = 1 THEN s.statement_end_offset END),
+  ISNULL(MAX(CASE WHEN s.rn = 1 THEN s.set_options END), 0),
+  ISNULL(MAX(CASE WHEN s.rn = 1 THEN s.date_first END), 0),
+  ISNULL(MAX(CASE WHEN s.rn = 1 THEN s.date_format END), 0)
+FROM s
+GROUP BY s.query_hash;`
+
+// cached is what planCacheDetail needs to read a statement back.
+type cached struct {
+	sqlHandle, planHandle []byte
+	start, end            int
+}
+
+func planCacheQueries(ctx context.Context, db *sql.DB) ([]model.Query, map[int64]cached, error) {
+	rows, err := db.QueryContext(ctx, planCacheAggregate)
+	if err != nil {
+		return nil, nil, fmt.Errorf("reading the plan cache: %w", err)
+	}
+	var out []model.Query
+	var handles []cached
+	for rows.Next() {
+		var q model.Query
+		var hash []byte
+		var c cached
+		var avg sql.NullFloat64
+		if err := rows.Scan(&hash, &q.Executions, &q.CPUms, &q.Reads, &q.Duration, &avg,
+			&c.sqlHandle, &c.planHandle, &c.start, &c.end, &q.SetOptions, &q.DateFirst, &q.DateFormat); err != nil {
+			rows.Close()
+			return nil, nil, fmt.Errorf("reading the plan cache: %w", err)
+		}
+		q.AvgRowcount = avg.Float64
+		q.Hash = hexHash(hash)
+		if len(hash) == 8 {
+			q.QueryID = int64(binary.BigEndian.Uint64(hash))
+		}
+		out = append(out, q)
+		handles = append(handles, c)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, nil, fmt.Errorf("reading the plan cache: %w", err)
+	}
+	rows.Close()
+	kept := map[int64]cached{}
+	// The text tells a write from a read; it is read for every hash, the
+	// plan only for the queries kept.
+	keep := out[:0]
+	for i := range out {
+		var batch sql.NullString
+		if err := db.QueryRowContext(ctx, `SELECT /* godta:internal */ (SELECT text FROM sys.dm_exec_sql_text(@p1));`,
+			handles[i].sqlHandle).Scan(&batch); err != nil {
+			return nil, nil, fmt.Errorf("reading a cached statement: %w", err)
+		}
+		out[i].Text = statementText(batch.String, handles[i].start, handles[i].end)
+		if statementKind(out[i].Text) == "" || tsql.IsInternal(batch.String) {
+			continue
+		}
+		out[i].IsWrite = isWriteText(out[i].Text)
+		kept[out[i].QueryID] = handles[i]
+		keep = append(keep, out[i])
+	}
+	return keep, kept, nil
+}
+
+// planCacheDetail reads the statement plan of each query kept, and the
+// Query Store query_ids of the same hash when the Query Store still has
+// them.
+func planCacheDetail(ctx context.Context, db *sql.DB, qs []*model.Query, handles map[int64]cached) error {
+	for _, q := range qs {
+		c := handles[q.QueryID]
+		var plan sql.NullString
+		if err := db.QueryRowContext(ctx, `SELECT /* godta:internal */ (SELECT query_plan FROM sys.dm_exec_text_query_plan(@p1, @p2, @p3));`,
+			c.planHandle, c.start, c.end).Scan(&plan); err != nil {
+			return fmt.Errorf("reading a cached plan: %w", err)
+		}
+		q.PlanXML = plan.String
+		q.QueryIDs = queryIDsOfHash(ctx, db, q.QueryID)
+	}
+	return nil
+}
+
+// queryIDsOfHash lists the Query Store query_ids of a hash; none when the
+// Query Store cannot be read.
+func queryIDsOfHash(ctx context.Context, db *sql.DB, hash int64) []int64 {
+	b := make([]byte, 8)
+	binary.BigEndian.PutUint64(b, uint64(hash))
+	rows, err := db.QueryContext(ctx, `SELECT /* godta:internal */ query_id FROM sys.query_store_query
+WHERE query_hash = CONVERT(binary(8), @p1) ORDER BY query_id;`, b)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if rows.Scan(&id) == nil {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+func hexHash(b []byte) string {
+	if len(b) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("0x%X", b)
+}
+
+// statementText cuts the statement out of its batch. The offsets count
+// bytes of UTF-16, the end is -1 for the end of the batch. A parameterized
+// batch starts with its declaration, (@a int,@b int): it is kept in front of
+// the statement, as the Query Store writes it.
+func statementText(batch string, start, end int) string {
+	u := utf16.Encode([]rune(batch))
+	from, to := start/2, len(u)
+	if end >= 0 {
+		to = end/2 + 1
+	}
+	if from < 0 || from > len(u) || to > len(u) || to < from {
+		return ""
+	}
+	stmt := string(utf16.Decode(u[from:to]))
+	if decl := paramDecl(batch); decl != "" && !strings.HasPrefix(stmt, decl) {
+		stmt = decl + stmt
+	}
+	return stmt
+}
+
+// paramDecl returns the leading parameter declaration of a batch, (@...),
+// or "".
+func paramDecl(batch string) string {
+	if !strings.HasPrefix(batch, "(@") {
+		return ""
+	}
+	toks := sqlq.Lex(sqlq.Sanitize(batch))
+	rs := []rune(batch)
+	for _, t := range toks {
+		if t.Text == ")" && t.Depth == 0 {
+			return string(rs[:t.End])
+		}
+	}
+	return ""
+}
+
+var dmlKeywords = map[string]bool{"SELECT": true, "INSERT": true, "UPDATE": true, "DELETE": true, "MERGE": true}
+
+// statementKind returns SELECT, INSERT, UPDATE, DELETE or MERGE for a query
+// statement, "" for anything else (the CREATE INDEX of an index build, which
+// the Query Store captures too). The statement starts, after a leading
+// parameter declaration, with one of these keywords or with the WITH of its
+// CTEs; its kind is the first of them outside parentheses. Comments,
+// strings and quoted names are ignored.
+func statementKind(text string) string {
+	toks := sqlq.Lex(sqlq.Sanitize(text))
+	i := 0
+	if len(toks) > 1 && toks[0].Text == "(" && strings.HasPrefix(toks[1].Text, "@") {
+		for i < len(toks) && !(toks[i].Text == ")" && toks[i].Depth == 0) {
+			i++
+		}
+		i++
+	}
+	// A statement may open with parentheses: (SELECT ...) UNION ...
+	for i < len(toks) && toks[i].Text == "(" {
+		i++
+	}
+	if i >= len(toks) {
+		return ""
+	}
+	first := strings.ToUpper(toks[i].Text)
+	if dmlKeywords[first] {
+		return first
+	}
+	if first != "WITH" {
+		return ""
+	}
+	for ; i < len(toks); i++ {
+		if kw := strings.ToUpper(toks[i].Text); toks[i].Depth == 0 && dmlKeywords[kw] {
+			return kw
+		}
+	}
+	return ""
+}
+
+// isWriteText tells whether a statement is an INSERT, UPDATE, DELETE or
+// MERGE.
+func isWriteText(text string) bool {
+	k := statementKind(text)
+	return k != "" && k != "SELECT"
+}
+
+// ParsePlans parses again the plans of a workload read back from
+// collect.json, where Plan is not written. A plan that does not parse leaves
+// Plan nil, with a warning.
+func ParsePlans(w *model.Workload) { parsePlans(w) }
+
+// parsePlans parses the plan of every query; a plan that does not parse is
+// a warning and leaves Plan nil.
+func parsePlans(w *model.Workload) {
+	for _, list := range [][]model.Query{w.Queries, w.Writes} {
+		for i := range list {
+			q := &list[i]
+			if q.PlanXML == "" {
+				continue
+			}
+			p, err := showplan.Parse([]byte(q.PlanXML))
+			if err != nil {
+				w.Warnings = append(w.Warnings, fmt.Sprintf("query %d: plan not read: %v", q.QueryID, err))
+				continue
+			}
+			q.Plan = p
+		}
+	}
+}

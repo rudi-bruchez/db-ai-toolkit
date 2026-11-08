@@ -21,11 +21,12 @@ tool_targets() {
         errorlog-parse) echo "$repo_root/plugins/sqlserver-toolkit/bin" ;;
         sqlq)           echo "$repo_root/plugins/sqlserver-toolkit/bin" ;;
         sqlplan)        echo "$repo_root/plugins/sqlserver-toolkit/bin" ;;
+        godta)          echo "$repo_root/plugins/sqlserver-toolkit/bin" ;;
         *) return 1 ;;
     esac
 }
 
-TOOLS=(errorlog-parse sqlq sqlplan)
+TOOLS=(errorlog-parse sqlq sqlplan godta)
 
 build_all=false
 if [ "${1:-}" = "--all" ]; then

@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "plans": [
+    {
+      "plan_hash": "528646337168E8A7",
+      "query_hash": "8E4C5B0CE525548B",
+      "statement_type": "SELECT",
+      "executions": 12,
+      "duration_us": { "min": 180, "max": 9400 },
+      "captured_at_utc": { "first": "2026-11-08T17:50:11.914486Z",
+                           "worst": "2026-11-08T17:52:47.331209Z" },
+      "files": {
+        "first":  "p_528646337168E8A7.sqlplan",
+        "worst":  "p_528646337168E8A7.worst.sqlplan",
+        "digest": "p_528646337168E8A7.digest.json"
+      },
+      "finding_kinds": []
+    }
+  ]
+}

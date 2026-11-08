@@ -296,12 +296,17 @@ Confrontation, dans cet ordre, pour chaque candidat :
   contrainte. SQL Server refuse alors
   `DROP_EXISTING` (erreur 1907) et le `DROP INDEX` (erreur 3723) : le candidat passe en
   « à discuter », sans script, avec l'explication ;
-- les clés effectives d'un existant sont un préfixe strict de celles du candidat (après la mise
+- les clés déclarées d'un existant sont un préfixe strict de celles du candidat (après la mise
   en ordre des égalités ci-dessus), et l'existant n'est ni cluster, ni unique, ni filtré, ni
   appuyé sur une contrainte, ni nommé dans une indication, un module, un repère de plan ou un
   plan forcé : « remplacer », le candidat recevant l'union des inclus des deux et les options
   physiques de l'existant ; dans tous les autres cas, le candidat est proposé à côté de
-  l'existant ;
+  l'existant. Le préfixe se lit sur les clés déclarées et non sur les clés effectives : sur une
+  table cluster, la clé cluster implicite ferme les clés effectives d'un index non unique, et
+  `(a, pk)` n'est jamais un préfixe de `(a, b, pk)`, si bien que le remplacement ne se serait
+  appliqué qu'aux tas (décision de Rudi du 8 novembre 2026, après la relecture de la branche).
+  Un index identique n'est pas recréé : de mêmes clés effectives sont couvertes ou élargies
+  avant ce cas ;
 - sinon : nouveau candidat.
 
 Deux index existants qui ensemble couvrent un candidat ne le couvrent pas : l'intersection
@@ -505,15 +510,22 @@ Effets mesurés sur le serveur, à dire dans le plan d'exécution :
 - la création prend un verrou `S` sur la table (et `Sch-S`) : un écrivain en cours la bloque,
   un lecteur non ; elle lit la table par échantillonnage ;
 - la création garde ce verrou `S` pendant la lecture échantillonnée : elle bloque les
-  écrivains pendant ce temps ;
+  écrivains pendant ce temps. Elle les bloque aussi pendant qu'elle attend, jusqu'au délai de
+  verrou du plan : les nouveaux écrivains se rangent derrière sa demande, et, à partir de
+  16 processeurs, elle tient déjà les partitions de verrou qui précèdent celle qu'elle attend
+  (mesuré sur 2022 : 7 nouveaux écrivains sur 10 bloqués derrière elle) ;
 - la suppression prend `Sch-M` : un lecteur long la bloque, et pendant qu'elle attend, toute
   nouvelle requête sur la table attend derrière elle. Une suppression qui échoue sur le délai de
   verrou laisserait l'index derrière : goDTA la retente avec un délai court et fixe et une pause
   entre deux tentatives (jamais un délai qui s'allonge, qui allongerait d'autant la file
   d'attente), puis, après la dernière, la journalise pour `cleanup` ;
-- les plans en cache des tables touchées ne sont pas invalidés par l'index hypothétique (mesuré :
-  même `plan_handle`, `plan_generation_num` inchangé) ; `CREATE STATISTICS` ne les invalide pas
-  non plus, `DROP STATISTICS` les fait recompiler (§8.4) ;
+- les plans en cache des tables touchées ne sont pas invalidés par l'index hypothétique ni par
+  `CREATE STATISTICS`, `DROP STATISTICS` les fait recompiler (§8.4) : mesuré sur 2022 sur un
+  plan en cache (même `plan_handle`, `plan_generation_num` et compteur de recompilations
+  inchangés), non mesuré sur les autres versions ni d'autres formes de plan ;
+- la compilation d'une requête rejouée peut déclencher la mise à jour synchrone d'une
+  statistique périmée, avec sa lecture de la table et la recompilation des plans qui en
+  dépendent, sauf si la base a `AUTO_UPDATE_STATISTICS_ASYNC` (non mesuré) ;
 - les suggestions d'index manquants de la table sont effacées par la création : `collect` doit
   donc passer avant, ce que l'ordre des phases garantit ;
 - la compilation peut auto-créer des statistiques `_WA_Sys_*` sur des colonnes sans statistique.
