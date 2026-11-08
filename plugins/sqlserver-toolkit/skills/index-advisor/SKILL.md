@@ -108,11 +108,23 @@ godta report   --project <dir> --target lab
    (`--container-dir` is the host directory as the container sees it) and prepares the
    clone; the next runs find it prepared and check that it is still a clone. The result is
    `evaluate-lab.json`; there is no execution plan, since nothing is written on the source.
+   When the restored clone is no longer on the lab (dropped by hand, lab rebuilt), the run
+   restores it again from the file of `lab.json`, after checking its size and SHA-256, and
+   says so in a warning: no new `clone`, so nothing new on the source. When that file is
+   missing or altered, the run is refused with exit code `3` and says what is wrong: only a
+   new `clone` can then prepare the lab. Ask the user before running it, since it writes on
+   the source again.
 5. `report --target lab` scores the lab evaluation. Without `--target`, `report` takes the
    server's when `evaluate-server.json` exists, else the lab's.
 
-goDTA neither starts nor stops the lab container, and leaves the restored clone on the lab
-for the next runs: dropping it is the DBA's call.
+goDTA neither starts nor stops the lab container, and leaves the current restored clone on
+the lab for the next runs. A new `clone` of the same database replaces the previous one, and
+`lab.json` keeps track of it. `clone` says what becomes of it, and the next `evaluate
+--target lab` drops the previous restored clone from the lab, once it has checked that it is
+a goDTA clone, and lists the drop in its warnings. The previous backup file stays in the host
+directory, which is the user's disk: the warnings give the `rm` command that removes it, and
+repeat it at each run until the file is gone. Pass the command on to the user rather than
+running it.
 
 A suggestion passed to `evaluate --target lab --suggestions <file>` after the clone has no
 statistics on the lab. Its measures carry the note `unreliable estimate: statistics not

@@ -286,6 +286,11 @@ func (a *app) cloneWrite(p sqlq.Profile, plans []string, hostDir string) error {
 		if file.HostPath != "" {
 			r.Files = []string{file.HostPath, filepath.Join(a.ws.DBDir(it.plan.Server, it.plan.Database), workspace.LabFile)}
 		}
+		if file.HostPath != "" {
+			if st, lerr := lab.LoadState(a.ws, a.ws.DBDir(it.plan.Server, it.plan.Database)); lerr == nil {
+				r.Warnings = lab.SupersededNotices(st)
+			}
+		}
 		switch {
 		case err == nil:
 			r.Status = fmt.Sprintf("cloned: %d bytes", file.Bytes)
@@ -295,7 +300,7 @@ func (a *app) cloneWrite(p sqlq.Profile, plans []string, hostDir string) error {
 			// by the exit code.
 			a.failed = true
 			r.Status = fmt.Sprintf("cloned: %d bytes", file.Bytes)
-			r.Warnings = []string{err.Error()}
+			r.Warnings = append(r.Warnings, err.Error())
 		case errors.Is(err, runplan.ErrChecksum), errors.Is(err, runplan.ErrWrongServer),
 			errors.Is(err, runplan.ErrWrongDatabase), errors.Is(err, runplan.ErrSchemaDrift):
 			a.refused = true
@@ -321,7 +326,9 @@ type labOptions struct {
 // evaluateLab measures the candidates on the lab (plan, task 19): the lab
 // profile checked before any connection, then, for each collected database,
 // the guards against the source of collect.json, the restore of the clone
-// when lab.json has no Prepared yet (CheckCloneDB otherwise), and
+// when lab.json has no Prepared yet or when the restored clone is gone from
+// the lab (CheckCloneDB otherwise), the drop of the clones a newer clone
+// replaced (lab.Supersede), and
 // evaluate.Run without a plan, with the hook that sets the multicolumn
 // statistics streams on the hypothetical indexes.
 func (a *app) evaluateLab(o labOptions) error {
@@ -404,11 +411,7 @@ func (a *app) labOne(lp sqlq.Profile, labServer *sql.DB, labi conn.Instance, l l
 		}
 		return "", "", err
 	}
-	if state.Prepared == nil {
-		if err := checkHostFile(state.File, o.hostDir); err != nil {
-			return "", "", refusedf("%v", err)
-		}
-		db := strings.TrimSuffix(filepath.Base(state.File.HostPath), ".bak")
+	restore := func(db string) error {
 		open := func(name string) (*sql.DB, error) {
 			pool, err := a.d.open(a.ctx, lp, a.secret, name)
 			if err != nil {
@@ -418,13 +421,40 @@ func (a *app) labOne(lp sqlq.Profile, labServer *sql.DB, labi conn.Instance, l l
 		}
 		prep, err := lab.Restore(a.ctx, a.ws, l.dir, labServer, open, w.Server, labi, w, state.File, o.containerDir, o.dataDir, db)
 		if err != nil {
-			return "", "", err
+			return err
 		}
 		state.Prepared = &prep
-	} else if err := lab.CheckCloneDB(a.ctx, labServer, state.Prepared.Database); err != nil {
+		return nil
+	}
+	if state.Prepared == nil {
+		if err := checkHostFile(state.File, o.hostDir); err != nil {
+			return "", "", refusedf("%v", err)
+		}
+		if err := restore(strings.TrimSuffix(filepath.Base(state.File.HostPath), ".bak")); err != nil {
+			return "", "", err
+		}
+	} else if err := lab.CheckCloneDB(a.ctx, labServer, state.Prepared.Database); errors.Is(err, lab.ErrCloneDBMissing) {
+		// Dropped from the lab since: the file clone wrote restores it
+		// again, the same way as the first time, without a new clone,
+		// which would write on the source.
+		db := state.Prepared.Database
+		if err := restoreAgainGuard(state.File, o.hostDir, db); err != nil {
+			return "", "", err
+		}
+		if err := restore(db); err != nil {
+			return "", "", err
+		}
+		addWarning(fmt.Sprintf("the restored clone %s was no longer on the lab: restored it again from %s, whose size and SHA-256 match lab.json",
+			db, state.File.HostPath))
+	} else if err != nil {
 		return "", "", refusedf("%v", err)
 	}
 	addWarning(state.Prepared.Warnings...)
+	notices, err := lab.Supersede(a.ctx, labServer, a.ws, l.dir, &state)
+	addWarning(notices...)
+	if err != nil {
+		return "", "", err
+	}
 
 	var cands []model.Candidate
 	if err := a.ws.ReadJSON(l.dir, workspace.CandidatesFile, &cands); err != nil {
@@ -478,6 +508,17 @@ func runIDOf(name string) string {
 	return id
 }
 
+// restoreAgainGuard refuses to restore again the clone db, dropped from the
+// lab, when its file f is missing from hostDir or is not the file clone
+// wrote: only a new clone can then prepare the lab.
+func restoreAgainGuard(f lab.File, hostDir, db string) error {
+	if err := checkHostFile(f, hostDir); err != nil {
+		return refusedf("lab guard: the restored clone %s is no longer on the lab and cannot be restored again (%s); "+
+			"run clone again for a new file, which writes on the source", db, strings.TrimPrefix(err.Error(), "lab guard: "))
+	}
+	return nil
+}
+
 // checkHostFile refuses a clone file that is not in hostDir, the directory
 // the lab container mounts, or that is not the file clone wrote (size and
 // SHA-256 of lab.json).
@@ -494,6 +535,9 @@ func checkHostFile(f lab.File, hostDir string) error {
 		return fmt.Errorf("lab guard: clone wrote %s, which is not in --host-dir %s", f.HostPath, hostDir)
 	}
 	h, err := os.Open(f.HostPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("lab guard: %s, the file clone wrote, is missing from --host-dir", f.HostPath)
+	}
 	if err != nil {
 		return fmt.Errorf("lab guard: the clone's file: %w", err)
 	}

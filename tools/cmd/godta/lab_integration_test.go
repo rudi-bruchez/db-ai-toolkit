@@ -338,8 +338,8 @@ func TestLabEqualsServer(t *testing.T) {
 }
 
 // cloneOnly runs clone --dry-run and --allow-write after collect and
-// candidates.
-func (lr *labRun) cloneOnly(dir string) {
+// candidates, and returns the output of the execution.
+func (lr *labRun) cloneOnly(dir string) output {
 	t := lr.t
 	out := lr.step("clone", "--dry-run")
 	var plan runplan.Plan
@@ -362,11 +362,12 @@ func (lr *labRun) cloneOnly(dir string) {
 			}
 		}
 	})
-	lr.step("clone", "--allow-write", "--plan", out.Plan, "--host-dir", lr.hostDir)
+	done := lr.step("clone", "--allow-write", "--plan", out.Plan, "--host-dir", lr.hostDir)
 	st, err := lab.LoadState(lr.ws, dir)
 	if err != nil || st.File.HostPath == "" {
 		t.Fatalf("lab.json after clone: %+v, %v", st, err)
 	}
+	return done
 }
 
 // checkSourceClean: no statistics, index or database of goDTA's run form

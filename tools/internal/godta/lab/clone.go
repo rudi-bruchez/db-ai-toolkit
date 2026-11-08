@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -58,6 +59,40 @@ type Prepared struct {
 type State struct {
 	File     File      `json:"file"`
 	Prepared *Prepared `json:"prepared,omitempty"`
+	// Superseded are the clones of the same database that earlier clone
+	// runs left, until Supersede has dropped their restored database from
+	// the lab and their file is gone from the host.
+	Superseded []Superseded `json:"superseded,omitempty"`
+}
+
+// Superseded is a clone a newer clone replaced: its file on the host and,
+// when it was restored, its database on the lab.
+type Superseded struct {
+	File     File   `json:"file"`
+	Database string `json:"database,omitempty"`
+}
+
+// supersede is the Superseded list of the state that replaces prev: prev's
+// own list, plus prev's clone when it had one.
+func supersede(prev State) []Superseded {
+	out := slices.Clone(prev.Superseded)
+	if prev.File.HostPath != "" {
+		s := Superseded{File: prev.File}
+		if prev.Prepared != nil {
+			s.Database = prev.Prepared.Database
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// loadIfAny is LoadState, with the zero State when dir has no lab.json.
+func loadIfAny(ws workspace.WS, dir string) (State, error) {
+	s, err := LoadState(ws, dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return State{}, nil
+	}
+	return s, err
 }
 
 // SaveState writes s to dir/lab.json.
@@ -114,7 +149,8 @@ const hostFileMode = 0o644
 // (ErrTooBig) before anything is written on the host. The SHA-256 computed on
 // the way is compared with the server's HASHBYTES of the file
 // (ErrHashMismatch). On success Clone saves State{File} with SaveState in
-// the database's directory of ws before returning.
+// the database's directory of ws before returning, with the clone it
+// replaces, if any, in State.Superseded.
 func Clone(ctx context.Context, q conn.Querier, ws workspace.WS, p runplan.Plan, hostDir string) (File, error) {
 	if p.Phase != runplan.PhaseClone {
 		return File{}, fmt.Errorf("clone: %w: phase %q", ErrNotClonePlan, p.Phase)
@@ -152,6 +188,13 @@ func Clone(ctx context.Context, q conn.Querier, ws workspace.WS, p runplan.Plan,
 	if info, err := os.Stat(hostDir); err != nil || !info.IsDir() {
 		return File{}, fmt.Errorf("clone: host directory %q: not a directory (%v)", hostDir, err)
 	}
+	// The clone this one replaces, read before anything is written: its
+	// restored database and its file are not forgotten (Supersede).
+	dir := ws.DBDir(p.Server, p.Database)
+	prev, err := loadIfAny(ws, dir)
+	if err != nil {
+		return File{}, fmt.Errorf("clone: %w", err)
+	}
 
 	r := &cloneRun{q: q, ws: ws, p: p, hostDir: hostDir, chunk: p.ChunkBytes, max: p.MaxBytes}
 	if r.chunk <= 0 {
@@ -168,7 +211,7 @@ func Clone(ctx context.Context, q conn.Querier, ws workspace.WS, p runplan.Plan,
 	if r.file.HostPath == "" {
 		return File{}, errors.Join(errors.New("clone: the plan has no transfer step"), r.rollback(ctx))
 	}
-	if err := SaveState(ws, ws.DBDir(p.Server, p.Database), State{File: r.file}); err != nil {
+	if err := SaveState(ws, dir, State{File: r.file, Superseded: supersede(prev)}); err != nil {
 		return File{}, fmt.Errorf("clone: %w", err)
 	}
 	if len(r.leftStats) > 0 {

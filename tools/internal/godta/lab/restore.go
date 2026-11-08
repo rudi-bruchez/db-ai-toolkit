@@ -103,6 +103,11 @@ func Restore(ctx context.Context, ws workspace.WS, dir string, server *sql.DB, o
 		return Prepared{}, fmt.Errorf("restore: the lab connection reaches %s on %s, not the lab instance %s on %s",
 			reached.ServerName, reached.MachineName, labi.ServerName, labi.MachineName)
 	}
+	// What lab.json has besides File and Prepared stays in it.
+	keep, err := loadIfAny(ws, dir)
+	if err != nil {
+		return Prepared{}, fmt.Errorf("restore: %w", err)
+	}
 	var exists int
 	if err := server.QueryRowContext(ctx, "SELECT COUNT(*) FROM sys.databases WHERE name = @p1", db).Scan(&exists); err != nil {
 		return Prepared{}, fmt.Errorf("restore: %w", err)
@@ -139,7 +144,7 @@ func Restore(ctx context.Context, ws workspace.WS, dir string, server *sql.DB, o
 		}
 		errs := []error{fmt.Errorf("restore: %w", err), dropIfThere(server, db)}
 		if saved {
-			errs = append(errs, SaveState(ws, dir, State{File: f}))
+			errs = append(errs, SaveState(ws, dir, State{File: f, Superseded: keep.Superseded}))
 		}
 		return Prepared{}, errors.Join(errs...)
 	}
@@ -199,7 +204,7 @@ func Restore(ctx context.Context, ws workspace.WS, dir string, server *sql.DB, o
 		}
 		p.Streams[key] = stream
 	}
-	if err := SaveState(ws, dir, State{File: f, Prepared: &p}); err != nil {
+	if err := SaveState(ws, dir, State{File: f, Prepared: &p, Superseded: keep.Superseded}); err != nil {
 		return fail(err)
 	}
 	saved = true
