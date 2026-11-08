@@ -30,8 +30,8 @@ type Workload struct {
 	// another collection with this one's counters.
 	CollectID string        `json:"collect_id,omitempty"`
 	Server    conn.Instance `json:"server"`
-	Database DBInfo        `json:"database"`
-	Window   Window        `json:"window"`
+	Database  DBInfo        `json:"database"`
+	Window    Window        `json:"window"`
 	// Source is SourceQueryStore or SourcePlanCache.
 	Source string `json:"source"`
 	// CaptureMode is the Query Store's query_capture_mode_desc, empty when
