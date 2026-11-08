@@ -45,7 +45,10 @@ godta cleanup    --project <dir> --profile <name> --allow-write --plan <plan-cle
 2. `candidates` generates the candidates and confronts them with the existing indexes
    (covered, widen, replace, discuss, new). Offline.
 3. `evaluate --target server --dry-run` writes the execution plan of each database,
-   `plan-evaluate.json`, and executes nothing.
+   `plan-evaluate.json`, and executes nothing. It first compares the live indexes of the
+   tables of the workload with those `collect` read, and refuses the database, exit code
+   `3`, when an index was created, changed or dropped since: run `collect` and `candidates`
+   again.
 4. `evaluate --target server --allow-write --plan <file>` executes that plan and nothing
    else: it creates the hypothetical indexes, compiles the queries with and without them, and
    drops them. It refuses a plan whose checksum, server, database or table schemas changed
