@@ -103,7 +103,7 @@ exécutant les annexes A et A bis sur `sql2022`. Quinze points, dont plusieurs d
 | 7 | Filtre de la tâche 5 qui n'attrape pas les tests unitaires attendus | filtre élargi |
 | 8 | `--lock-timeout` sur la phase réelle alors que `SET LOCK_TIMEOUT` est une étape scellée | déplacé au `--dry-run`, paramètre de `ForEvaluate` |
 | 9 | Crochet du labo sans moyen d'écrire ni nom de table ; tests unitaires sans session factice | `Session.Exec`, interface interne et `NewRecordingSession` ; `StatsHook(p, w)` |
-| 10 | `replace` ne se déclenche jamais sur une table cluster avec les clés effectives | fidèle à la spec §8.3, laissé en l'état ; décision demandée à Rudi |
+| 10 | `replace` ne se déclenche jamais sur une table cluster avec les clés effectives | fidèle à la spec §8.3 ; le 8 novembre 2026, Rudi a choisi de garder la spec : l'existant garde l'ordre `(a, id)` qu'un candidat plus large n'offre pas |
 | 11 | `cleanup` sans moyen d'ouvrir un pool par base | paramètre `open` |
 | 12 | État du labo non transmis entre deux invocations | `lab.State`, `SaveState`, `LoadState` |
 | 13 | Tâche 17 qui disait 64 Mio et 256 Mio | 256 Mio |
