@@ -1,0 +1,96 @@
+-- Obj.Quoted
+[dbo].[Ord]]er s]
+
+-- CreateHypothetical
+CREATE NONCLUSTERED INDEX [godta_ab12cd34_1] ON [dbo].[Ord]]er s] ([a] ASC, [b] DESC) INCLUDE ([c]) WHERE a = 933 WITH STATISTICS_ONLY = -1
+
+-- CreateHypothetical unique
+CREATE UNIQUE NONCLUSTERED INDEX [godta_ab12cd34_1] ON [dbo].[Ord]]er s] ([a] ASC, [b] DESC) WITH STATISTICS_ONLY = -1
+
+-- CreateIndex
+CREATE NONCLUSTERED INDEX [godta_ab12cd34_1] ON [dbo].[Ord]]er s] ([a] ASC, [b] DESC) INCLUDE ([c]) WHERE a = 933 WITH (DATA_COMPRESSION = PAGE, FILLFACTOR = 90) ON [PRIMARY]
+
+-- CreateIndex unique without options
+CREATE UNIQUE NONCLUSTERED INDEX [godta_ab12cd34_1] ON [dbo].[Ord]]er s] ([a] ASC, [b] DESC)
+
+-- CreateIndexDropExisting
+CREATE NONCLUSTERED INDEX [godta_ab12cd34_1] ON [dbo].[Ord]]er s] ([a] ASC, [b] DESC) INCLUDE ([c]) WHERE a = 933 WITH (DROP_EXISTING = ON, DATA_COMPRESSION = PAGE, FILLFACTOR = 90) ON [PRIMARY]
+
+-- CreateIndexDropExisting without options
+CREATE UNIQUE NONCLUSTERED INDEX [godta_ab12cd34_1] ON [dbo].[Ord]]er s] ([a] ASC, [b] DESC) WITH (DROP_EXISTING = ON)
+
+-- DropIndex
+DROP INDEX [godta_ab12cd34_1] ON [dbo].[Ord]]er s]
+
+-- CreateStatistics
+CREATE STATISTICS [godta_ab12cd34_s'1] ON [dbo].[Ord]]er s] ([a], [x y])
+
+-- DropStatistics
+DROP STATISTICS [dbo].[Ord]]er s].[godta_ab12cd34_s'1]
+
+-- UpdateStatisticsStream
+UPDATE STATISTICS [dbo].[Ord]]er s]([godta_ab12cd34_1]) WITH STATS_STREAM = 0x01AB00FF
+
+-- ShowStatisticsStream
+DBCC SHOW_STATISTICS(N'[dbo].[Ord]]er s]', [godta_ab12cd34_s'1]) WITH STATS_STREAM
+
+-- AutopilotReset
+DBCC AUTOPILOT(5, 14, 0, 0, 0, 0, 0)
+
+-- AutopilotIndex
+DBCC AUTOPILOT(0, 14, 975342539, 2, 3308)
+
+-- AutopilotView
+DBCC AUTOPILOT(6, 14, 700581584, 1, 0)
+
+-- SetLockTimeout
+SET LOCK_TIMEOUT 5000
+
+-- CloneDatabase
+DBCC CLONEDATABASE([Café]]db], [godta_ab12cd34_Café]]db]) WITH NO_QUERYSTORE, NO_INFOMSGS
+
+-- BackupDatabase compressed
+BACKUP DATABASE [godta_ab12cd34_Café]]db] TO DISK = N'/var/opt/mssql/backup/godta_ab12cd34_O''Brien.bak' WITH INIT, COPY_ONLY, COMPRESSION
+
+-- BackupDatabase uncompressed
+BACKUP DATABASE [godta_ab12cd34_Café]]db] TO DISK = N'/var/opt/mssql/backup/godta_ab12cd34_O''Brien.bak' WITH INIT, COPY_ONLY
+
+-- ReadFile
+SELECT BulkColumn FROM OPENROWSET(BULK N'/var/opt/mssql/backup/godta_ab12cd34_O''Brien.bak', SINGLE_BLOB) AS x
+
+-- DeleteBackupFile
+EXEC master.dbo.xp_delete_file 0, N'/var/opt/mssql/backup/godta_ab12cd34_O''Brien.bak'
+
+-- DropDatabase
+DROP DATABASE [godta_ab12cd34_Café]]db]
+
+-- RestoreFileList
+RESTORE FILELISTONLY FROM DISK = N'/var/opt/mssql/backup/godta_ab12cd34_O''Brien.bak'
+
+-- RestoreDatabase
+RESTORE DATABASE [godta_ab12cd34_Café]]db] FROM DISK = N'/var/opt/mssql/backup/godta_ab12cd34_O''Brien.bak' WITH MOVE N'Archive' TO N'/var/opt/mssql/data/godta_ab12cd34_O''Brien_a.ndf', MOVE N'Café' TO N'/var/opt/mssql/data/godta_ab12cd34_O''Brien.mdf', MOVE N'Café_2' TO N'/var/opt/mssql/data/godta_ab12cd34_O''Brien_2.ndf', MOVE N'Café_log' TO N'/var/opt/mssql/data/godta_ab12cd34_O''Brien_log.ldf'
+
+-- RestoreDatabase without moves
+RESTORE DATABASE [godta_ab12cd34_Café]]db] FROM DISK = N'/var/opt/mssql/backup/godta_ab12cd34_O''Brien.bak'
+
+-- SetReadWrite
+ALTER DATABASE [godta_ab12cd34_Café]]db] SET READ_WRITE
+
+-- SetScopedConfig bit
+ALTER DATABASE SCOPED CONFIGURATION SET LEGACY_CARDINALITY_ESTIMATION = ON
+
+-- SetScopedConfig int
+ALTER DATABASE SCOPED CONFIGURATION SET MAXDOP = 2
+
+-- SetScopedConfig nvarchar
+ALTER DATABASE SCOPED CONFIGURATION SET ELEVATE_ONLINE = WHEN_SUPPORTED
+
+-- RunPattern
+godta[_][a-z0-9][a-z0-9][a-z0-9][a-z0-9][a-z0-9][a-z0-9][a-z0-9][a-z0-9][_]%
+
+-- SetAutoStatsOff 1
+ALTER DATABASE [godta_ab12cd34_Café]]db] SET AUTO_CREATE_STATISTICS OFF
+
+-- SetAutoStatsOff 2
+ALTER DATABASE [godta_ab12cd34_Café]]db] SET AUTO_UPDATE_STATISTICS OFF
+
