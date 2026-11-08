@@ -11,6 +11,7 @@ import (
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/conn"
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/model"
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/runplan"
+	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/showplan"
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/tsql"
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/workspace"
 )
@@ -401,5 +402,28 @@ func TestForCloneUncompressedWindows(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(p.SideEffects, "\n"), "uncompressed") {
 		t.Errorf("side effects do not say the backup is uncompressed: %v", p.SideEffects)
+	}
+}
+
+// TestCloneStatsJoinAndGroupColumns: a column a query only joins on, and one
+// it only groups by, each get a single-column statistics (spec 8.4, step 1).
+// Each case has one plan that names the column in that role alone.
+func TestCloneStatsJoinAndGroupColumns(t *testing.T) {
+	x := showplan.ColRef{Database: "Sales", Schema: "dbo", Table: "godta_h", Alias: "h", Column: "x"}
+	k := showplan.ColRef{Database: "Sales", Schema: "dbo", Table: "t2", Column: "k"}
+	for _, tc := range []struct {
+		name  string
+		st    showplan.Statement
+		table int
+	}{
+		{"join", showplan.Statement{JoinCols: []showplan.ColRef{x}}, 100},
+		{"group", showplan.Statement{GroupCols: []showplan.ColRef{k}}, 200},
+	} {
+		w := workload()
+		w.Queries = []model.Query{{QueryID: 1, Plan: &showplan.Plan{Statements: []showplan.Statement{tc.st}}}}
+		got := runplan.CloneStats(w, nil)
+		if len(got) != 1 || got[0].Table != tc.table || len(got[0].Columns) != 1 || got[0].Columns[0] != 1 || got[0].Multi {
+			t.Errorf("%s: CloneStats %+v, want one statistics on table %d column 1", tc.name, got, tc.table)
+		}
 	}
 }
