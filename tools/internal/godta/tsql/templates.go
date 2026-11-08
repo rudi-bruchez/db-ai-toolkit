@@ -262,7 +262,9 @@ func SetAutoStatsOff(db string) []string {
 // ScopedConfig is one row of sys.database_scoped_configurations: its name,
 // its value as text, and the base type of the sql_variant value.
 type ScopedConfig struct {
-	Name, Value, BaseType string
+	Name     string `json:"name"`
+	Value    string `json:"value"`
+	BaseType string `json:"base_type"`
 }
 
 // keyword is what a configuration name or a keyword value looks like. They
