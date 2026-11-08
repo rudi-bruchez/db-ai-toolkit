@@ -85,3 +85,30 @@ XML ou le message d'erreur exact.
 - La voie « transfert des seules statistiques nouvelles » de la spec §8.4 n'a pas de tâche :
   goDTA propose l'évaluation sur le serveur ou un nouveau `clone`. À ajouter si l'usage le
   demande.
+
+## Relecture adverse des corrections
+
+Un sous-agent Claude neuf a relu les corrections ci-dessus (diff `f467a2b..6a237a8`) en
+exécutant les annexes A et A bis sur `sql2022`. Quinze points, dont plusieurs dans des lignes
+écrites pour corriger le panel ; tous retenus sauf le dixième, laissé à Rudi.
+
+| # | Point | Correction |
+|---|---|---|
+| 1 | Le test de bout en bout ne pouvait pas obtenir sa recommandation : la jointure de l'annexe A bis lit aussi `nix_h_x`, entre dans `Queries` et ramène le gain à 0,5 % du coût cumulé, sous le seuil de 10 % | jointure retirée de la charge ; la raison écrite dans la tâche 15 |
+| 2 | La règle « clés effectives des deux côtés » rendait les cas 4 `new` : la clé cluster implicite, croissante des deux côtés, entrait dans la règle du sens | clé cluster implicite hors de la condition 3 ; parcours `BACKWARD` sans tri mesuré sur `godta_t` |
+| 3 | L'`INSERT` étroit a un second `Write`, maintenance de la vue indexée | test sur le `Write` de `godta_t` |
+| 4 | `AUTOPILOT` ne rafraîchit pas une statistique périmée : la fixture « étroite » sortait large | capture précédée d'un `SHOWPLAN_XML` ; raison de l'ordre complétée ; écritures passées par l'étape 3 |
+| 5 | « Pas de nom en trois parties » faux pour `CREATE INDEX`, `DROP INDEX`, `DBCC SHOW_STATISTICS` | contrainte réécrite avec ses vraies raisons |
+| 6 | `date_format` est un `smallint` ; `datetime2` tronqué par la réécriture | table de correspondance ; réécriture limitée à `datetime` et `smalldatetime` |
+| 7 | Filtre de la tâche 5 qui n'attrape pas les tests unitaires attendus | filtre élargi |
+| 8 | `--lock-timeout` sur la phase réelle alors que `SET LOCK_TIMEOUT` est une étape scellée | déplacé au `--dry-run`, paramètre de `ForEvaluate` |
+| 9 | Crochet du labo sans moyen d'écrire ni nom de table ; tests unitaires sans session factice | `Session.Exec`, interface interne et `NewRecordingSession` ; `StatsHook(p, w)` |
+| 10 | `replace` ne se déclenche jamais sur une table cluster avec les clés effectives | fidèle à la spec §8.3, laissé en l'état ; décision demandée à Rudi |
+| 11 | `cleanup` sans moyen d'ouvrir un pool par base | paramètre `open` |
+| 12 | État du labo non transmis entre deux invocations | `lab.State`, `SaveState`, `LoadState` |
+| 13 | Tâche 17 qui disait 64 Mio et 256 Mio | 256 Mio |
+| 14 | `CanCompress` vrai pour Web (`EngineEdition` 2) | Web exclue par `Edition` |
+| 15 | `scan_param` « par `sp_executesql` » sous `AUTOPILOT`, qui ne rend pas le plan interne | par le rejeu `proc` |
+
+Le relecteur a aussi levé un doute du registre : `ParameterDataType` porte bien la longueur
+(`varchar(20)`, `datetime2(7)`).
