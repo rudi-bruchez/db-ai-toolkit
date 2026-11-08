@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/model"
+	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/showplan"
 )
 
 // workload: table 1, read 1 (100 executions), write 2 (10 executions,
@@ -228,6 +229,44 @@ func TestUnmeasuredWriteKeepsOtherRejections(t *testing.T) {
 		[]model.Measure{measured(1, "A", 1.05, 1), u}, DefaultThresholds()))
 	if r.Decision != Rejected {
 		t.Fatalf("decision %q, want rejected (notes %q)", r.Decision, r.Notes)
+	}
+}
+
+// writePlan is the plan of a write that reads the table from and writes the
+// table to (INSERT INTO to SELECT ... FROM from).
+func writePlan(from, to string) *showplan.Plan {
+	return &showplan.Plan{Statements: []showplan.Statement{{
+		Accesses: []showplan.Access{{Obj: showplan.ObjRef{Schema: "dbo", Table: from}, LookupOf: -1}},
+		Writes:   []showplan.Write{{Op: "Clustered Index Insert", Objs: []showplan.ObjRef{{Schema: "dbo", Table: to}}}},
+	}}}
+}
+
+// TestReadOnlyWriteNotAWrite: INSERT INTO Customers SELECT ... FROM Orders is
+// bound to a candidate on Orders, which it reads; unmeasured, it must not add
+// its rows to the rows written of that candidate, which it never maintains.
+// The control, the same write into Orders, does.
+func TestReadOnlyWriteNotAWrite(t *testing.T) {
+	score := func(to string) model.Recommendation {
+		w := workload()
+		w.Tables[1].Schema, w.Tables[1].Name = "dbo", "Orders"
+		w.Tables[2] = &model.Table{ObjectID: 2, Schema: "dbo", Name: "Customers"}
+		w.Writes[0].AvgRowcount = 500
+		w.Writes[0].Plan = writePlan("Orders", to)
+		u := measured(2, "A", 5, 5)
+		u.Status = "not evaluated: unreplayable (temporary table)"
+		return one(t, Score(w, []model.Candidate{cand("A", 1, 2)},
+			[]model.Measure{measured(1, "A", 10, 1), u}, DefaultThresholds()))
+	}
+	r := score("Customers")
+	if r.RowsWritten != 0 || slices.Contains(r.Notes, NoteRowsWritten) {
+		t.Errorf("rows written %v, notes %q: a write into Customers counted for an index on Orders", r.RowsWritten, r.Notes)
+	}
+	if r.Decision != Recommended {
+		t.Errorf("decision %q, want recommended (notes %q)", r.Decision, r.Notes)
+	}
+	ctl := score("Orders")
+	if ctl.RowsWritten != 5000 || ctl.Decision != Discuss { // 10 executions x 500 rows
+		t.Errorf("control: rows written %v, decision %q, want 5000 and discuss", ctl.RowsWritten, ctl.Decision)
 	}
 }
 
