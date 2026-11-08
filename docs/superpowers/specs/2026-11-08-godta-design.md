@@ -1,8 +1,9 @@
 # Design de goDTA, conseiller d'index en ligne de commande
 
 Date : 2026-11-08
-Statut : brouillon issu du brainstorming, en attente de la vérification « constructeur » puis de
-la relecture du panel externe.
+Statut : révisé après la relecture du panel (agy et codex, prompts directif et neutre, plus un
+sous-agent Claude), mesures faites sur SQL Server 2022 CU26. Le traitement de chaque constat est
+en §14. Prochaine étape : le spike de §11, puis le plan d'implémentation.
 
 ## 1. Le besoin
 
@@ -26,7 +27,8 @@ pour chaque base un rapport technique destiné à la validation par le client et
 Rudi est `sysadmin` sur les serveurs du client, mais rien ne se crée en production sans
 validation préalable. Il dispose d'un conteneur podman local qui tourne la même version de
 SQL Server que la production. Il veut pouvoir travailler soit sur le serveur lui-même, soit sur
-ce conteneur.
+ce conteneur. La sortie des données du client vers sa machine (histogrammes, textes du Query
+Store) est couverte par ses contrats : aucun avertissement ni purge n'est demandé.
 
 ## 3. Objectifs
 
@@ -34,18 +36,17 @@ ce conteneur.
    requêtes les plus exécutées et les plus coûteuses.
 2. Repli sur le cache de plans (`sys.dm_exec_query_stats`) quand le Query Store est éteint ou
    vide sur la fenêtre.
-3. Accepter en source additionnelle un projet sqlferret (charge capturée par Extended Events),
-   lu directement dans son dossier de plans (§8.2).
+3. Accepter en source additionnelle un projet sqlferret, lu dans son dossier de plans, comme
+   source de candidats seulement (§8.2).
 4. Déduire des index candidats des plans, les regrouper entre requêtes, les confronter aux index
-   existants.
+   existants selon un modèle de couverture explicite (§8.3).
 5. Mesurer chaque candidat par index hypothétique : coût estimé de chaque requête concernée avant
    et après.
-6. Mettre en balance ce gain et le coût de maintenance de l'index (écritures sur la table,
-   taille estimée).
+6. Mettre en balance ce gain et le coût de maintenance de l'index.
 7. Proposer aussi de modifier ou de consolider l'existant : élargir un index plutôt qu'en créer
-   un voisin, remplacer un index existant par un candidat qui le couvre. Les redondances entre
-   index existants eux-mêmes (sans candidat en jeu) sont signalées dans le rapport, sans gain
-   chiffré et sans `DROP` dans le script (§8.7).
+   un voisin, remplacer un index existant par un candidat qui le couvre, chaque fois avec une
+   mesure (§8.5). Les redondances entre index existants eux-mêmes sont signalées dans le
+   rapport, sans `DROP` dans le script (§8.7).
 8. Deux modes de travail : sur le serveur (après validation), ou sur un clone restauré dans le
    conteneur local.
 9. Laisser Claude soumettre ses propres candidats, que goDTA mesure comme les siens.
@@ -55,79 +56,106 @@ ce conteneur.
 - Appliquer les index. goDTA produit un script ; c'est un humain qui le passe.
 - Recommander la suppression d'un index au seul motif qu'il n'est pas utilisé. Les compteurs
   d'usage ne couvrent ni toute la vie de la base ni les autres réplicas (même raisonnement que
-  `2026-10-01-missing-indexes-design.md`, §1 et §3). Un `DROP` n'est proposé que comme partie
-  d'une consolidation (l'index est remplacé par un autre qui le couvre).
-- Index columnstore, index filtrés, vues indexées, partitionnement. Rowstore non cluster seulement
-  dans cette version.
-- Azure SQL Database (pas de `DBCC CLONEDATABASE`, pas d'`AUTOPILOT` connu). SQL Server 2016 et
-  suivants, et Azure SQL Managed Instance si le spike (§11) le confirme.
-- `sys.dm_exec_requests` : cité au départ, écarté. Il ne donne qu'un instantané ; le Query Store
-  et le cache de plans couvrent la fenêtre. À rouvrir si un besoin précis apparaît.
-- Lecture du fichier DuckDB de sqlferret : DuckDB en Go impose cgo et casserait le binaire
-  unique multiplateforme. Aucune modification de sqlferret non plus : goDTA lit les fichiers
-  que sqlferret écrit déjà (§8.2).
-- La sortie de données du client vers la machine de Rudi en mode labo (histogrammes, textes du
-  Query Store) : décision de Rudi, ses contrats la couvrent, aucun avertissement ni purge.
+  `2026-10-01-missing-indexes-design.md`, §1 et §3).
+- Proposer de nouveaux index columnstore, filtrés, des vues indexées, du partitionnement.
+  Rowstore non cluster seulement. Les index filtrés existants sont en revanche pris en compte
+  dans la confrontation (§8.3).
+- Azure SQL Database (pas de `DBCC CLONEDATABASE`). SQL Server 2016 et suivants ; Azure SQL
+  Managed Instance si le spike (§11) le confirme.
+- `sys.dm_exec_requests` : un instantané, que le Query Store et le cache de plans remplacent.
+- Lecture du fichier DuckDB de sqlferret (cgo, binaire unique perdu), et toute modification de
+  sqlferret.
 
 ## 5. Anti-objectifs
 
 Ce qui ferait de goDTA un échec même s'il fonctionne :
 
-- Proposer un index qui double un index existant. C'est la crainte que Rudi a nommée en premier.
-  Une recommandation dont les clés et les colonnes incluses sont déjà couvertes par un index
-  existant ne doit jamais sortir ; si le besoin est presque couvert, la recommandation est
-  « élargir l'index X », jamais « créer un index Y ».
-- Écrire en production sans l'avoir demandé explicitement.
-- Laisser un index hypothétique, une base clone ou un fichier de sauvegarde sur le serveur après
-  un arrêt brutal sans moyen de le retrouver et de le nettoyer.
-- Annoncer un gain qui n'a pas été mesuré. Un candidat non évalué (verrou refusé, erreur) apparaît
-  comme tel dans le rapport, sans chiffre.
+- Proposer un index qui double un index existant, au sens du modèle de couverture de §8.3. C'est
+  la crainte que Rudi a nommée en premier.
+- Écrire en production sans l'avoir demandé explicitement, ou écrire autre chose que ce que le
+  `--dry-run` a montré.
+- Laisser un index hypothétique, une statistique `godta_*`, une base clone ou un fichier de
+  sauvegarde sur le serveur après un arrêt brutal sans moyen de le retrouver et de le nettoyer.
+- Exécuter pour de bon une requête de la charge alors qu'on voulait seulement son plan (§8.5).
+- Annoncer un gain qui n'a pas été mesuré. Un candidat non évalué (verrou refusé, requête non
+  rejouable, erreur) apparaît comme tel dans le rapport, sans chiffre.
+- Annoncer comme « sur 24 h » un chiffre qui ne l'est pas (cache de plans, compteurs des DMV).
 - Exécuter tel quel un texte SQL fourni par l'IA.
 
 ## 6. Connexion
 
-goDTA réutilise le paquet `tools/internal/sqlq` : mêmes profils (`-profile`, `$MSSQL_PROFILES`,
-`~/.config/db-ai-toolkit/mssql-profiles.json`), même résolution des secrets (`passwordEnv`,
-`passwordDpapi`), même construction de DSN. Il n'appelle pas le binaire `sqlq` : celui-ci refuse
-`DBCC`, `OPENROWSET` et toute écriture sur un profil `readonly`, ce dont goDTA a besoin pour ses
-phases d'écriture.
+goDTA importe le paquet `tools/internal/sqlq` : mêmes profils (`-profile`, `$MSSQL_PROFILES`,
+`~/.config/db-ai-toolkit/mssql-profiles.json`), même résolution des secrets (`NewResolver`,
+`Resolve`, `passwordEnv`, `passwordDpapi`), même construction de DSN (`Profile.DSN`). Il
+n'appelle pas le binaire `sqlq`, dont la garde refuse `DBCC`, `CREATE`, `BACKUP`, `OPENROWSET`.
+Le nom d'application de la connexion est `db-ai-toolkit/godta`, pas celui de `sqlq` : il faut
+pouvoir distinguer les deux dans `sys.dm_exec_sessions` (petite option à ajouter à `DSN`, ou
+réécriture du paramètre après coup ; au choix du constructeur).
 
 En plus des profils :
 
 - Un fichier `.env` est chargé au démarrage (`--env`, défaut `./.env`, absent sans erreur), avec
   la règle habituelle : une variable déjà présente dans l'environnement gagne. Loader copié dans
-  `tools/internal/dotenv` depuis `~/Sources/Repos/atelier/outils/sylloge/internal/dotenv/`. Il
-  sert à fournir les `passwordEnv` des profils.
+  `tools/internal/dotenv` depuis `~/Sources/Repos/atelier/outils/sylloge/internal/dotenv/`.
 - Sans profil, une connexion directe par variables (`GODTA_SERVER`, `GODTA_AUTH`, `GODTA_USER`,
-  `GODTA_PASSWORD`, `GODTA_ENVIRONMENT`), transformées en `sqlq.Profile` pour suivre le même
-  chemin. Noms des variables : laissés au constructeur, à documenter dans `.env.example`.
+  `GODTA_PASSWORD`, `GODTA_ENVIRONMENT`), transformées en `sqlq.Profile` avec
+  `PasswordEnv: "GODTA_PASSWORD"` (le paquet refuse un mot de passe en ligne). Documentées dans
+  `.env.example`.
 
-Deux connexions au plus par exécution : la source (le serveur analysé) et le labo (le conteneur,
-lui aussi décrit par un profil).
+Deux connexions au plus par exécution : la source (le serveur analysé) et le labo.
+
+Toute séquence qui dépend d'un état de session (`SET LOCK_TIMEOUT`, `DBCC AUTOPILOT`,
+`SET AUTOPILOT`) s'exécute sur une seule connexion épinglée (`*sql.Conn`), jamais sur le pool de
+`database/sql`, qui donne à chaque appel une connexion quelconque.
 
 ## 7. Lecture et écriture
 
-Règle centrale : toutes les lectures sont permises ; toute écriture est une phase séparée,
-demandée explicitement, et refusée sur un profil `readonly`.
+Règle centrale : toute écriture est une phase séparée, demandée explicitement, montrée d'abord
+par `--dry-run`, et refusée sur un profil `readonly`.
 
 | Phase | Écrit sur la source ? | Condition |
 |---|---|---|
-| `collect` | non | aucun |
-| `clone` | oui : base clone, fichier de sauvegarde | profil `readwrite` et `--allow-write` |
-| `evaluate --target server` | oui : index hypothétiques | profil `readwrite` et `--allow-write` |
-| `evaluate --target lab` | non (écrit sur le labo) | profil du labo `readwrite` |
-| `cleanup` | oui : suppression des restes | profil `readwrite` et `--allow-write` |
+| `collect` | non | sur un profil `prod`, la confirmation d'`AGENTS.md` avant la première requête |
+| `clone` | oui : statistiques `godta_*`, base clone, fichier de sauvegarde | profil `readwrite`, `--allow-write`, plan validé |
+| `evaluate --target server` | oui : index hypothétiques, statistiques auto-créées | profil `readwrite`, `--allow-write`, plan validé |
+| `evaluate --target lab` | non (écrit sur le labo) | profil du labo `readwrite`, `--allow-write`, gardes du labo |
+| `cleanup` | oui : suppression des restes | profil `readwrite`, `--allow-write` |
 
-Mon choix, à valider : Rudi crée pour goDTA un profil `readwrite` distinct du profil `readonly`
-de `sqlq` sur le même serveur. Le drapeau seul ne suffit pas, le profil seul non plus.
+Rudi crée pour goDTA un profil `readwrite` distinct du profil `readonly` de `sqlq` sur le même
+serveur. Le drapeau seul ne suffit pas, le profil seul non plus.
 
-Chaque phase d'écriture accepte `--dry-run`, qui imprime les instructions exactes sans rien
-exécuter : c'est ce qui se montre au client pour obtenir la validation.
+Gardes du labo, toutes obligatoires : le profil du labo n'a pas `"environment": "prod"` ; la base
+visée a `DATABASEPROPERTYEX(<base>, 'IsClone') = 1` (la propriété survit à la sauvegarde et à la
+restauration, mesuré) ; son nom commence par le préfixe de goDTA.
+
+### 7.1 Le `--dry-run` et le plan d'exécution
+
+`--dry-run` ne peut pas imprimer à l'avance des identifiants connus seulement à l'exécution
+(`index_id` d'un index hypothétique). Il écrit donc un fichier de plan d'exécution dans l'espace
+de travail : l'identifiant d'exécution (fixé à ce moment), la liste ordonnée des instructions
+avec leurs noms d'objets définitifs, et, pour chaque valeur résolue à l'exécution, la requête de
+catalogue qui la résoudra. C'est ce fichier qui se montre au client. La phase réelle prend ce
+fichier en entrée (`--plan <fichier>`) et n'exécute que lui ; elle refuse un plan dont la
+somme de contrôle a changé ou dont le serveur et la base ne correspondent pas.
+
+Le plan d'exécution dit aussi les effets de bord mesurés (§8.5) : le verrou `S` sur la table à
+la création, le `Sch-M` à la suppression, la lecture échantillonnée de la table, la remise à
+zéro des suggestions d'index manquants de la table, les statistiques auto-créées.
+
+### 7.2 Gabarits et noms
 
 Toutes les instructions d'écriture viennent de gabarits compilés dans le binaire. Les noms
-d'objets y entrent par `QUOTENAME` ou un équivalent Go testé, jamais par concaténation brute.
-Le nom de tout objet créé par goDTA commence par un préfixe fixe (par exemple `godta_`) et un identifiant
-d'exécution, pour que `cleanup` les retrouve sans ambiguïté et ne touche à rien d'autre.
+d'objets y entrent par une fonction d'échappement testée (équivalent de `QUOTENAME`), jamais par
+concaténation brute. Le nom de tout objet créé par goDTA commence par `godta_` suivi de
+l'identifiant d'exécution. `cleanup` le recherche avec un motif `LIKE` dont les `_` sont
+échappés (`godta[_]…`), sinon `_` est un joker et le motif attrape d'autres noms (constaté par
+un relecteur sur ses propres objets).
+
+Avant toute création, l'identité de chaque objet (base, table, nom, chemin du fichier de
+sauvegarde) est écrite dans l'espace de travail : c'est ce journal, et non une recherche par
+motif, qui guide d'abord `cleanup`. Le motif sert de filet. Les fichiers de sauvegarde se
+suppriment par la connexion SQL avec `master.sys.xp_delete_files` (non documentée, mesurée sur
+Linux) ; un fichier dont le chemin n'a pas été journalisé avant le crash est signalé, pas cherché.
 
 ## 8. Le déroulement
 
@@ -138,7 +166,10 @@ base, des fichiers JSON par phase. Chaque phase lit ce que la précédente a éc
 permet de reprendre, de rejouer `evaluate` sur le labo sans relire la production, et à Claude de
 lire le matériau entre deux phases.
 
-### 8.2 `collect` (lecture seule)
+Ordre des phases : `collect` (source) → candidats (hors connexion) → `clone` ou
+`evaluate --target server` → `evaluate --target lab` le cas échéant → `report`.
+
+### 8.2 `collect` (lecture seule, toujours sur la source)
 
 Pour chaque base retenue (toutes les bases utilisateur, filtrées par `--include` et `--exclude`,
 motifs à jokers sur le nom ; les bases système, hors ligne, en lecture seule ou secondaires
@@ -146,131 +177,250 @@ non lisibles sont listées comme écartées avec la raison) :
 
 - version, édition, niveau de compatibilité, état du Query Store ;
 - charge : top N requêtes (N configurable) par nombre d'exécutions et par coût (CPU, lectures
-  logiques, durée) sur la fenêtre, avec `query_id`, texte, plan estimé ou dernier plan connu ;
-  la fenêtre a une borne de fin explicite (`--until`, défaut : maintenant), enregistrée dans la
-  sortie, pour que deux exécutions sur le même clone donnent le même résultat ;
-- repli sur le cache de plans si le Query Store est éteint ou vide sur la fenêtre, avec la
-  mention dans le rapport (pas de `query_id` mais `query_hash`, couverture limitée à ce qui n'a
-  pas été évincé) ;
-- index existants des tables touchées : clés dans l'ordre, colonnes incluses, unicité, filtre,
-  taille, `sys.dm_db_index_usage_stats` et `sys.dm_db_index_operational_stats` ;
+  logiques, durée) sur la fenêtre, avec `query_id`, `query_hash`, `context_settings_id`, texte,
+  dernier plan connu et ses `ParameterCompiledValue` ; la fenêtre a une borne de fin explicite
+  (`--until`, défaut : maintenant), enregistrée dans la sortie ;
+- les requêtes d'écriture (`INSERT`, `UPDATE`, `DELETE`, `MERGE`) de la fenêtre qui touchent les
+  tables concernées, avec leurs exécutions et les colonnes qu'elles modifient : c'est la source
+  principale du coût de maintenance (§8.6) ;
+- repli sur le cache de plans si le Query Store est éteint ou vide sur la fenêtre. Ses compteurs
+  sont cumulés depuis la compilation de chaque plan, pas sur la fenêtre : le rapport le dit et
+  n'affiche jamais ces chiffres comme « sur 24 h ». La base d'une requête ad hoc se lit par
+  `sys.dm_exec_plan_attributes` (`dbid`), `sys.dm_exec_sql_text` rendant `NULL` pour elles ;
+- index existants des tables touchées, réels seulement (`is_hypothetical = 0`, les restes du DTA
+  ou de goDTA sont listés à part et proposés au nettoyage) : clés dans l'ordre avec leur sens
+  (`is_descending_key`), colonnes incluses, unicité, contrainte appuyée (clé primaire, unique),
+  filtre et sa définition, état désactivé, compression, taille, clé de l'index cluster ;
+  `sys.dm_db_index_usage_stats` et `sys.dm_db_index_operational_stats`, à titre indicatif ;
+- références nommées aux index existants : indications `WITH (INDEX(...))` dans les textes du
+  Query Store, repères de plan (`sys.plan_guides`), plans forcés du Query Store ;
+- statistiques existantes par colonne (pour savoir lesquelles manqueront au clone) ;
 - suggestions d'index manquants (`sys.dm_db_missing_index_*`) et éléments `MissingIndex` des
   plans ;
-- nombre de lignes et largeur des colonnes des tables concernées.
+- nombre de lignes, de pages et largeur des colonnes des tables concernées.
 
 `collect` s'exécute toujours sur la source, même en mode labo : sur un clone, les DMV d'usage,
 d'opérations et d'index manquants sont vides et le cache de plans est froid. Le clone ne sert
-qu'à `evaluate`, qui reprend la liste des requêtes établie par `collect` ; le Query Store du
-clone n'est pas relu pour choisir les requêtes.
+qu'à `evaluate`, qui reprend la liste des requêtes établie par `collect`.
+
+Le Query Store identifie une requête par `query_id`, qui dépend du texte, du contexte
+(`context_settings_id`) et de l'objet parent ; un même `query_hash` correspond souvent à
+plusieurs `query_id` (huit pour un même hash sur la base de démonstration). Le rapport cite les
+`query_id` ; une correspondance par `query_hash` (cache de plans, sqlferret) est présentée comme
+telle, avec tous les `query_id` qu'elle recouvre.
 
 Source sqlferret (`--sqlferret <projet>`) : goDTA lit `plans/profile/run_N/index.json` et les
-fichiers `.sqlplan` qu'il référence. Ces plans réels fournissent des colonnes pour générer des
-candidats et des nombres d'exécutions. Une requête dont le texte a été caviardé à l'import
-(niveau `literals`) ne peut pas être rejouée pour un plan estimé : elle contribue aux candidats
-mais pas à la mesure du gain, et le rapport le dit. Le format exact de `index.json` est à lire
-dans le dépôt sqlferret (`~/Sources/Repos/sqlferret`) au moment du plan.
+`.sqlplan` qu'il référence. Ce dossier ne contient ni le texte complet des requêtes (le
+`StatementText` du plan est tronqué par le moteur), ni la politique de caviardage de l'import,
+ni le nom de la base hors des références de colonnes du plan, et ses compteurs sont par plan et
+par événement capturé, pas par exécution d'instruction. Les plans sqlferret servent donc
+uniquement à proposer des candidats, rattachés à leur base par les noms à trois parties des
+`ColumnReference`. Leur gain n'est mesuré qu'à travers les requêtes du Query Store ou du cache
+que le candidat améliore ; un candidat issu de sqlferret seul qui n'améliore aucune d'elles est
+listé « non mesuré ». Les plans écrits par `sqlferret query-store-import` ne sont pas lus (ils
+viennent du Query Store, déjà lu directement).
 
-### 8.3 Génération des candidats
+### 8.3 Génération des candidats et modèle de couverture
 
-À partir des plans (le paquet `tools/internal/sqlplan` lit déjà le XML) : colonnes des prédicats
-de recherche et des prédicats résiduels des opérateurs d'accès, colonnes de sortie, groupes
-`MissingIndex`. Règles de base :
+Il faut écrire un lecteur de plans XML : `tools/internal/sqlplan` ne fait que décoder le fichier
+(BOM, UTF-16) et l'afficher, il n'expose aucune structure. Le nouveau lecteur extrait
+`StatementSubTreeCost`, les opérateurs d'accès, les prédicats de recherche et résiduels, les
+colonnes de sortie, les tris demandés, `ParameterList` et les groupes `MissingIndex`. Il réutilise
+`sqlplan.Decode` pour l'encodage.
 
-- clés : égalités d'abord, puis une inégalité ; colonnes de sortie en `INCLUDE` ;
-- regroupement des candidats d'une même table entre requêtes quand l'un est préfixe de l'autre ;
-- confrontation à l'existant, dans cet ordre : doublon (même clé, inclus couverts) : écarté ;
-  candidat couvert par les clés d'un existant à qui manquent seulement des inclus : transformé en
-  « élargir l'existant » ; existant dont les clés sont préfixe du candidat : « remplacer l'existant
-  par le candidat », avec `DROP` de l'ancien dans le script ;
-- tri et départage entièrement déterministes (par table, puis par clé textuelle).
+Règles de génération : clés d'égalité d'abord, puis une inégalité, puis éventuellement les
+colonnes d'un tri demandé avec leur sens ; colonnes de sortie en `INCLUDE`, moins celles déjà
+en clé et moins la clé de l'index cluster (présente d'office dans tout index non cluster ; la
+mettre en `INCLUDE` en plus d'une clé provoque l'erreur 1910).
 
-Le détail de l'heuristique (largeur maximale des inclus, nombre maximal de clés, quand préférer
-l'ordre du `MissingIndex` à celui déduit des prédicats) est laissé au constructeur, à condition
-que chaque règle soit nommée et apparaisse dans le rapport à côté du candidat qu'elle a produit
-ou écarté.
+Le modèle de couverture décide si un besoin est satisfait par un index existant. Un index
+existant E couvre un candidat C si toutes ces conditions tiennent :
+
+1. E est réel, actif (`is_disabled = 0`), non hypothétique ;
+2. E n'est pas filtré, ou son filtre est impliqué par les prédicats de toutes les requêtes qui
+   ont produit C (en pratique : sans démonstration simple de l'implication, E ne couvre pas) ;
+3. les colonnes d'égalité de C forment, dans un ordre quelconque, le début des clés de E (les
+   permutations d'égalités se valent), suivies dans l'ordre des autres clés de C avec le même sens
+   ou le sens inverse sur toutes à la fois ;
+4. chaque colonne incluse de C est présente dans E, en clé, en inclus, ou comme clé de l'index
+   cluster.
+
+Confrontation, dans cet ordre, pour chaque candidat :
+
+- couvert par un existant : écarté, avec le nom de l'existant ;
+- un existant satisfait les conditions 1 à 3 mais pas 4 : « élargir l'existant » (même clé,
+  inclus réunis), sauf si l'existant appuie une contrainte. SQL Server refuse alors
+  `DROP_EXISTING` (erreur 1907) et le `DROP INDEX` (erreur 3723) : le candidat passe en
+  « à discuter », sans script, avec l'explication ;
+- les clés d'un existant sont un préfixe strict de celles du candidat, et l'existant n'est ni
+  cluster, ni unique, ni filtré, ni appuyé sur une contrainte, ni nommé dans une indication, un
+  repère de plan ou un plan forcé : « remplacer », le candidat recevant l'union des inclus des
+  deux ; dans tous les autres cas, le candidat est proposé à côté de l'existant ;
+- sinon : nouveau candidat.
+
+Deux index existants qui ensemble couvrent un candidat ne le couvrent pas : l'intersection
+d'index est un choix de l'optimiseur, pas un chemin d'accès unique. La mesure (§8.5) tranche.
+
+Tri et départage entièrement déterministes. Le détail fin (largeur maximale des inclus, nombre
+maximal de clés, ordre du `MissingIndex` contre ordre déduit des prédicats) est laissé au
+constructeur, à condition que chaque règle soit nommée et apparaisse dans le rapport à côté du
+candidat qu'elle a produit ou écarté. Une batterie de tests de table de vérité couvre chaque cas
+cité ici et en §14.
 
 ### 8.4 `clone` (écriture validée sur la source, puis labo)
 
-1. `DBCC CLONEDATABASE` de la base vers `godta_<base>_<run>`, Query Store compris (le comportement
-   par défaut ; à vérifier par version).
-2. `BACKUP DATABASE` du clone, compressé, dans le répertoire de sauvegarde par défaut de
-   l'instance ou dans `--backup-dir`.
-3. Rapatriement du fichier à travers la connexion SQL, par `OPENROWSET(BULK …, SINGLE_BLOB)`,
-   sans partage réseau. Un clone sans données pèse quelques dizaines de Mo ; une limite de taille
-   configurable protège le cas contraire.
-4. Suppression de la base clone et du fichier sur la source.
-5. Dépôt du fichier dans un répertoire de l'hôte monté dans le conteneur (chemin hôte et chemin
-   vu par le conteneur en configuration), `RESTORE` sur le labo, passage en `READ_WRITE`.
+Cette phase vient après la génération des candidats, parce qu'elle en dépend.
+
+1. Statistiques : pour chaque candidat, `CREATE STATISTICS godta_<run>_<n>` sur ses colonnes de
+   clé dans l'ordre (densités du préfixe et histogramme de la première colonne) ; pour chaque
+   colonne d'un prédicat sans statistique, une statistique d'une colonne. Échantillonnage par
+   défaut du moteur. C'est une lecture échantillonnée de la table et une écriture de
+   métadonnées, listée dans le plan d'exécution.
+2. `DBCC CLONEDATABASE` de la base vers `godta_<run>_<base>`. Le clone copie les statistiques
+   existantes, dont celles de l'étape 1, et le Query Store (comportement par défaut, mesuré).
+3. Suppression des statistiques de l'étape 1 sur la source.
+4. `BACKUP DATABASE` du clone, compressé, dans le répertoire de sauvegarde par défaut de
+   l'instance ou dans `--backup-dir`, chemin journalisé avant.
+5. Rapatriement du fichier par la connexion SQL, `OPENROWSET(BULK …, SINGLE_BLOB)`, sans partage
+   réseau (mesuré : lecture complète juste après le `BACKUP`, sans verrou ; 3,6 Mo pour la base
+   de démonstration). Limite de taille configurable.
+6. Suppression de la base clone et du fichier sur la source (`xp_delete_files`).
+7. Dépôt du fichier dans un répertoire de l'hôte monté dans le conteneur (chemin hôte et chemin
+   vu par le conteneur en configuration), `RESTORE FILELISTONLY`, puis `RESTORE … WITH MOVE` de
+   chaque fichier logique vers le répertoire de données du labo (les chemins de la source, souvent
+   Windows, n'existent pas sur le conteneur), puis `ALTER DATABASE … SET READ_WRITE` (un clone est
+   en lecture seule ; sans ce passage, la création d'un index hypothétique échoue, erreur 3906).
 
 goDTA ne gère pas le conteneur lui-même (ni démarrage ni arrêt) : il se connecte au profil du
-labo. Mon choix ; le démarrage du conteneur reste à Rudi ou au skill.
+labo.
+
+Les suggestions de l'IA arrivées après le clone (§9) n'ont pas leurs statistiques sur le labo.
+Deux voies, au choix de l'utilisateur à ce moment : un nouveau passage de l'étape 1 suivi d'un
+transfert des seules statistiques nouvelles par `DBCC SHOW_STATISTICS … WITH STATS_STREAM` sur la
+source et `UPDATE STATISTICS … WITH STATS_STREAM` sur le labo (non supporté par Microsoft, mesuré
+fonctionnel sur 2022 quand le flux vient d'une statistique de mêmes colonnes ; un flux d'une
+colonne posé sur un objet de deux colonnes est refusé, erreur 9105), ou une évaluation sur le
+serveur. Sans l'une des deux, ces candidats sont marqués « estimation non fiable » et ne peuvent
+pas être recommandés.
 
 ### 8.5 `evaluate`
 
-Sur la cible (`server` ou `lab`), pour chaque candidat et chaque requête qu'il concerne :
+Mécanisme, sur une connexion épinglée, chaque instruction dans son propre lot :
 
-1. plan estimé de référence, sans index hypothétique ;
-2. création de l'index hypothétique (`CREATE INDEX … WITH STATISTICS_ONLY`), sous un
-   `SET LOCK_TIMEOUT` court (configurable, quelques secondes) ; si le verrou ne vient pas, le
-   candidat est marqué non évalué et on passe au suivant ;
-3. plan estimé avec l'index visible par `DBCC AUTOPILOT` / `SET AUTOPILOT ON` ;
-4. coût estimé avant et après, index effectivement choisi ou non dans le plan ;
-5. suppression de l'index hypothétique.
+1. `DBCC AUTOPILOT(5, <db>, 0, 0, 0, 0, 0)` : remise à zéro de la liste de la session (sans
+   elle, un candidat évalué précédemment reste visible ; `SET AUTOPILOT OFF` ne la vide pas) ;
+2. `CREATE INDEX godta_<run>_<n> ON … WITH STATISTICS_ONLY = -1`, sous `SET LOCK_TIMEOUT`
+   court. La valeur `-1` est obligatoire : sans valeur, l'index est créé sans statistique et
+   l'estimation est fausse même sur une base pleine (mesuré par quatre relecteurs). Sur le labo,
+   l'index n'aura pas non plus de statistiques propres (table vide) : ce sont les statistiques
+   `godta_*` copiées par le clone qui servent à l'estimation, ce que le spike doit confirmer ;
+3. `DBCC AUTOPILOT(0, <db>, <table>, <index_id>, <pages>)` pour l'index hypothétique, avec un
+   nombre de pages estimé (lignes × largeur de ligne de l'index / 8 060 octets environ) : sans ce
+   paramètre, l'index est compté comme une seule page et toute lecture d'intervalle paraît
+   gratuite ;
+4. `DBCC AUTOPILOT(0, <db>, <table>, <index_id>)` pour chaque index réel non cluster de la table
+   qui doit rester visible. Un index réel non déclaré est caché à l'optimiseur sous
+   `AUTOPILOT` (vérifié par le contrôleur : un seek sur l'index réel à 0,0037 devient un balayage
+   à 0,436). C'est aussi ce qui permet de mesurer un `DROP` : pour évaluer un remplacement, on ne
+   déclare pas l'index remplacé ;
+5. `SET AUTOPILOT ON`, seul dans son lot ; le résultat de ce lot est vérifié avant de continuer.
+   S'il a échoué, la requête suivante s'exécuterait pour de bon : goDTA s'arrête ;
+6. la requête rejouée ; le résultat doit être un document `ShowPlanXML`, sinon goDTA abandonne la
+   connexion et marque l'erreur ;
+7. `SET AUTOPILOT OFF` ;
+8. la même séquence sans l'index candidat donne le coût de référence, dans les mêmes conditions ;
+9. `DROP INDEX` de l'index hypothétique.
 
-Sur le serveur, chaque `CREATE` et `DROP` de l'index hypothétique invalide les plans en cache des
-tables touchées, et la prise du verrou `Sch-M` peut faire attendre les requêtes qui arrivent
-derrière. Le rapport de `--dry-run` le dit au client. Ces risques n'existent pas sur le labo.
+Rejeu des requêtes : c'est le point le moins sûr (§11). Mesuré : le texte du Query Store
+`(@P1 int)SELECT …` tel quel échoue (erreurs 1050 et 137) ; `EXEC sp_executesql` sous
+`AUTOPILOT` ne rend aucun plan de l'instruction interne ; un appel paramétré de `go-mssqldb`
+(RPC) ne rend rien ; `DECLARE @P1 … = valeur` fait perdre la valeur reniflée ; `OPTIMIZE FOR`
+refuse les types `MAX` (erreur 4132). En revanche, `EXEC` d'une procédure stockée sous
+`AUTOPILOT` compile son corps avec les valeurs passées comme valeurs reniflées. La piste à
+mesurer : envelopper chaque requête paramétrée dans une procédure temporaire (`#godta_…`) dont
+les paramètres reprennent sa déclaration, et l'appeler avec les `ParameterCompiledValue` du
+plan. Une requête non paramétrée se rejoue telle quelle. Une requête qui ne peut pas être rejouée
+(table temporaire, variables locales d'une procédure absentes de `ParameterList`, texte incomplet)
+est listée comme telle.
 
-Les candidats sont aussi évalués en combinaison par table (tous les retenus d'une table ensemble)
-pour détecter qu'un index en rend un autre inutile. Le détail (combinaisons testées, plafond) est
-laissé au constructeur.
+Les instructions `INSERT`, `UPDATE`, `DELETE`, `MERGE` ne sont évaluées que si le spike prouve,
+sur chacune de ces formes, qu'elles ne sont que compilées sous `AUTOPILOT` (mesuré pour un
+`UPDATE` : données inchangées). Sinon elles servent au seul coût de maintenance.
+
+Effets mesurés sur le serveur, à dire dans le plan d'exécution :
+
+- la création prend un verrou `S` sur la table (et `Sch-S`) : un écrivain en cours la bloque,
+  un lecteur non ; elle lit la table par échantillonnage ;
+- la suppression prend `Sch-M` : un lecteur long la bloque. Une suppression qui échoue sur le
+  délai de verrou laisserait l'index derrière : goDTA la retente avec attente croissante, et
+  après échec la journalise pour `cleanup`, sans abandonner la session ;
+- les plans en cache des tables touchées ne sont pas invalidés (mesuré : même `plan_handle`,
+  `plan_generation_num` inchangé) ;
+- les suggestions d'index manquants de la table sont effacées par la création : `collect` doit
+  donc passer avant, ce que l'ordre des phases garantit ;
+- la compilation peut auto-créer des statistiques `_WA_Sys_*` sur des colonnes sans statistique.
+  Ce sont celles que le moteur aurait créées à la première requête sur ces colonnes ; goDTA les
+  liste dans le rapport mais ne les supprime pas (leur nom n'a pas son préfixe et elles peuvent
+  servir à d'autres requêtes).
+
+Les candidats d'une même table sont aussi évalués ensemble (tous les retenus déclarés à la fois)
+pour détecter qu'un index en rend un autre inutile. Le plafond des combinaisons est laissé au
+constructeur.
 
 ### 8.6 Score
 
 Pour chaque index recommandé :
 
 - gain : somme sur les requêtes concernées de (coût estimé avant − coût estimé après) × nombre
-  d'exécutions sur la fenêtre ;
-- coût de maintenance : volume d'écritures sur la table (`leaf_insert_count`,
-  `leaf_update_count`, `leaf_delete_count` de l'index cluster ou du tas, et `user_updates`),
-  rapporté à la même fenêtre quand c'est possible, et taille estimée de l'index (lignes ×
-  largeur des clés et des inclus) ;
+  d'exécutions sur la fenêtre (Query Store), ou depuis la compilation (cache de plans, signalé) ;
+- coût de maintenance, sur la même fenêtre : exécutions des requêtes d'écriture du Query Store
+  qui touchent la table et, pour les `UPDATE`, seulement celles qui modifient une colonne de
+  l'index (un index non cluster n'est pas maintenu quand l'`UPDATE` ne touche aucune de ses
+  colonnes, mesuré). Les compteurs des DMV (`leaf_*_count` en lignes, `user_updates` en
+  instructions, remis à zéro par une reconstruction ou l'éviction des métadonnées, sans
+  horodatage) ne sont affichés qu'à titre indicatif, jamais rapportés à la fenêtre ;
+- taille estimée de l'index (lignes × largeur des clés et des inclus) ;
+- pour un remplacement, la mesure inclut les requêtes qui utilisaient l'index remplacé, évaluées
+  sans lui ;
 - une décision `recommandé` / `à discuter` / `écarté` selon des seuils configurables.
 
 La formule exacte qui combine gain et maintenance est laissée au constructeur ; elle doit être
 écrite dans le rapport et rester la même d'une exécution à l'autre. Le rapport affiche toujours
-les deux grandeurs séparément, jamais le seul score combiné.
+les grandeurs séparément, jamais le seul score combiné.
 
 ### 8.7 `report`
 
 Par base :
 
-- `rapport.md` : contexte (version, source de charge, fenêtre, ce qui manque), puis un bloc par
-  recommandation : définition, origine (algorithme ou suggestion IA), requêtes servies
+- `rapport.md` : contexte (version, source de charge et sa période réelle, ce qui manque), puis
+  un bloc par recommandation : définition, origine (algorithme ou suggestion IA), requêtes servies
   (`query_id`, extrait du texte, exécutions, coût avant/après), coût de maintenance, index
   existants touchés (élargi, remplacé), règles appliquées ; ensuite les candidats écartés avec la
-  raison, et les candidats non évalués ;
+  raison, les candidats « à discuter », les non évalués, les statistiques auto-créées pendant
+  l'évaluation, les index hypothétiques préexistants trouvés ;
+- une section « redondances de l'existant » : index existants en doublon exact ou dont les clés
+  sont préfixe d'un autre, comme observations, sans gain chiffré et sans instruction dans le
+  script ;
 - `indexes.sql` : le script, un bloc commenté par recommandation, `DROP` d'un index remplacé
-  placé après la création de son remplaçant ;
+  placé après la création de son remplaçant. Jamais de `DROP` d'un index cluster, unique, de
+  clé primaire, appuyant une contrainte, ou nommé dans une indication, un repère de plan ou un
+  plan forcé ;
 - `result.json` : tout ce qui précède, pour Claude.
-
-Une section « redondances de l'existant » liste les index existants en doublon exact ou dont
-les clés sont préfixe d'un autre, comme observations, sans gain chiffré (on ne sait pas mesurer
-un `DROP` par index hypothétique) et sans instruction dans `indexes.sql`. Jamais de `DROP`, même
-dans une consolidation, d'un index cluster, unique, de clé primaire ou appuyant une contrainte.
 
 Par serveur : `synthese.md`, une ligne par base (recommandations, gain total, avertissements).
 
-Mon choix : Markdown pour les rapports, faciles à relire, à convertir et à joindre.
+Rapports en Markdown.
 
 ## 9. Les suggestions de l'IA
 
 goDTA ne demande rien à un modèle. Le va-et-vient passe par des fichiers :
 
 1. après `collect` (et éventuellement un premier `evaluate`), Claude lit `result.json` ;
-2. il écrit ses candidats dans un fichier JSON structuré (table, clés ordonnées, inclus, raison) ;
+2. il écrit ses candidats dans un fichier JSON structuré (table, clés ordonnées avec leur sens,
+   inclus, raison) ;
 3. `evaluate --suggestions <fichier>` les évalue exactement comme les candidats de l'algorithme,
-   après la même confrontation à l'existant.
+   après la même confrontation à l'existant (§8.3), avec la réserve sur les statistiques en mode
+   labo (§8.4).
 
 Un candidat est une structure, jamais un texte SQL exécuté tel quel : goDTA régénère le DDL à
 partir de la structure, après avoir vérifié que la table et les colonnes existent.
@@ -283,49 +433,58 @@ coût estimé est écartée avec ses chiffres.
 - Binaire : `tools/cmd/godta`, code dans `tools/internal/godta` (et `tools/internal/dotenv`).
   Construit par `scripts/build-tools.*` vers `plugins/sqlserver-toolkit/bin/` comme les autres.
 - Skill : `plugins/sqlserver-toolkit/skills/index-advisor/` (nom au choix du constructeur), qui
-  décrit à Claude les phases, la règle de validation avant toute écriture sur un profil `prod`
-  (même règle que dans `AGENTS.md`), et le format du fichier de suggestions.
+  reprend les règles d'`AGENTS.md` sans les affaiblir : sur un profil `prod`, nommer le profil et
+  attendre un oui avant la première requête, `collect` compris ; avant toute phase d'écriture,
+  montrer le plan d'exécution de `--dry-run` et attendre un oui à ce plan, sur tout profil ; le
+  format du fichier de suggestions.
 - `AGENTS.md` : une section goDTA, dont l'exception explicite à « tout passe par `sqlq` ».
 - Sortie standard : un objet JSON par commande, succès comme échec, à la manière de `sqlq`.
   Codes de sortie dans la même logique (`0`, `1` usage, `2` échec après connexion, `3` écriture
-  refusée, `4` connexion impossible).
+  refusée, `4` connexion impossible). Une exécution sur plusieurs bases où certaines échouent
+  rend `2` et dit lesquelles.
 
-## 11. Risques à lever par un spike avant le plan
+## 11. Le spike, avant le plan
 
-Le spike passe avant le plan d'implémentation : le plan ne s'écrit qu'avec ses résultats.
-Ces points conditionnent l'architecture et ne se tranchent qu'en mesurant, sur `sql2022` et
-`sql2025` du labo :
+Le plan d'implémentation ne s'écrit qu'avec les résultats de ce spike, mené sur `sql2022` et
+`sql2025` du labo, et si possible une instance 2016 ou 2019 (version plancher).
 
-1. Syntaxe et comportement exacts des index hypothétiques : valeur de `STATISTICS_ONLY`
-   utilisée par le DTA, droits nécessaires, forme du plan rendu sous `SET AUTOPILOT ON`, prise en
-   compte réelle de l'index par l'optimiseur, compatibilité de `AUTOPILOT` avec les plans de
-   requêtes paramétrées du Query Store. Tout ceci est non documenté.
-2. Les statistiques d'un index hypothétique sur un clone. Le clone copie les statistiques
-   existantes mais ne contient aucune ligne : les statistiques calculées pour un nouvel index
-   hypothétique seraient vides, et l'estimation fausse. Pistes : s'appuyer sur les statistiques de
-   colonnes déjà présentes, ou lire les flux de statistiques en production
-   (`DBCC SHOW_STATISTICS … WITH STATS_STREAM`, lecture) et les poser sur le clone
-   (`UPDATE STATISTICS … WITH STATS_STREAM`, non documenté), ce que fait le DTA avec un serveur de
-   test. Le spike doit mesurer si les coûts estimés sur clone et sur base pleine concordent.
-3. Rejouer une requête du Query Store pour obtenir son plan estimé : texte paramétré
-   (`@P1 int, …`), valeurs des paramètres reniflés à reprendre du plan, requêtes à table
-   temporaire ou dans une procédure. Ce qui ne peut pas être rejoué est listé comme tel.
-4. `OPENROWSET(BULK …, SINGLE_BLOB)` sur le fichier de sauvegarde : droits, taille maximale, le
-   fichier encore verrouillé juste après le `BACKUP`.
-5. Présence du Query Store dans le clone selon la version.
+Déjà établi par le panel sur 2022 CU26 (à reconfirmer sur 2025) : `STATISTICS_ONLY = -1`, la
+syntaxe `DBCC AUTOPILOT (typeid [, dbid [, {maxQueryCost | tabid [, indid [, pages [, flag [,
+rowcounts]]]]} ]])` (obtenue par `DBCC TRACEON(2588); DBCC HELP('AUTOPILOT')`), le masquage des
+index non déclarés, la remise à zéro par le type 5, le paramètre `pages`, la copie du Query Store
+par le clone, le rapatriement par `OPENROWSET`, `xp_delete_files`, la persistance d'`IsClone`, le
+fonctionnement sous un utilisateur `db_owner` sans `sysadmin`.
 
-Si le point 2 échoue, le mode labo ne donne que des estimations dégradées ; le document devra
-alors être révisé avant le plan.
+Reste à mesurer :
+
+1. Le rejeu des requêtes paramétrées par procédure temporaire (§8.5) : plan de l'instruction
+   interne, valeurs reniflées, types `MAX`, requêtes dans des procédures, requêtes à tables
+   temporaires ; proportion des requêtes du Query Store de la base de démonstration effectivement
+   rejouables.
+2. Les statistiques sur le labo : un index hypothétique sans statistiques propres, sur un clone
+   contenant des statistiques `godta_*` de mêmes colonnes, donne-t-il le même coût que sur la
+   source ? Cas d'une colonne, de colonnes corrélées, de valeurs très asymétriques. C'est le
+   point qui décide de la valeur du mode labo.
+3. `INSERT`, `UPDATE`, `DELETE`, `MERGE` sous `AUTOPILOT` : compilés seulement, sur chaque forme.
+4. Le comportement de `DBCC AUTOPILOT` et de `STATISTICS_ONLY = -1` sur 2016 (ou la version
+   plancher retenue) et sur Managed Instance si elle reste dans le périmètre.
+5. Le nombre de pages à donner à `AUTOPILOT` : l'estimation de §8.5 contre la taille d'un index
+   réel de même définition.
+
+Si le point 1 échoue largement, goDTA ne mesure que les requêtes non paramétrées et les
+procédures, et le document est révisé. Si le point 2 échoue, le mode labo est retiré.
 
 ## 12. Ce qui est laissé au constructeur
 
 - les noms des sous-commandes et des drapeaux, dans l'esprit de §7 et §8 ;
 - l'heuristique fine des candidats (§8.3) et la formule du score (§8.6), sous les contraintes
   données ;
-- le format exact des fichiers JSON de l'espace de travail ;
-- les seuils par défaut (top N, délai de verrou, taille maximale du fichier rapatrié).
+- le format exact des fichiers JSON de l'espace de travail et du plan d'exécution ;
+- les seuils par défaut (top N, délai de verrou, nombre de tentatives de `DROP`, taille maximale
+  du fichier rapatrié, plafond des combinaisons) ;
+- la façon de poser le nom d'application `db-ai-toolkit/godta`.
 
-## 13. Décisions prises pendant le brainstorming
+## 13. Décisions
 
 Par Rudi :
 
@@ -342,21 +501,65 @@ Par Rudi :
 - Aucun index en doublon de l'existant.
 - Pas d'avertissement sur la sortie des données du client en mode labo : ses contrats la couvrent.
 - sqlferret lu par son dossier de plans, sans modifier sqlferret.
+- Mode labo gardé, au prix d'une écriture validée de statistiques `godta_*` en production avant
+  le clone (décidé après la mesure du panel).
 
-Par moi, à vérifier à la lecture :
+Par Claude, à vérifier à la lecture :
 
-- importer `tools/internal/sqlq` plutôt qu'appeler `sqlq` ;
-- un profil `readwrite` distinct en plus de `--allow-write` ;
-- `--dry-run` sur toute phase d'écriture ;
-- rapatriement du clone par `OPENROWSET(BULK)` plutôt que par partage réseau ;
+- importer `tools/internal/sqlq` plutôt qu'appeler `sqlq`, sous un nom d'application propre ;
+- un profil `readwrite` distinct en plus de `--allow-write`, et `--allow-write` aussi pour le labo ;
+- `--dry-run` qui écrit un plan d'exécution, seul exécutable ensuite ;
+- statistiques créées avant le clone pour que le clone les copie, `STATS_STREAM` réservé aux
+  suggestions arrivées après ;
+- rapatriement du clone par `OPENROWSET(BULK)`, suppression par `xp_delete_files` ;
 - goDTA ne pilote pas podman ;
-- sqlferret pas lu par DuckDB ;
-- `collect` toujours sur la source, le clone ne sert qu'à `evaluate` ;
-- redondances entre index existants signalées sans `DROP` ni gain ;
-- jamais de `DROP` d'un index cluster, unique, de clé primaire ou de contrainte ;
-- spike avant le plan, pas de plan à branches ;
-- `sys.dm_exec_requests` écarté ;
-- pas de suppression d'index hors consolidation ;
-- rowstore non cluster seulement ;
-- rapports en Markdown ;
+- `collect` toujours sur la source ;
+- coût de maintenance tiré des requêtes d'écriture du Query Store, les DMV à titre indicatif ;
+- remplacement mesuré en masquant l'index remplacé sous `AUTOPILOT` ;
+- modèle de couverture de §8.3, élargissement d'un index de contrainte en « à discuter » ;
+- statistiques `_WA_Sys_*` auto-créées listées, pas supprimées ;
+- sqlferret comme source de candidats seulement ;
+- rowstore non cluster seulement, rapports en Markdown ;
 - un spike de mesure (§11) avant le plan.
+
+## 14. Relecture du panel
+
+Panel du 2026-11-08 sur le commit `7cd6647` : agy (Gemini 4 Argon) directif et neutre, codex
+(gpt-6-sol) directif et neutre, un sous-agent Claude neutre. Tous ont exécuté sur `sql2022`
+(2022 CU26). Rapports dans le répertoire de travail de la session, non versionnés. Union des
+constats, regroupés par mécanisme ; entre crochets, qui l'a trouvé (A = agy, C = codex,
+Cl = Claude ; d = directif, n = neutre).
+
+| Constat | Traitement |
+|---|---|
+| `STATISTICS_ONLY` sans valeur crée un index sans statistiques [Ad, An, Cd, Cn] | `= -1` imposé, §8.5 |
+| `SET AUTOPILOT ON` doit être seul dans son lot, sur la même connexion ; en cas d'échec la requête s'exécute pour de bon [Cl, Cn, An] | connexion épinglée, vérification du lot et du résultat, §6 et §8.5 |
+| Un index réel non déclaré à `AUTOPILOT` est caché [Ad], vérifié par le contrôleur | déclaration de tous les index réels ; sert aussi à mesurer un remplacement, §8.5 |
+| Sans `pages`, l'index hypothétique compte une page [Ad] | estimation du nombre de pages, §8.5 et §11.5 |
+| La liste `AUTOPILOT` persiste dans la session [An, Cl] | remise à zéro par le type 5, §8.5 |
+| Le texte paramétré du Query Store ne se rejoue pas tel quel ; `sp_executesql`, RPC, `DECLARE`, `OPTIMIZE FOR` échouent [Ad, An] | piste de la procédure temporaire, point 1 du spike, §8.5 et §11 |
+| Sur un clone, colonnes sans statistique et colonnes corrélées donnent des coûts faux, avant comme après [Ad, An, Cd, Cl] ; `STATS_STREAM` ne marche que d'un objet de mêmes colonnes [Ad, An, Cd] | statistiques `godta_*` créées en production avant le clone, décision de Rudi, §8.4 ; point 2 du spike |
+| Verrous : `S` à la création, `Sch-M` à la suppression, pas `Sch-M` partout ; une suppression bloquée laisse l'index [Ad, An, Cd, Cl] | texte corrigé, suppression retentée et journalisée, §8.5 |
+| Les plans en cache ne sont pas invalidés [Ad, An, Cd, Cl] | affirmation retirée, §8.5 |
+| La création efface les suggestions d'index manquants de la table [An] | `collect` avant, effet dit dans le plan d'exécution, §8.5 |
+| Statistiques `_WA_Sys_*` auto-créées en production pendant l'évaluation [Cl, An] | listées, non supprimées, §8.5 |
+| Les index hypothétiques préexistants faussent la confrontation et sont copiés par le clone [Cl] | `is_hypothetical = 0`, restes listés, §8.2 |
+| Règles de doublon : clé de l'index cluster implicite, filtres, index désactivés, sens des clés, permutations d'égalités, clés de l'existant couvrant les inclus, candidat préfixe d'un existant, inclus perdus au remplacement, index uniques, intersection [Ad, An, Cd, Cn, Cl] | modèle de couverture réécrit, §8.3 |
+| Élargir un index de contrainte est impossible (1907, 3723) [An, Cl] | « à discuter » sans script, §8.3 |
+| Un `DROP` de remplacement n'est pas mesuré, et ignore indications, repères de plan, plans forcés (erreur 308) [Cn, Cl] | mesure en masquant l'index, exclusion des index nommés, §8.2, §8.3, §8.6 |
+| Les compteurs de maintenance ne se rapportent pas à une fenêtre, unités différentes, remis à zéro par une reconstruction ; un `UPDATE` hors colonnes ne maintient pas un index non cluster [Ad, An, Cd, Cn] | maintenance tirée des écritures du Query Store, DMV indicatives, §8.6 |
+| Cache de plans : compteurs depuis la compilation, `query_hash` n'est pas `query_id` [Ad, Cd, Cn] ; `dbid` nul pour l'ad hoc [Ad, laissé de côté par lui] | période réelle affichée, correspondances par hash présentées comme telles, `dm_exec_plan_attributes`, §8.2 |
+| `tools/internal/sqlplan` ne lit pas le XML [Ad, An, Cd, Cn, Cl] | nouveau lecteur à écrire, §8.3 |
+| Le dossier de plans sqlferret n'a ni texte complet, ni politique de caviardage, ni base, ni compte par instruction [Ad, An, Cd, Cn, Cl] | sqlferret source de candidats seulement, §8.2 |
+| `collect` sans la confirmation de production d'`AGENTS.md` [Cn, An] | confirmation avant la première requête, §7 et §10 |
+| `--dry-run` ne peut pas montrer l'instruction exacte [Cl] | plan d'exécution écrit puis seul exécuté, §7.1 |
+| `evaluate --target lab` écrit sans `--allow-write` ; un profil de production pris pour le labo écrirait en production [Ad, Cl] | `--allow-write`, refus d'un profil `prod`, contrôle `IsClone`, §7 |
+| `RESTORE` sans `WITH MOVE` échoue sur le conteneur [An] | `FILELISTONLY` puis `WITH MOVE`, §8.4 |
+| `cleanup` des fichiers de sauvegarde sans mécanisme nommé [An, Cl] ; motif `LIKE` dont `_` est un joker [Cl] | journal avant création, `xp_delete_files`, motif échappé, §7.2 |
+| Nom d'application `sqlq` réutilisé [Cl] | `db-ai-toolkit/godta`, §6 |
+| `--until` justifié par des rejeux « sur le même clone » alors que `collect` ne lit pas le clone [Cl] | phrase retirée, §8.2 |
+| Un clone est en lecture seule (erreur 3906) [Ad, Cd] | `SET READ_WRITE` après restauration, §8.4 |
+
+Constats rejetés : aucun. Les points vérifiés sans défaut (copie du Query Store par le clone,
+`OPENROWSET` juste après le `BACKUP`, import de `tools/internal/sqlq` sans changer les garanties
+du binaire `sqlq`, droits `db_owner` suffisants) sont repris en §11 comme acquis.
