@@ -14,6 +14,7 @@ import (
 
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/model"
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/showplan"
+	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/sqlferret"
 )
 
 // Origins of a candidate.
@@ -130,53 +131,9 @@ func appendNew(list []int, ids ...int) []int {
 // index produces none and is listed in w.Skipped. The result is sorted by
 // (Table, Keys, Include) and does not depend on the order of the input.
 func Generate(w *model.Workload) []model.Candidate {
-	r := newResolver(w)
-	var raw []model.Candidate
-	skipped := map[int]bool{}
-	add := func(t *model.Table, n need, origin string, queries []int64) {
-		if t.HasColumnstore {
-			skipped[t.ObjectID] = true
-			return
-		}
-		if isView(t) {
-			return
-		}
-		if c, ok := build(t, n); ok {
-			c.Origin = origin
-			c.Queries = queries
-			raw = append(raw, c)
-		}
-	}
-
+	g := newGenerator(w)
 	for _, q := range w.Queries {
-		if q.Plan == nil {
-			continue
-		}
-		for _, st := range q.Plan.Statements {
-			if st.Root == nil {
-				continue
-			}
-			for _, rd := range reads(r, st) {
-				add(rd.t, rd.n, OriginAlgorithm, []int64{q.QueryID})
-			}
-			for _, m := range st.Missing {
-				t := r.table(m.Obj)
-				if t == nil {
-					continue
-				}
-				n := need{}
-				for _, c := range m.Equality {
-					n.eq = appendNew(n.eq, r.columnByName(t, c))
-				}
-				for _, c := range m.Inequality {
-					n.rng = appendNew(n.rng, r.columnByName(t, c))
-				}
-				for _, c := range m.Include {
-					n.out = appendNew(n.out, r.columnByName(t, c))
-				}
-				add(t, n, OriginMissingIndex, []int64{q.QueryID})
-			}
-		}
+		g.plan(q.Plan, OriginAlgorithm, OriginMissingIndex, []int64{q.QueryID})
 	}
 	for _, m := range w.MissingIndexes {
 		t := w.Tables[m.Table]
@@ -189,22 +146,117 @@ func Generate(w *model.Workload) []model.Candidate {
 				n.rng = appendNew(n.rng, id)
 			}
 		}
-		add(t, n, OriginMissingIndex, nil)
+		g.add(t, n, OriginMissingIndex, nil)
 	}
+	return g.finish()
+}
 
-	ids := make([]int, 0, len(skipped))
-	for id := range skipped {
+// FromSources builds the candidates of the sqlferret plans of the database
+// of w (spec section 8.2), by the rules of Generate, with Origin
+// OriginSqlferret for the reads and the missing index groups alike. A source
+// of another database, or whose database is unknown, is ignored. The
+// candidates have no query of their own: BindQueries gives them the queries
+// of the workload that read their table, which is how their gain is
+// measured.
+func FromSources(srcs []sqlferret.Source, w *model.Workload) []model.Candidate {
+	g := newGenerator(w)
+	for _, s := range srcs {
+		if s.Database == "" || !g.r.same(s.Database, w.Database.Name) {
+			continue
+		}
+		g.plan(s.Plan, OriginSqlferret, OriginSqlferret, nil)
+	}
+	return BindQueries(g.finish(), w)
+}
+
+// generator gathers the raw candidates of Generate and FromSources.
+type generator struct {
+	w       *model.Workload
+	r       resolver
+	raw     []model.Candidate
+	skipped map[int]bool
+}
+
+func newGenerator(w *model.Workload) *generator {
+	return &generator{w: w, r: newResolver(w), skipped: map[int]bool{}}
+}
+
+func (g *generator) add(t *model.Table, n need, origin string, queries []int64) {
+	if t.HasColumnstore {
+		g.skipped[t.ObjectID] = true
+		return
+	}
+	if isView(t) {
+		return
+	}
+	if c, ok := build(t, n); ok {
+		c.Origin = origin
+		c.Queries = queries
+		g.raw = append(g.raw, c)
+	}
+}
+
+// plan adds the candidates of the reads and of the missing index groups of
+// one plan.
+func (g *generator) plan(p *showplan.Plan, readOrigin, missingOrigin string, queries []int64) {
+	if p == nil {
+		return
+	}
+	for _, st := range p.Statements {
+		if st.Root == nil {
+			continue
+		}
+		for _, rd := range reads(g.r, st) {
+			g.add(rd.t, rd.n, readOrigin, queries)
+		}
+		for _, m := range st.Missing {
+			t := g.r.table(m.Obj)
+			if t == nil {
+				continue
+			}
+			n := need{}
+			for _, c := range m.Equality {
+				n.eq = appendNew(n.eq, g.r.columnByName(t, c))
+			}
+			for _, c := range m.Inequality {
+				n.rng = appendNew(n.rng, g.r.columnByName(t, c))
+			}
+			for _, c := range m.Include {
+				n.out = appendNew(n.out, g.r.columnByName(t, c))
+			}
+			g.add(t, n, missingOrigin, queries)
+		}
+	}
+}
+
+// finish lists the columnstore tables in w.Skipped and merges the
+// candidates.
+func (g *generator) finish() []model.Candidate {
+	ids := make([]int, 0, len(g.skipped))
+	for id := range g.skipped {
 		ids = append(ids, id)
 	}
 	slices.Sort(ids)
 	for _, id := range ids {
-		t := w.Tables[id]
+		t := g.w.Tables[id]
 		msg := t.Schema + "." + t.Name + ": " + RuleColumnstore
-		if !slices.Contains(w.Skipped, msg) {
-			w.Skipped = append(w.Skipped, msg)
+		if !slices.Contains(g.w.Skipped, msg) {
+			g.w.Skipped = append(g.w.Skipped, msg)
 		}
 	}
-	return merge(raw)
+	return merge(g.raw)
+}
+
+// TableByName returns the table schema.name that collect read, the names
+// compared as the database collation compares them, nil when there is none.
+func TableByName(w *model.Workload, schema, name string) *model.Table {
+	return newResolver(w).table(showplan.ObjRef{Schema: schema, Table: name})
+}
+
+// ColumnByName returns the column_id of the column name of t, compared as
+// the database collation compares names, 0 when t has none.
+func ColumnByName(w *model.Workload, t *model.Table, name string) int {
+	return newResolver(w).columnByName(t, name)
 }
 
 type read struct {

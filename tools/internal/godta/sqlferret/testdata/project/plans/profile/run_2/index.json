@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "plans": [
+    {
+      "plan_hash": "9C8D053AFE85AF1C",
+      "query_hash": "EEE21141C581EEBE",
+      "statement_type": "SELECT",
+      "executions": 3,
+      "duration_us": { "min": 40210, "max": 41022 },
+      "captured_at_utc": { "first": "2026-11-08T18:01:02.100000Z",
+                           "worst": "2026-11-08T18:01:02.100000Z" },
+      "files": {
+        "first":  "p_9C8D053AFE85AF1C.sqlplan",
+        "digest": "p_9C8D053AFE85AF1C.digest.json"
+      },
+      "finding_kinds": ["large_scan"]
+    },
+    {
+      "plan_hash": "528646337168E8A7",
+      "query_hash": "8E4C5B0CE525548B",
+      "statement_type": "SELECT",
+      "executions": 5,
+      "duration_us": { "min": 175, "max": 230 },
+      "captured_at_utc": { "first": "2026-11-08T18:03:11.000000Z",
+                           "worst": "2026-11-08T18:03:11.000000Z" },
+      "files": {
+        "first":  "p_528646337168E8A7.sqlplan",
+        "digest": "p_528646337168E8A7.digest.json"
+      },
+      "finding_kinds": []
+    }
+  ]
+}
