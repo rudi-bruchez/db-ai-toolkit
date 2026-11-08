@@ -2,9 +2,10 @@
 
 Date : 2026-11-08
 Statut : révisé après la relecture du panel (agy et codex, prompts directif et neutre, plus un
-sous-agent Claude), puis après le spike de §11, mené sur SQL Server 2019 CU32, 2022 CU26 et
-2025 CU7. Le traitement de chaque constat du panel est en §14, les résultats du spike en §15.
-Approuvé par Rudi le 2026-11-08. Prochaine étape : le plan d'implémentation.
+sous-agent Claude), puis après le spike de §11, mené sur SQL Server 2016 SP3, 2017 CU31, 2019 CU32,
+2022 CU26 et 2025 CU7. Le traitement de chaque constat du panel est en §14, les résultats du spike en §15.
+Approuvé par Rudi le 2026-11-08 ; 2016 et 2017 ajoutés au spike à sa demande le même jour.
+Prochaine étape : le plan d'implémentation.
 
 ## 1. Le besoin
 
@@ -168,8 +169,9 @@ un relecteur sur ses propres objets).
 Avant toute création, l'identité de chaque objet (base, table, nom, chemin du fichier de
 sauvegarde) est écrite dans l'espace de travail : c'est ce journal, et non une recherche par
 motif, qui guide d'abord `cleanup`. Le motif sert de filet. Les fichiers de sauvegarde se
-suppriment par la connexion SQL avec `master.sys.xp_delete_files` (non documentée, mesurée sur
-Linux 2022 seulement ; sur les versions qui ne l'ont pas, `xp_delete_file`, à mesurer en §11) ; un fichier dont le chemin n'a pas été journalisé avant le crash est signalé, pas cherché.
+suppriment par la connexion SQL avec `master.dbo.xp_delete_file 0, <chemin>` (non documentée,
+mesurée sur 2016 à 2025, Linux et Windows ; elle ne supprime qu'un fichier de sauvegarde, ce qui
+suffit). `xp_delete_files` n'existe pas sur 2016 (erreur 2812) et n'est pas utilisée ; un fichier dont le chemin n'a pas été journalisé avant le crash est signalé, pas cherché.
 
 ## 8. Le déroulement
 
@@ -321,7 +323,8 @@ Cette phase vient après la génération des candidats, parce qu'elle en dépend
    (prédicat, jointure, regroupement, tri), une statistique d'une colonne, puisque le labo n'en
    créera pas. La statistique multicolonne seule ne suffit pas : sans les histogrammes d'une
    colonne que la source crée d'elle-même à la compilation, le clone estime 633 lignes là où la
-   source en estime 24 858, 9 et 143 (mesuré sur 2025, §15). Échantillonnage par défaut du
+   source en estime 24 858, 9 et 143 (mesuré sur 2025, §15). La statistique multicolonne ne
+   reste pas non plus telle quelle sur le labo (étape 8). Échantillonnage par défaut du
    moteur. C'est une lecture échantillonnée de la table (183 ms pour 7,8 millions de lignes) et
    une écriture de métadonnées sous verrou `Sch-S`, sans recompilation des plans en cache
    (mesuré), listée dans le plan d'exécution.
@@ -333,13 +336,14 @@ Cette phase vient après la génération des candidats, parce qu'elle en dépend
    la table et fait recompiler ses plans en cache à leur prochaine exécution (mesuré :
    `plan_generation_num` passe de 1 à 2) : même délai de verrou court, mêmes tentatives et même
    journalisation pour `cleanup` que le `DROP INDEX` de §8.5.
-4. `BACKUP DATABASE` du clone, compressé, dans le répertoire de sauvegarde par défaut de
-   l'instance ou dans `--backup-dir`, chemin journalisé avant.
+4. `BACKUP DATABASE` du clone, compressé quand l'édition le permet (Express refuse
+   `COMPRESSION`), dans le répertoire de sauvegarde par défaut de l'instance ou dans
+   `--backup-dir`, chemin journalisé avant.
 5. Rapatriement du fichier par la connexion SQL, `OPENROWSET(BULK …, SINGLE_BLOB)`, sans partage
    réseau (mesuré : lecture complète juste après le `BACKUP`, sans verrou ; 3,6 Mo pour la base
    de démonstration avec son Query Store). Le résultat est un `varbinary(max)`, plafonné à 2 Go :
    au-delà, ou au-delà d'une limite configurable plus basse, la phase s'arrête et le dit.
-6. Suppression de la base clone et du fichier sur la source (`xp_delete_files`).
+6. Suppression de la base clone et du fichier sur la source (`xp_delete_file`, §7.2).
 7. Dépôt du fichier dans un répertoire de l'hôte monté dans le conteneur (chemin hôte et chemin
    vu par le conteneur en configuration), `RESTORE FILELISTONLY`, puis `RESTORE … WITH MOVE` de
    chaque fichier logique vers le répertoire de données du labo (les chemins de la source, souvent
@@ -359,6 +363,16 @@ Cette phase vient après la génération des candidats, parce qu'elle en dépend
    de processeurs que ce `MAXDOP`, les plans parallèles diffèrent et le rapport le dit.
    Microsoft ne prend en charge un clone que comme copie en lecture seule pour le diagnostic :
    l'usage en écriture qu'en fait goDTA sort de ce cadre, c'est assumé et limité au labo.
+8. Sur le labo, pour chaque statistique multicolonne `godta_*` de l'étape 1 : lecture de son flux
+   (`DBCC SHOW_STATISTICS … WITH STATS_STREAM`, sur le clone lui-même, qui l'a copiée), gardé dans
+   l'espace de travail, puis `DROP STATISTICS` sur le labo. Le flux est posé sur l'index
+   hypothétique de mêmes clés au moment de l'évaluer (§8.5, étape 2). Laisser la statistique
+   multicolonne sur le labo fausse la référence là où la source n'en a pas : sur 2016, 630 lignes
+   estimées sur le labo contre 24 725 sur la source, alors que 2025 l'ignorait (mesuré). Les
+   statistiques d'une colonne restent : ce sont celles que la source crée d'elle-même à la
+   première compilation. Ainsi le labo a pour la référence les statistiques de la source, et
+   pour le candidat celles qu'aurait l'index hypothétique sur la source : estimations et coûts
+   identiques sur 2016, 2019 et 2025 (§15).
 
 goDTA ne gère pas le conteneur lui-même (ni démarrage ni arrêt) : il se connecte au profil du
 labo.
@@ -382,10 +396,10 @@ Mécanisme, sur une connexion épinglée, chaque instruction dans son propre lot
    court. La valeur `-1` est obligatoire : sans valeur, l'index est créé sans statistique et
    l'estimation est fausse même sur une base pleine (mesuré par quatre relecteurs). Sur le labo,
    la table est vide : l'index obtient un objet de statistiques vide (en-tête à `NULL`, mesuré),
-   et l'optimiseur estime à partir des statistiques `godta_*` copiées par le clone : coûts et
-   estimations identiques à ceux de la source sur 2019, 2022 et 2025 (§15). Poser sur l'index
-   hypothétique le flux `STATS_STREAM` de la statistique de mêmes colonnes ne change rien
-   (mesuré) et n'est pas fait. Sur la source, les statistiques de l'index hypothétique sont
+   sur lequel goDTA pose aussitôt le flux de la statistique multicolonne de mêmes clés gardé à
+   l'étape 8 de §8.4 (`UPDATE STATISTICS <table>(<index>) WITH STATS_STREAM = …`, accepté pour un
+   index aux mêmes clés avec des inclus, mesuré). Les statistiques d'un index hypothétique non
+   déclaré n'influencent pas la référence (mesuré sur 2016). Sur la source, les statistiques de l'index hypothétique sont
    échantillonnées, alors que celles d'un index réel sont calculées sur toute la table à sa
    création : les estimations changent après la création réelle (25 992 lignes estimées avec
    l'hypothétique, 10 963 avec le réel, mesuré). Le rapport le dit à côté des gains ;
@@ -403,7 +417,10 @@ Mécanisme, sur une connexion épinglée, chaque instruction dans son propre lot
    nombre de pages de données (`in_row_data_page_count`), pas de pages utilisées (2 pages
    déclarées au lieu d'1 faisaient passer un coût de 0,0037 à 0,0044, mesuré). Les vues indexées
    se déclarent par le type 6 : `DBCC AUTOPILOT(6, <db>, <vue>, 1, 0)` ; déclarées par le type 0,
-   elles restent invisibles (mesuré sur les trois versions). Un index réel non déclaré est caché
+   elles restent invisibles (mesuré de 2017 à 2025). Seules les éditions Enterprise et Developer
+   substituent d'elles-mêmes une vue indexée à ses tables ; ailleurs (Standard, Express), une vue
+   indexée ne sert que par `NOEXPAND`, et elle est alors visible sous `AUTOPILOT` sans
+   déclaration, au même coût (mesuré sur 2016 Express). Le rapport donne l'édition de la source. Un index réel non déclaré est caché
    à l'optimiseur sous `AUTOPILOT` (un seek sur l'index réel à 0,0037 devient un balayage à
    0,436). C'est aussi ce qui permet de mesurer un `DROP` : pour évaluer un remplacement, on ne
    déclare pas l'index remplacé. L'index cluster et le tas sont visibles sans déclaration
@@ -455,6 +472,14 @@ avec un plan identique au `SHOWPLAN_XML` (88 %, §15). Règles tirées des éche
   quand le classement de la base diffère de celui de l'instance, une expression sans colonne
   peut échouer (erreurs 457 et 468, deux requêtes) ; elle est listée « non rejouable
   (classement) » ;
+- seuls se rejouent les textes dont le premier mot-clé, après le préfixe de paramètres, les
+  commentaires et les parenthèses, est `SELECT`, `WITH`, `INSERT`, `UPDATE`, `DELETE` ou
+  `MERGE` ; tout le reste est écarté sans être envoyé. Le type d'instruction du plan ne suffit
+  pas : le Query Store garde aussi le plan de la lecture interne d'un `CREATE INDEX`, d'un
+  `CREATE STATISTICS` ou d'un `RESTORE`, avec `StatementType="SELECT"` ou `"INSERT"`. Rejoués
+  sous `AUTOPILOT` pendant le spike, ces textes n'ont été que compilés (aucun objet créé, base non
+  restaurée, vérifié sur 2017), mais rien ne garantit qu'il en soit ainsi pour toute instruction
+  d'administration ;
 - table temporaire, variable table, objet d'une autre base ou disparu : « non rejouable », avec
   la raison.
 
@@ -657,9 +682,9 @@ Par Claude, à vérifier à la lecture :
 - importer `tools/internal/sqlq` plutôt qu'appeler `sqlq`, sous un nom d'application propre ;
 - un profil `readwrite` distinct en plus de `--allow-write`, et `--allow-write` aussi pour le labo ;
 - `--dry-run` qui écrit un plan d'exécution, seul exécutable ensuite ;
-- statistiques créées avant le clone pour que le clone les copie, `STATS_STREAM` réservé aux
-  suggestions arrivées après ;
-- rapatriement du clone par `OPENROWSET(BULK)`, suppression par `xp_delete_files` ;
+- statistiques créées avant le clone pour que le clone les copie ; sur le labo, statistiques
+  multicolonnes posées sur l'index hypothétique par `STATS_STREAM` puis supprimées (§8.4, étape 8) ;
+- rapatriement du clone par `OPENROWSET(BULK)`, suppression par `xp_delete_file` ;
 - goDTA ne pilote pas podman ;
 - `collect` toujours sur la source ;
 - coût de maintenance tiré des requêtes d'écriture du Query Store, les DMV à titre indicatif ;
@@ -682,9 +707,9 @@ Par Claude, après le spike (§15) :
 - configurations à l'échelle de la base reportées sur le clone ;
 - statistiques d'une colonne pour chaque clé de candidat sans statistique, en plus de la
   multicolonne ;
-- version plancher mesurée : 2019. 2016 et 2017 restent dans le périmètre de §4 mais n'ont pas
-  été mesurés faute d'instance au labo : à mesurer avant de les déclarer pris en charge (question
-  posée à Rudi : quelles versions tournent chez Neoen).
+- 2016 SP3 et 2017 pris en charge, comme demandé par Rudi, après mesure (§15) : rejeu limité aux
+  textes dont le premier mot-clé est sur une liste fermée, `xp_delete_file` partout, compression
+  de la sauvegarde selon l'édition.
 
 ## 14. Relecture du panel
 
@@ -750,9 +775,14 @@ Aucun constat rejeté.
 
 ## 15. Résultats du spike
 
-Mené le 2026-11-08 sur trois instances du labo : `sqltop-test-2019` (2019 CU32), `sql2022`
-(2022 CU26), `sql2025` (2025 CU7), sur une copie restaurée de `PachaDataFormation` (2022 et 2025)
-et une base construite pour l'occasion (2019), jamais sur la base de référence. Outil : un petit
+Mené le 2026-11-08 sur cinq instances : `sqltop-test-2019` (2019 CU32), `sql2022`
+(2022 CU26), `sql2025` (2025 CU7), un conteneur jetable 2017 CU31 (Linux, supprimé ensuite) et
+une instance nommée `GODTA2016` (2016 SP3 Express, Windows Server 2019) installée sur la VM SQL02
+du labo de ryokan, après un instantané libvirt `avant-godta2016-2026-11-08` ; l'instance est
+gardée, arrêtée, en démarrage manuel. Bases : une copie restaurée de `PachaDataFormation` (2022
+et 2025) et une base construite pour l'occasion (2016, 2017, 2019), jamais la base de
+référence. Sur 2016, l'instance n'écoutant pas le réseau, les scripts ont tourné par `sqlcmd`
+dans la VM et les plans ont été lus après coup. Outil : un petit
 programme Go sur `go-mssqldb` v1.11.0, une connexion épinglée (`*sql.Conn`), chaque instruction
 dans son lot, ce que goDTA fera. Scripts et sorties dans le répertoire de travail de la session,
 non versionnés. Tout a été supprimé et les trois instances arrêtées à la fin.
@@ -760,14 +790,14 @@ non versionnés. Tout a été supprimé et les trois instances arrêtées à la 
 | Point | Résultat | Versions |
 |---|---|---|
 | 1. Rejeu par procédure temporaire | marche : plan de l'instruction interne, valeurs reniflées reprises. 122 des 139 requêtes paramétrées dans le périmètre rejouées avec un plan identique au `SHOWPLAN_XML` (88 %) ; 1 716 requêtes ad hoc aussi. Échecs : `OPTION (PLAN PER VALUE)` du PSP (5), variable déclarée par le texte (6), classement de `tempdb` (2), divers (4). Hors périmètre : tables temporaires et variables table (968), autres bases ou objets disparus (141), catalogue système (72), columnstore (54) | 2019, 2022, 2025 |
-| 2. Statistiques sur le labo | le coût d'un index hypothétique sur le clone est identique à celui de la source, y compris sur une colonne sans statistique avant le clone et sur des colonnes corrélées, à trois conditions : statistiques `godta_*` d'une colonne en plus de la multicolonne, `MAXDOP` de la base reporté, statistiques automatiques coupées avant toute compilation. Sans `godta_*` : 1 000 lignes estimées au lieu de 24 ; multicolonne seule : 633 au lieu de 24 858, 9 et 143 | 2019 (clone sauvegardé et restauré), 2022, 2025 |
+| 2. Statistiques sur le labo | le coût d'un index hypothétique sur le clone est identique à celui de la source, y compris sur une colonne sans statistique avant le clone et sur des colonnes corrélées, à quatre conditions : statistiques `godta_*` d'une colonne en plus de la multicolonne, multicolonne posée sur l'index hypothétique puis supprimée du labo, `MAXDOP` de la base reporté, statistiques automatiques coupées avant toute compilation. Sans `godta_*` : 1 000 lignes estimées au lieu de 24 ; multicolonne seule : 633 au lieu de 24 858, 9 et 143 ; multicolonne laissée sur le labo en 2016 : 630 au lieu de 24 725 pour la référence. Avec les quatre conditions : identique sur 2016, 2019 et 2025. Sur 2017 et 2022, mesuré seulement avec la multicolonne laissée sur le labo, ce qui y donnait aussi l'identité | 2016, 2017, 2019 (clone sauvegardé et restauré), 2022, 2025 |
 | 3. Écritures sous `AUTOPILOT` | compilées seulement : `INSERT`, `UPDATE`, `DELETE`, `MERGE`, `BULK INSERT`, aucune ligne écrite ; leur plan contient la maintenance de l'index hypothétique déclaré | 2019, 2022, 2025 |
-| 4. Version plancher | `STATISTICS_ONLY = -1`, `AUTOPILOT` (types 0, 5, 6), procédure temporaire, clone `NO_QUERYSTORE`, `OPENROWSET`, `IsClone` après restauration : identiques sur 2019. 2016, 2017 et Managed Instance non mesurés | 2019 |
+| 4. Version plancher | `STATISTICS_ONLY = -1`, `AUTOPILOT` (types 0, 5, 6), procédure temporaire, `ParameterCompiledValue` et `ParameterDataType` dans les plans du Query Store, écritures compilées seulement, clone `NO_QUERYSTORE`, `OPENROWSET`, `IsClone` après restauration : identiques sur 2016, 2017 et 2019. Sur 2016 : pas de `xp_delete_files`, la statistique multicolonne du clone fausse la référence (étape 8 de §8.4), Express sans compression de sauvegarde ni substitution automatique des vues indexées. Managed Instance non mesurée | 2016 SP3 Express (Windows), 2017 CU31 (Linux), 2019 |
 | 5. Pages | estimation 3 308 contre 3 314 réelles, coût égal à 0,1 % ; index réel à `pages` 0 : taille réelle ; valeur explicite : pages de données, pas pages utilisées ; hypothétique à 0 : sous-estimé | 2022 |
-| 6. Statistiques automatiques, objet vide, `STATS_STREAM` | l'optimiseur se sert des `godta_*` copiées malgré l'objet vide de l'index hypothétique ; `STATS_STREAM` sur l'hypothétique n'apporte rien ; une statistique auto-créée sur le clone est vide ; la mise à jour automatique efface une statistique copiée dont le compteur de modifications dépasse le seuil | 2022, 2025 |
-| 7. Jointures, tas, vues indexées, contrôle | jointures et tas sans difficulté ; vue indexée visible seulement par le type 6 ; index filtré déclaré normalement ; columnstore : erreur 2510 ; contrôle `AUTOPILOT` contre `SHOWPLAN_XML` identique sur les tables utilisateur sauf `INSERT … TABLOCK` parallèle (3 requêtes) | 2019, 2022, 2025 |
+| 6. Statistiques automatiques, objet vide, `STATS_STREAM` | l'optimiseur se sert des `godta_*` copiées malgré l'objet vide de l'index hypothétique ; `STATS_STREAM` posé sur l'hypothétique donne le même résultat sur 2022 et 2025 et devient nécessaire sur 2016 une fois la multicolonne retirée du labo ; les statistiques d'un hypothétique non déclaré n'influencent pas la référence ; une statistique auto-créée sur le clone est vide ; la mise à jour automatique efface une statistique copiée dont le compteur de modifications dépasse le seuil | 2022, 2025 |
+| 7. Jointures, tas, vues indexées, contrôle | jointures et tas sans difficulté ; vue indexée visible seulement par le type 6, ou par `NOEXPAND` sans déclaration (Express) ; index filtré déclaré normalement ; columnstore : erreur 2510 ; contrôle `AUTOPILOT` contre `SHOWPLAN_XML` identique sur les tables utilisateur sauf `INSERT … TABLOCK` parallèle (3 requêtes) | 2019, 2022, 2025 |
 | 8. `CREATE` et `DROP STATISTICS` | création sous `Sch-S`, sans recompilation, 183 ms pour 7,8 millions de lignes échantillonnées ; suppression sous `Sch-M`, recompilation des plans de la table | 2022 |
-| 9. `xp_delete_files`, `xp_delete_file` | les deux suppriment un fichier de sauvegarde sur Linux ; Windows non mesuré | 2019, 2022, 2025 |
+| 9. `xp_delete_files`, `xp_delete_file` | `xp_delete_file 0` supprime un fichier de sauvegarde partout ; `xp_delete_files` aussi, sauf sur 2016 où elle n'existe pas (erreur 2812) | 2016 (Windows), 2017, 2019, 2022, 2025 (Linux et Windows) |
 
 Découvertes hors liste, reportées dans le texte :
 
@@ -781,8 +811,9 @@ Découvertes hors liste, reportées dans le texte :
 
 Restent ouverts, à traiter dans le plan ou avant de déclarer la prise en charge :
 
-- 2016, 2017 et Managed Instance ;
-- `xp_delete_files` sous Windows ;
+- Managed Instance ;
+- 2017 et 2022 avec la statistique multicolonne posée sur l'hypothétique puis retirée du labo
+  (correction mesurée sur 2016, 2019 et 2025) : à couvrir par le test d'intégration du plan ;
 - l'écart entre source et labo dû au matériel : nombre de processeurs inférieur au `MAXDOP`
   effectif, mémoire disponible pour les allocations (`EstimatedAvailableMemoryGrant`), non
   mesuré entre deux instances différentes (toutes les mesures source contre clone l'ont été sur
