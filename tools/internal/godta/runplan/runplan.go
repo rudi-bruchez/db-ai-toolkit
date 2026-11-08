@@ -22,6 +22,7 @@ import (
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/candidate"
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/conn"
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/model"
+	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/showplan"
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/tsql"
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/workspace"
 )
@@ -66,6 +67,10 @@ type Plan struct {
 	Steps         []Step             `json:"steps"`
 	Schema        []TableFingerprint `json:"schema"`
 	SideEffects   []string           `json:"side_effects"`
+	// MaxBytes and ChunkBytes are the limits of clone's transfer of the
+	// backup file: the largest file it accepts, and the size of each read.
+	MaxBytes   int64 `json:"max_bytes,omitempty"`
+	ChunkBytes int64 `json:"chunk_bytes,omitempty"`
 	// Skipped says which candidates or journal entries got no step, and why.
 	Skipped  []string `json:"skipped,omitempty"`
 	Checksum string   `json:"checksum,omitempty"`
@@ -504,4 +509,275 @@ ORDER BY i.object_id, i.index_id, ic.is_included_column, ic.key_ordinal, ic.colu
 		result = append(result, *f)
 	}
 	return result, nil
+}
+
+// Limits of clone's transfer of the backup file (spec section 8.4, step 5).
+const (
+	// DefaultChunkBytes is the size of each read of the file. Every read
+	// reads the whole file again on the server (measured: a 1 MiB chunk costs
+	// almost a full read), so the chunk is large; it bounds what the process
+	// holds in memory.
+	DefaultChunkBytes int64 = 256 << 20
+	// MaxFileBytes is the ceiling of a varbinary(max), the type
+	// OPENROWSET(BULK ..., SINGLE_BLOB) returns.
+	MaxFileBytes int64 = 1<<31 - 1
+)
+
+// serverDatabase is the Database of the journal entries of objects that
+// belong to the server, not to a database: the clone database and the backup
+// file (cleanup.ServerDatabase, which runplan cannot import).
+const serverDatabase = "master"
+
+// StatSpec is one statistics object clone creates on the source (spec
+// section 8.4, step 1): on Table (an object_id), on Columns (column_ids, in
+// order). Multi marks the multicolumn statistics of a candidate's keys; the
+// others have one column. Name is the suffix of the object's name, s<n>: the
+// name is "godta_<runID>_" + Name.
+type StatSpec struct {
+	Table   int
+	Name    string
+	Columns []int
+	Multi   bool
+}
+
+// noStatsTypes are the column types CREATE STATISTICS refuses.
+var noStatsTypes = []string{"xml", "text", "ntext", "image", "geography", "geometry"}
+
+// CloneStats lists the statistics clone creates on the source: one
+// multicolumn statistics per candidate of two keys or more, on its keys in
+// order (the same keys once per table); then one single-column statistics
+// per column without statistics of its own, a key of a candidate or a column
+// a query of the workload seeks, filters or sorts on, in the order they
+// first appear. "Of its own" means an existing statistics object led by the
+// column (the histogram is on the first column): the multicolumn statistics
+// clone creates do not count, since the lab drops them (step 8). Covered
+// candidates, tables not in the workload, columnstore tables and indexed
+// views get none.
+func CloneStats(w *model.Workload, cands []model.Candidate) []StatSpec {
+	var out []StatSpec
+	usable := func(t *model.Table) bool {
+		if t == nil || t.HasColumnstore {
+			return false
+		}
+		for _, ix := range t.Indexes {
+			if ix.Kind == model.KindViewClustered {
+				return false
+			}
+		}
+		return true
+	}
+	column := func(t *model.Table, id int) (model.Column, bool) {
+		for _, c := range t.Columns {
+			if c.ID == id {
+				return c, true
+			}
+		}
+		return model.Column{}, false
+	}
+	statable := func(t *model.Table, id int) bool {
+		c, ok := column(t, id)
+		return ok && !slices.Contains(noStatsTypes, strings.ToLower(c.Type))
+	}
+
+	type single struct{ table, col int }
+	var singles []single
+	addSingle := func(t *model.Table, id int) {
+		s := single{t.ObjectID, id}
+		if !statable(t, id) || slices.Contains(singles, s) {
+			return
+		}
+		singles = append(singles, s)
+	}
+	for _, c := range cands {
+		t := w.Tables[c.Table]
+		if c.Decision == model.DecisionCovered || !usable(t) || len(c.Keys) == 0 {
+			continue
+		}
+		cols := make([]int, len(c.Keys))
+		ok := true
+		for i, k := range c.Keys {
+			cols[i] = k.ColumnID
+			ok = ok && statable(t, k.ColumnID)
+		}
+		if !ok {
+			continue
+		}
+		if len(cols) > 1 && !slices.ContainsFunc(out, func(s StatSpec) bool {
+			return s.Table == c.Table && slices.Equal(s.Columns, cols)
+		}) {
+			out = append(out, StatSpec{Table: c.Table, Columns: cols, Multi: true})
+		}
+		for _, id := range cols {
+			addSingle(t, id)
+		}
+	}
+	for _, q := range w.Queries {
+		queryColumns(w, q.Plan, func(t *model.Table, id int) {
+			if usable(t) {
+				addSingle(t, id)
+			}
+		})
+	}
+	for _, s := range singles {
+		t := w.Tables[s.table]
+		if slices.ContainsFunc(t.Stats, func(st model.Stat) bool {
+			return len(st.Columns) > 0 && st.Columns[0] == s.col
+		}) {
+			continue
+		}
+		out = append(out, StatSpec{Table: s.table, Columns: []int{s.col}})
+	}
+	for i := range out {
+		out[i].Name = "s" + strconv.Itoa(i+1)
+	}
+	return out
+}
+
+// queryColumns calls f for each column of a table of w that a statement of
+// p seeks on, compares in a residual predicate, or sorts on. The plan reader
+// does not give join or grouping columns apart from these.
+func queryColumns(w *model.Workload, p *showplan.Plan, f func(t *model.Table, id int)) {
+	if p == nil {
+		return
+	}
+	for _, st := range p.Statements {
+		var refs []showplan.ColRef
+		for _, a := range st.Accesses {
+			refs = append(refs, a.SeekCols...)
+			refs = append(refs, a.PredEq...)
+			refs = append(refs, a.PredRange...)
+		}
+		for _, s := range st.Sorts {
+			refs = append(refs, s.Cols...)
+		}
+		for _, c := range refs {
+			if c.Table == "" || (c.Database != "" && !strings.EqualFold(c.Database, w.Database.Name)) {
+				continue
+			}
+			t := candidate.TableByName(w, c.Schema, c.Table)
+			if t == nil {
+				continue
+			}
+			if id := candidate.ColumnByName(w, t, c.Column); id != 0 {
+				f(t, id)
+			}
+		}
+	}
+}
+
+// CloneDatabaseName is the name of the clone database of a run.
+func CloneDatabaseName(runID string) string {
+	return "godta_" + runID + "_c"
+}
+
+// BackupPath is the path of the clone's backup file in dir, a directory of
+// the server: dir's own separator is kept (a backslash for a Windows path,
+// a slash otherwise).
+func BackupPath(dir, runID string) string {
+	sep := "/"
+	if strings.Contains(dir, `\`) && !strings.Contains(dir, "/") {
+		sep = `\`
+	}
+	return strings.TrimRight(dir, `/\`) + sep + CloneDatabaseName(runID) + ".bak"
+}
+
+// cloneSideEffects are the side effects of clone on the source, from spec
+// sections 7.1 and 8.4.
+var cloneSideEffects = []string{
+	"CREATE STATISTICS reads each table by sampling (the engine's default sample) and writes metadata under a Sch-S lock; it does not make cached plans recompile (measured).",
+	"DBCC CLONEDATABASE creates the database %s, schema and statistics only, without the Query Store; it needs sysadmin and takes an internal snapshot of the source database.",
+	"DROP STATISTICS of the godta_ statistics takes Sch-M on the table, and while it waits every new query on the table waits behind it; it makes the cached plans of the table recompile at their next execution (measured: plan_generation_num goes from 1 to 2). goDTA drops with a short, fixed lock timeout (%d ms), three attempts 2 s apart, then leaves the statistics in the journal for cleanup.",
+	"BACKUP DATABASE writes %s, COPY_ONLY (the backup chain of the source is not touched)%s, and adds its history to msdb.",
+	"The backup file is read ceil(size / chunk_bytes) + 1 times through OPENROWSET(BULK ..., SINGLE_BLOB) (chunk_bytes is this plan's, %d bytes when the plan was made; the last read is the server's SHA-256 of the file); a file larger than max_bytes (%d) is refused before anything is written on the host.",
+	"DROP DATABASE removes the clone database, and master.dbo.xp_delete_file the backup file, once the file is on the host.",
+}
+
+// ForClone builds the plan of clone (spec section 8.4, steps 1 to 6): the
+// CREATE STATISTICS of CloneStats, DBCC CLONEDATABASE into
+// CloneDatabaseName(runID), the drop of the statistics under SET LOCK_TIMEOUT
+// DropLockTimeoutMS (then back to the default, -1), the BACKUP to
+// BackupPath(backupDir, runID) (compressed when compress, Instance.CanCompress),
+// the read of the file (a step without journal entry, tsql.ReadFile, which
+// the runtime does in chunks of ChunkBytes), then the drop of the clone and
+// the deletion of the file. maxBytes 0 or above MaxFileBytes means
+// MaxFileBytes. The caller may lower ChunkBytes before Seal.
+func ForClone(w *model.Workload, cands []model.Candidate, runID string, fp []TableFingerprint, backupDir string, compress bool, maxBytes int64) Plan {
+	if maxBytes <= 0 || maxBytes > MaxFileBytes {
+		maxBytes = MaxFileBytes
+	}
+	p := Plan{
+		RunID:       runID,
+		Phase:       PhaseClone,
+		Server:      w.Server.ServerName,
+		MachineName: w.Server.MachineName,
+		Database:    w.Database.Name,
+		CreatedAt:   time.Now().UTC(),
+		MaxBytes:    maxBytes,
+		ChunkBytes:  DefaultChunkBytes,
+		Schema:      sortedFingerprints(fp),
+	}
+	clone := CloneDatabaseName(runID)
+	path := BackupPath(backupDir, runID)
+	compressed := ", uncompressed (the edition refuses COMPRESSION)"
+	if compress {
+		compressed = ", compressed"
+	}
+	p.SideEffects = []string{
+		cloneSideEffects[0],
+		fmt.Sprintf(cloneSideEffects[1], tsql.QuoteName(clone)),
+		fmt.Sprintf(cloneSideEffects[2], DropLockTimeoutMS),
+		fmt.Sprintf(cloneSideEffects[3], path, compressed),
+		fmt.Sprintf(cloneSideEffects[4], p.ChunkBytes, p.MaxBytes),
+		cloneSideEffects[5],
+	}
+
+	add := func(s Step) {
+		s.N = len(p.Steps) + 1
+		p.Steps = append(p.Steps, s)
+	}
+	type stat struct {
+		t    tsql.Obj
+		name string
+		e    workspace.Entry
+	}
+	var stats []stat
+	for _, sp := range CloneStats(w, cands) {
+		t := w.Tables[sp.Table]
+		cols := make([]string, len(sp.Columns))
+		for i, id := range sp.Columns {
+			for _, c := range t.Columns {
+				if c.ID == id {
+					cols[i] = c.Name
+				}
+			}
+		}
+		obj := tsql.Obj{Schema: t.Schema, Name: t.Name}
+		name := "godta_" + runID + "_" + sp.Name
+		e := workspace.Entry{RunID: runID, Server: p.Server, Database: p.Database, Kind: workspace.KindStatistics,
+			Schema: t.Schema, Table: t.Name, Name: name}
+		stats = append(stats, stat{obj, name, e})
+		add(Step{SQL: tsql.CreateStatistics(obj, name, cols), Journal: journalAs(e, workspace.StatePlanned)})
+	}
+	cloneEntry := workspace.Entry{RunID: runID, Server: p.Server, Database: serverDatabase,
+		Kind: workspace.KindCloneDatabase, Name: clone}
+	add(Step{SQL: tsql.CloneDatabase(p.Database, clone), Journal: journalAs(cloneEntry, workspace.StatePlanned)})
+	if len(stats) > 0 {
+		add(Step{SQL: tsql.SetLockTimeout(DropLockTimeoutMS)})
+		for _, s := range stats {
+			add(Step{SQL: tsql.DropStatistics(s.t, s.name), Journal: journalAs(s.e, workspace.StateRemoved)})
+		}
+		add(Step{SQL: tsql.SetLockTimeout(-1)})
+	}
+	fileEntry := workspace.Entry{RunID: runID, Server: p.Server, Database: serverDatabase,
+		Kind: workspace.KindBackupFile, Name: clone + ".bak", Path: path}
+	add(Step{SQL: tsql.BackupDatabase(clone, path, compress), Journal: journalAs(fileEntry, workspace.StatePlanned)})
+	add(Step{SQL: tsql.ReadFile(path)})
+	add(Step{SQL: tsql.DropDatabase(clone), Journal: journalAs(cloneEntry, workspace.StateRemoved)})
+	add(Step{SQL: tsql.DeleteBackupFile(path), Journal: journalAs(fileEntry, workspace.StateRemoved)})
+	return p
+}
+
+func journalAs(e workspace.Entry, state string) *workspace.Entry {
+	e.State = state
+	return &e
 }

@@ -296,3 +296,110 @@ func TestPlanHasNoSecret(t *testing.T) {
 		}
 	}
 }
+
+// TestForCloneSteps: statistics, clone, drops under the short lock timeout,
+// backup, transfer, drop of the clone and of the file, in that order, each
+// object journaled with its state, and the side effects of spec 8.4.
+func TestForCloneSteps(t *testing.T) {
+	w := workload()
+	w.Tables[100].Columns = append(w.Tables[100].Columns, model.Column{ID: 3, Name: "z"})
+	cands := []model.Candidate{{ID: "c1", Table: 100, Keys: []model.KeyCol{{ColumnID: 1}, {ColumnID: 3}}, Decision: model.DecisionNew}}
+	p := runplan.ForClone(w, cands, runID, fingerprints(), `/var/opt/mssql/data/`, true, 0)
+	clone := "godta_" + runID + "_c"
+	path := "/var/opt/mssql/data/" + clone + ".bak"
+	want := []struct {
+		sql, kind, state string
+	}{
+		{"CREATE STATISTICS [godta_ab12cd34_s1] ON [dbo].[godta_h] ([x], [z])", workspace.KindStatistics, workspace.StatePlanned},
+		{"CREATE STATISTICS [godta_ab12cd34_s2] ON [dbo].[godta_h] ([x])", workspace.KindStatistics, workspace.StatePlanned},
+		{"CREATE STATISTICS [godta_ab12cd34_s3] ON [dbo].[godta_h] ([z])", workspace.KindStatistics, workspace.StatePlanned},
+		{"DBCC CLONEDATABASE([Sales], [" + clone + "]) WITH NO_QUERYSTORE, NO_INFOMSGS", workspace.KindCloneDatabase, workspace.StatePlanned},
+		{"SET LOCK_TIMEOUT 1000", "", ""},
+		{"DROP STATISTICS [dbo].[godta_h].[godta_ab12cd34_s1]", workspace.KindStatistics, workspace.StateRemoved},
+		{"DROP STATISTICS [dbo].[godta_h].[godta_ab12cd34_s2]", workspace.KindStatistics, workspace.StateRemoved},
+		{"DROP STATISTICS [dbo].[godta_h].[godta_ab12cd34_s3]", workspace.KindStatistics, workspace.StateRemoved},
+		{"SET LOCK_TIMEOUT -1", "", ""},
+		{"BACKUP DATABASE [" + clone + "] TO DISK = N'" + path + "' WITH INIT, COPY_ONLY, COMPRESSION", workspace.KindBackupFile, workspace.StatePlanned},
+		{"SELECT BulkColumn FROM OPENROWSET(BULK N'" + path + "', SINGLE_BLOB) AS x", "", ""},
+		{"DROP DATABASE [" + clone + "]", workspace.KindCloneDatabase, workspace.StateRemoved},
+		{"EXEC master.dbo.xp_delete_file 0, N'" + path + "'", workspace.KindBackupFile, workspace.StateRemoved},
+	}
+	if len(p.Steps) != len(want) {
+		for _, s := range p.Steps {
+			t.Logf("step %d: %s", s.N, s.SQL)
+		}
+		t.Fatalf("%d steps, want %d", len(p.Steps), len(want))
+	}
+	for i, s := range p.Steps {
+		w := want[i]
+		if s.N != i+1 || s.SQL != w.sql {
+			t.Errorf("step %d (N %d): %q, want %q", i+1, s.N, s.SQL, w.sql)
+		}
+		if w.kind == "" {
+			if s.Journal != nil {
+				t.Errorf("step %d: journal %+v, want none", i+1, *s.Journal)
+			}
+			continue
+		}
+		if s.Journal == nil {
+			t.Errorf("step %d: no journal entry", i+1)
+			continue
+		}
+		e := *s.Journal
+		if e.Kind != w.kind || e.State != w.state || e.RunID != runID || e.Server != "SQL01" {
+			t.Errorf("step %d: journal %+v, want kind %s state %s", i+1, e, w.kind, w.state)
+		}
+		switch e.Kind {
+		case workspace.KindStatistics:
+			if e.Database != "Sales" || e.Schema != "dbo" || e.Table != "godta_h" || !tsql.IsRunName(e.Name) {
+				t.Errorf("step %d: statistics entry %+v", i+1, e)
+			}
+		case workspace.KindBackupFile:
+			if e.Path != path {
+				t.Errorf("step %d: backup path %q, want %q", i+1, e.Path, path)
+			}
+		case workspace.KindCloneDatabase:
+			if e.Name != clone {
+				t.Errorf("step %d: clone name %q, want %q", i+1, e.Name, clone)
+			}
+		}
+	}
+	if p.Phase != runplan.PhaseClone || p.Database != "Sales" || p.MachineName != "HOST01" {
+		t.Errorf("plan header %s %s %s", p.Phase, p.Database, p.MachineName)
+	}
+	if p.MaxBytes != runplan.MaxFileBytes || p.ChunkBytes != runplan.DefaultChunkBytes {
+		t.Errorf("limits max %d chunk %d, want %d and %d", p.MaxBytes, p.ChunkBytes, runplan.MaxFileBytes, runplan.DefaultChunkBytes)
+	}
+	effects := strings.Join(p.SideEffects, "\n")
+	for _, s := range []string{"Sch-S", "Sch-M", "recompile", "ceil(size / chunk_bytes) + 1", "sysadmin", "COPY_ONLY", "compressed", "xp_delete_file", path} {
+		if !strings.Contains(effects, s) {
+			t.Errorf("side effects lack %q:\n%s", s, effects)
+		}
+	}
+	if err := runplan.Verify(p.Seal(), inst, "Sales", fingerprints()); err != nil {
+		t.Errorf("Verify of the sealed clone plan: %v", err)
+	}
+}
+
+// TestForCloneUncompressedWindows: without compression the BACKUP has no
+// COMPRESSION, a Windows directory keeps its backslash, and a maxBytes is
+// kept.
+func TestForCloneUncompressedWindows(t *testing.T) {
+	p := runplan.ForClone(workload(), nil, runID, fingerprints(), `D:\Backup`, false, 1000)
+	var backup string
+	for _, s := range p.Steps {
+		if strings.HasPrefix(s.SQL, "BACKUP") {
+			backup = s.SQL
+		}
+	}
+	want := `BACKUP DATABASE [godta_ab12cd34_c] TO DISK = N'D:\Backup\godta_ab12cd34_c.bak' WITH INIT, COPY_ONLY`
+	if backup != want {
+		t.Errorf("backup %q, want %q", backup, want)
+	}
+	if p.MaxBytes != 1000 {
+		t.Errorf("MaxBytes %d, want 1000", p.MaxBytes)
+	}
+	if !strings.Contains(strings.Join(p.SideEffects, "\n"), "uncompressed") {
+		t.Errorf("side effects do not say the backup is uncompressed: %v", p.SideEffects)
+	}
+}
