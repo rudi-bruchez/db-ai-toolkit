@@ -6,12 +6,16 @@ import (
 	"math"
 	"strings"
 	"testing"
+	"time"
+
+	mssql "github.com/microsoft/go-mssqldb"
 
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/candidate"
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/conn"
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/model"
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/runplan"
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/showplan"
+	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/tsql"
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/workspace"
 )
 
@@ -262,5 +266,79 @@ func TestInterruptedCreateLookedUp(t *testing.T) {
 		if pending, _ := ws.Pending(); len(pending) != 0 {
 			t.Errorf("found %v: journal entries left %+v, want none", found, pending)
 		}
+	}
+}
+
+// planSteps returns the create and drop steps of the single candidate of p.
+func planSteps(t *testing.T, p runplan.Plan) (create, drop runplan.Step) {
+	t.Helper()
+	for _, st := range p.Steps {
+		switch {
+		case st.Candidate == "":
+		case st.Resolve != "":
+			create = st
+		default:
+			drop = st
+		}
+	}
+	if create.SQL == "" || drop.SQL == "" {
+		t.Fatalf("plan steps %+v: want one creation and one drop", p.Steps)
+	}
+	return create, drop
+}
+
+// TestDropRetriedUnderShortTimeout: a drop that meets a lock (error 1222
+// every time) is sent three times, 2 s apart, after SET LOCK_TIMEOUT 1000
+// and not under the plan's longer creation timeout; the entry then stays
+// "created" (spec section 8.5). The test reads the statements sent and the
+// elapsed time, not the warning text.
+func TestDropRetriedUnderShortTimeout(t *testing.T) {
+	w := unitWorkload()
+	c := withID(model.Candidate{Table: tblH, Keys: []model.KeyCol{{ColumnID: 1}}, Include: []int{2},
+		Queries: []int64{99}, Decision: model.DecisionNew})
+	plan := runplan.ForEvaluate(w, []model.Candidate{c}, "abcd1234", nil, 4, 2000).Seal()
+	create, drop := planSteps(t, plan)
+
+	s, rec := NewRecordingSession(w.Server)
+	rec.Results[create.Resolve] = [][]any{{int64(3)}}
+	rec.Fail[drop.SQL] = mssql.Error{Number: 1222, Message: "Lock request time out period exceeded."}
+	ws, err := workspace.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	res, err := Run(context.Background(), s, ws, &plan, w, []model.Candidate{c}, Hooks{})
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if n := rec.Count(drop.SQL); n != 3 {
+		t.Errorf("the drop was sent %d times, want 3", n)
+	}
+	// Two pauses of 2 s between three attempts.
+	if elapsed < 4*time.Second {
+		t.Errorf("Run took %s, want at least 4s: two pauses of 2 s between the attempts", elapsed)
+	}
+	timeout := ""
+	for _, st := range rec.Statements {
+		if st == drop.SQL {
+			break
+		}
+		if strings.HasPrefix(st, "SET LOCK_TIMEOUT ") {
+			timeout = st
+		}
+	}
+	if want := tsql.SetLockTimeout(runplan.DropLockTimeoutMS); timeout != want {
+		t.Errorf("lock timeout in force at the first drop %q, want %q; statements %q", timeout, want, rec.Statements)
+	}
+	pending, err := ws.Pending()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 || pending[0].State != workspace.StateCreated || pending[0].Name != drop.Journal.Name {
+		t.Errorf("journal pending %+v, want %s in state created", pending, drop.Journal.Name)
+	}
+	if len(res.Warnings) == 0 {
+		t.Error("no warning for the index left behind")
 	}
 }
