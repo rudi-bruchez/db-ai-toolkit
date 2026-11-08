@@ -440,7 +440,12 @@ Mécanisme, sur une connexion épinglée, chaque instruction dans son propre lot
    déclaration manque ; la mesure est alors écartée, jamais publiée. Mesuré sur toutes les
    requêtes rejouables de la base de démonstration (1 913 sur 2022, 1 892 sur 2025) : identité
    exacte sur les tables utilisateur, sauf trois `INSERT … WITH (TABLOCK)` dans un tas, plan
-   parallèle en `SHOWPLAN_XML` et série sous `AUTOPILOT` (coût doublé). Le contrôle les écarte ;
+   parallèle en `SHOWPLAN_XML` et série sous `AUTOPILOT` (coût doublé). Le contrôle les écarte.
+   Le `SHOWPLAN_XML` passe avant la référence : une compilation sous `AUTOPILOT` ne crée pas
+   les statistiques automatiques, un `SHOWPLAN_XML` les crée, et dans l'ordre inverse toute
+   requête sur une colonne sans statistique sort en faux écart (mesuré sur 2022 à la relecture
+   du plan : 421 lignes estimées contre 25 046). La base de démonstration avait déjà ses
+   statistiques, ce qui explique l'identité exacte ci-dessus ;
 9. `DROP INDEX` de l'index hypothétique.
 
 Avant le rejeu, la session reçoit les options `SET` du `context_settings_id` de la requête
