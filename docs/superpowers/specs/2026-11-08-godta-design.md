@@ -296,12 +296,17 @@ Confrontation, dans cet ordre, pour chaque candidat :
   contrainte. SQL Server refuse alors
   `DROP_EXISTING` (erreur 1907) et le `DROP INDEX` (erreur 3723) : le candidat passe en
   « à discuter », sans script, avec l'explication ;
-- les clés effectives d'un existant sont un préfixe strict de celles du candidat (après la mise
+- les clés déclarées d'un existant sont un préfixe strict de celles du candidat (après la mise
   en ordre des égalités ci-dessus), et l'existant n'est ni cluster, ni unique, ni filtré, ni
   appuyé sur une contrainte, ni nommé dans une indication, un module, un repère de plan ou un
   plan forcé : « remplacer », le candidat recevant l'union des inclus des deux et les options
   physiques de l'existant ; dans tous les autres cas, le candidat est proposé à côté de
-  l'existant ;
+  l'existant. Le préfixe se lit sur les clés déclarées et non sur les clés effectives : sur une
+  table cluster, la clé cluster implicite ferme les clés effectives d'un index non unique, et
+  `(a, pk)` n'est jamais un préfixe de `(a, b, pk)`, si bien que le remplacement ne se serait
+  appliqué qu'aux tas (décision de Rudi du 8 novembre 2026, après la relecture de la branche).
+  Un index identique n'est pas recréé : de mêmes clés effectives sont couvertes ou élargies
+  avant ce cas ;
 - sinon : nouveau candidat.
 
 Deux index existants qui ensemble couvrent un candidat ne le couvrent pas : l'intersection

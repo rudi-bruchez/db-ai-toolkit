@@ -94,8 +94,10 @@ func TestCoverageTruthTable(t *testing.T) {
 			[]probe{{c: cand(tblT, 1, keys(asc(colA)), colC, colD), want: model.DecisionDiscuss, existing: "uq_a"}}},
 		{"11a_heap_replace", tableHeap(nc(2, "nix_h_x", keys(asc(colX)), colZ)),
 			[]probe{{c: cand(tblH, 1, keys(asc(colX), asc(colY))), want: model.DecisionReplace, existing: "nix_h_x", include: []int{colZ}}}},
-		{"11b_clustered_table_new", tableT(nc(2, "nix_a", keys(asc(colA)))),
-			[]probe{{c: cand(tblT, 1, keys(asc(colA), asc(colB))), want: model.DecisionNew}}},
+		{"11b_clustered_table_replace", tableT(nc(2, "nix_a", keys(asc(colA)), colC)),
+			[]probe{{c: cand(tblT, 1, keys(asc(colA), asc(colB))), want: model.DecisionReplace, existing: "nix_a", include: []int{colC}}}},
+		{"11c_clustered_key_declared_replaces", tableT(nc(2, "nix_a", keys(asc(colA)))),
+			[]probe{{c: cand(tblT, 1, keys(asc(colA), asc(colID), asc(colB))), want: model.DecisionReplace, existing: "nix_a"}}},
 		{"12_named_in_hint", tableHeap(named),
 			[]probe{{c: cand(tblH, 1, keys(asc(colX), asc(colY))), want: model.DecisionNew}}},
 		{"13_clustered_covers_never_target", clusteredOnA, []probe{
@@ -103,7 +105,7 @@ func TestCoverageTruthTable(t *testing.T) {
 			{c: cand(tblT, 1, keys(asc(1), asc(2))), want: model.DecisionNew},
 		}},
 		{"14_no_intersection", tableT(nc(2, "nix_a", keys(asc(colA))), nc(3, "nix_b", keys(asc(colB)))),
-			[]probe{{c: cand(tblT, 2, keys(asc(colA), asc(colB))), want: model.DecisionNew}}},
+			[]probe{{c: cand(tblT, 2, keys(asc(colA), asc(colB))), want: model.DecisionReplace, existing: "nix_a"}}},
 		{"15_column_id_not_name", caseTable,
 			[]probe{{c: cand(tblH, 1, keys(asc(2))), want: model.DecisionNew}}},
 	}
