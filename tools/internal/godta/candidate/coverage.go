@@ -141,7 +141,7 @@ func isStrictPrefix(p, of []model.KeyCol) bool {
 
 func constraint(e model.Index) bool { return e.PrimaryKey || e.UniqueConstraint }
 
-// replaceable says whether e may be dropped for a candidate whose effective
+// replaceable says whether e may be dropped for a candidate whose declared
 // keys extend its own.
 func replaceable(e model.Index) bool {
 	return usable(e) && e.Kind == model.KindNonclustered && !e.Unique && e.Filter == "" &&
@@ -159,7 +159,7 @@ func existing(t *model.Table) []model.Index {
 // order of spec section 8.3: covered by an existing index; widen an existing
 // nonclustered index that has the keys but not the included columns, or
 // discuss when that index supports a constraint (errors 1907 and 3723);
-// replace an existing index whose effective keys are a strict prefix of the
+// replace an existing index whose declared keys are a strict prefix of the
 // candidate's; otherwise new, beside whatever exists. It returns the
 // decision, the name of the existing index it is about, and the reasons.
 // Two indexes that cover the candidate together do not cover it.
@@ -186,11 +186,15 @@ func Confront(c model.Candidate, t *model.Table) (model.Decision, string, []stri
 		return model.DecisionDiscuss, held.Name, []string{fmt.Sprintf(
 			"%s has the keys but not every included column, and supports a constraint: SQL Server refuses DROP_EXISTING (error 1907) and DROP INDEX (error 3723)", held.Name)}
 	}
-	ck := EffectiveKeys(candidateIndex(c), t)
+	// The prefix is read on the declared keys: on a clustered table the
+	// implicit clustered key closes the effective keys of a non unique index,
+	// so (a, pk) is never a prefix of (a, b, pk) and replace would never apply
+	// (decision of 8 November 2026, spec section 8.3). An identical index is
+	// not recreated: same effective keys are covered or widened above.
 	for _, e := range ixs {
-		if replaceable(e) && isStrictPrefix(EffectiveKeys(e, t), ck) {
+		if replaceable(e) && isStrictPrefix(e.Keys, c.Keys) {
 			return model.DecisionReplace, e.Name, []string{fmt.Sprintf(
-				"the effective keys of %s are a strict prefix of the candidate's: replace it, includes united, physical options kept", e.Name)}
+				"the keys of %s are a strict prefix of the candidate's: replace it, includes united, physical options kept", e.Name)}
 		}
 	}
 	return model.DecisionNew, "", []string{"no existing index covers, widens to or is replaced by the candidate"}
