@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/ittest"
+	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/model"
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/report"
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/runplan"
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/tsql"
@@ -78,10 +79,23 @@ func TestEndToEndServer(t *testing.T) {
 		t.Fatal(err)
 	}
 	step("evaluate", "--target", "server", "--allow-write", "--plan", out.Plan)
+	ws := workspace.WS{Root: project}
+	// The collection, the plan and the evaluation name the same collect run:
+	// that is what report checks before scoring.
+	var w model.Workload
+	var ev evaluateFile
+	if err := ws.ReadJSON(ws.DBDir(serverName, name), workspace.CollectFile, &w); err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.ReadJSON(ws.DBDir(serverName, name), workspace.EvaluateServerFile, &ev); err != nil {
+		t.Fatal(err)
+	}
+	if w.CollectID == "" || plan.CollectID != w.CollectID || ev.CollectID != w.CollectID {
+		t.Errorf("collect_id: collect.json %q, plan %q, evaluate-server.json %q, want one and the same", w.CollectID, plan.CollectID, ev.CollectID)
+	}
 	step("report")
 
 	var res report.Result
-	ws := workspace.WS{Root: project}
 	if err := ws.ReadJSON(ws.DBDir(serverName, name), report.ResultFile, &res); err != nil {
 		t.Fatal(err)
 	}

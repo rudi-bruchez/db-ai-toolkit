@@ -25,7 +25,11 @@ const (
 
 // Workload is everything collect reads from one database.
 type Workload struct {
-	Server   conn.Instance `json:"server"`
+	// CollectID identifies the collect run that wrote the workload: an
+	// evaluation records it, and report refuses to score the measures of
+	// another collection with this one's counters.
+	CollectID string        `json:"collect_id,omitempty"`
+	Server    conn.Instance `json:"server"`
 	Database DBInfo        `json:"database"`
 	Window   Window        `json:"window"`
 	// Source is SourceQueryStore or SourcePlanCache.

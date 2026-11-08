@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/conn"
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/model"
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/report"
+	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/runplan"
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/workspace"
 )
 
@@ -23,6 +25,8 @@ type reportFix struct {
 	w    *model.Workload
 	c    model.Candidate
 	ev   evaluateFile
+	// plan is plan-evaluate.json, written when its RunID is set.
+	plan runplan.Plan
 }
 
 func newReportFix(t *testing.T) *reportFix {
@@ -43,7 +47,9 @@ func newReportFix(t *testing.T) *reportFix {
 	f.c = model.Candidate{Table: 1001, Keys: []model.KeyCol{{ColumnID: 2}}, Include: []int{3}, Origin: candidate.OriginAlgorithm,
 		Queries: []int64{1}, Decision: model.DecisionNew}
 	f.c.ID = candidate.ID(f.c)
-	f.ev = evaluateFile{RunID: "r0000001",
+	f.w.CollectID = "c0000001"
+	f.plan = runplan.Plan{RunID: "r0000001", Phase: runplan.PhaseEvaluate, CollectID: f.w.CollectID}
+	f.ev = evaluateFile{RunID: "r0000001", CollectID: f.w.CollectID,
 		Measures: []model.Measure{{QueryID: 1, Candidate: f.c.ID, Before: 10, After: 8, Status: "measured"}}}
 	f.dir = ws.DBDir("lab01", "app")
 	f.write(t)
@@ -60,6 +66,11 @@ func (f *reportFix) write(t *testing.T) {
 		workspace.EvaluateServerFile: f.ev,
 	} {
 		if err := f.ws.WriteJSON(f.dir, name, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if f.plan.RunID != "" {
+		if err := f.ws.WriteJSON(f.dir, workspace.PlanFile(runplan.PhaseEvaluate), f.plan); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -123,4 +134,77 @@ func section(rep, title string) string {
 	}
 	s, _, _ := strings.Cut(rest, "\n## ")
 	return s
+}
+
+// TestReportRefusesStaleEvaluation: report refuses, as a usage error and
+// before writing anything, an evaluation that measured another collection
+// (collect ran again since) or whose plan a later --dry-run replaced, and
+// says to run evaluate again.
+func TestReportRefusesStaleEvaluation(t *testing.T) {
+	t.Setenv(testPasswordEnv, "pw")
+	f := newReportFix(t)
+	code, out, _ := f.report(t)
+	if code != exitOK || hasWarning(out.Databases[0], "does not record the collection") {
+		t.Fatalf("control, a consistent workspace: code %d, output %+v", code, out)
+	}
+
+	cases := map[string]struct {
+		change func(f *reportFix)
+		want   string
+	}{
+		"collect again": {func(f *reportFix) { f.w.CollectID = "c0000002" }, "collect ran again since"},
+		"new dry-run":   {func(f *reportFix) { f.plan.RunID = "r0000002" }, "a later evaluate --dry-run"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newReportFix(t)
+			c.change(f)
+			f.write(t)
+			code, out, rep := f.report(t)
+			if code != exitUsage || out.Error == nil || out.Error.Kind != "usage" {
+				t.Fatalf("code %d, output %+v, want a usage error, exit %d", code, out, exitUsage)
+			}
+			if !strings.Contains(out.Error.Message, c.want) || !strings.Contains(out.Error.Message, "run evaluate again") {
+				t.Errorf("the error %q does not say %q and to run evaluate again", out.Error.Message, c.want)
+			}
+			if rep != "" {
+				t.Errorf("rapport.md was written:\n%s", rep)
+			}
+		})
+	}
+
+	// An evaluation that does not record its collection (evaluate --target
+	// lab does not yet) is scored, with a warning.
+	f = newReportFix(t)
+	f.ev.CollectID = ""
+	f.write(t)
+	code, out, _ = f.report(t)
+	if code != exitOK || !hasWarning(out.Databases[0], "does not record the collection") {
+		t.Errorf("an evaluation without collect_id: code %d, output %+v, want a warning", code, out)
+	}
+}
+
+// TestEvaluateRefusesRecollected: an evaluate plan whose collection was
+// replaced by a new collect is refused before any write.
+func TestEvaluateRefusesRecollected(t *testing.T) {
+	f := newEvalFix(t)
+	f.w.CollectID = "c0000001"
+	if err := f.ws.WriteJSON(f.dir, workspace.CollectFile, f.w); err != nil {
+		t.Fatal(err)
+	}
+	file, plan := f.dryRun(t)
+	if plan.CollectID != "c0000001" {
+		t.Fatalf("the plan records collection %q, want c0000001", plan.CollectID)
+	}
+	f.w.CollectID = "c0000002"
+	if err := f.ws.WriteJSON(f.dir, workspace.CollectFile, f.w); err != nil {
+		t.Fatal(err)
+	}
+	code, out := f.execute(t, context.Background(), f.fake.open, file)
+	if code != exitRefused || len(out.Databases) != 1 || !strings.Contains(out.Databases[0].Error, "collect ran again") {
+		t.Fatalf("code %d, output %+v, want refused because collect ran again", code, out)
+	}
+	if got := f.sent("CREATE"); len(got) > 0 {
+		t.Errorf("statements sent: %q", got)
+	}
 }
