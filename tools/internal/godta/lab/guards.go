@@ -6,6 +6,7 @@ package lab
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -66,6 +67,11 @@ func CheckSameVersion(src, labi conn.Instance) (warning string, err error) {
 	return "", nil
 }
 
+// ErrCloneDBMissing is what CheckCloneDB wraps when the database is not on
+// the lab at all, as opposed to there and not a clone: evaluate --target lab
+// then restores it again from the host file.
+var ErrCloneDBMissing = errors.New("does not exist")
+
 // isCloneQuery reads IsClone, NULL when the database does not exist (measured).
 const isCloneQuery = `SELECT CAST(DATABASEPROPERTYEX(@p1, 'IsClone') AS int);`
 
@@ -84,7 +90,7 @@ func CheckCloneDB(ctx context.Context, q conn.Querier, db string) error {
 	}
 	switch {
 	case !isClone.Valid:
-		return fmt.Errorf("lab guard: database %q does not exist", db)
+		return fmt.Errorf("lab guard: database %q %w", db, ErrCloneDBMissing)
 	case isClone.Int64 != 1:
 		return fmt.Errorf("lab guard: database %q is not a clone (IsClone = %d)", db, isClone.Int64)
 	}
