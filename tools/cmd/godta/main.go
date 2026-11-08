@@ -981,10 +981,6 @@ func (a *app) evaluateOne(p sqlq.Profile, inst conn.Instance, file string, plan 
 	if err != nil {
 		return "", err
 	}
-	var current string
-	if err := db.QueryRowContext(a.ctx, "SELECT /* godta:internal */ DB_NAME()").Scan(&current); err != nil {
-		return "", err
-	}
 	ids := make([]int, len(plan.Schema))
 	for i, f := range plan.Schema {
 		ids[i] = f.ObjectID
@@ -993,7 +989,11 @@ func (a *app) evaluateOne(p sqlq.Profile, inst conn.Instance, file string, plan 
 	if err != nil {
 		return "", err
 	}
-	if err := runplan.Verify(plan, inst, current, live); err != nil {
+	// The pool is opened on plan.Database, so DB_NAME() of it would only
+	// give that name back: the database argument of Verify cannot refuse
+	// anything here, and the tables are tied to the plan by object_id in
+	// the fingerprints.
+	if err := runplan.Verify(plan, inst, plan.Database, live); err != nil {
 		return "", refusedf("--plan %s refused: %v", file, err)
 	}
 	dir := a.ws.DBDir(plan.Server, plan.Database)

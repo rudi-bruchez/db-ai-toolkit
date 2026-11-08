@@ -384,3 +384,90 @@ func TestNoteLeftCountsCreatedOfRun(t *testing.T) {
 		t.Errorf("a run with nothing in the journal: failed %v, result %+v; want unchanged", a.failed, r)
 	}
 }
+
+// editPlan rewrites the plan file with one more side effect and without
+// sealing it again: a change that no other guard than the checksum sees.
+func editPlan(t *testing.T, file string) {
+	t.Helper()
+	var p runplan.Plan
+	data, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &p); err != nil {
+		t.Fatal(err)
+	}
+	p.SideEffects = append(p.SideEffects, "edited after the dry run")
+	if data, err = json.Marshal(p); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// refusals are the changes after a dry run that runplan.Verify must refuse
+// at execution, each with what its message names.
+var refusals = []struct {
+	name   string
+	change func(t *testing.T, f *evalFix, file string)
+	want   string
+}{
+	{"edited plan", func(t *testing.T, _ *evalFix, file string) { editPlan(t, file) }, "checksum"},
+	{"other machine", func(_ *testing.T, f *evalFix, _ string) { f.fake.inst.MachineName = "OTHERM" }, "wrong server"},
+}
+
+// TestEvaluateRefusedByVerify: evaluate --allow-write --plan refuses, with
+// exit 3 and before any statement that writes, a plan edited after its dry
+// run, a plan for another machine, and a plan whose table is gone since.
+func TestEvaluateRefusedByVerify(t *testing.T) {
+	cases := append(slices.Clone(refusals), struct {
+		name   string
+		change func(t *testing.T, f *evalFix, file string)
+		want   string
+	}{"schema changed", func(_ *testing.T, f *evalFix, _ string) { f.fake.tables = nil }, "schema changed"})
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newEvalFix(t)
+			file, _ := f.dryRun(t)
+			c.change(t, f, file)
+			code, out := f.execute(t, context.Background(), f.fake.open, file)
+			if code != exitRefused || out.OK || len(out.Databases) != 1 {
+				t.Fatalf("code %d, output %+v; want code 3, ok false, one database", code, out)
+			}
+			if r := out.Databases[0]; r.Status != "refused" || !strings.Contains(r.Error, c.want) {
+				t.Errorf("database %+v: want refused on %q", r, c.want)
+			}
+			if sent := f.sent(""); len(sent) != 0 {
+				t.Errorf("statements executed: %q, want none", sent)
+			}
+		})
+	}
+}
+
+// TestCleanupPlanRefused: cleanup --allow-write --plan refuses with exit 3,
+// the code of "refused, nothing written", and sends no drop, a cleanup plan
+// edited after its dry run or made for another machine.
+func TestCleanupPlanRefused(t *testing.T) {
+	for _, c := range refusals {
+		t.Run(c.name, func(t *testing.T) {
+			f := newEvalFix(t)
+			if err := f.ws.Record(workspace.Entry{RunID: "abcd1234", Server: "lab01", Database: "app", Kind: workspace.KindHypotheticalIndex,
+				Schema: "dbo", Table: "godta_t", Name: "godta_abcd1234_1", State: workspace.StateCreated, At: time.Now().UTC()}); err != nil {
+				t.Fatal(err)
+			}
+			code, out := invoke(t, f.fake.open, append([]string{"cleanup", "--dry-run"}, f.args...)...)
+			if code != exitOK || out.Plan == "" {
+				t.Fatalf("cleanup --dry-run: code %d, output %+v", code, out)
+			}
+			c.change(t, f, out.Plan)
+			code, out = invoke(t, f.fake.open, append([]string{"cleanup", "--allow-write", "--plan", out.Plan}, f.args...)...)
+			if code != exitRefused || out.OK || out.Error == nil || !strings.Contains(out.Error.Message, c.want) {
+				t.Errorf("code %d, output %+v; want code 3, refused on %q", code, out, c.want)
+			}
+			if sent := f.sent(""); len(sent) != 0 {
+				t.Errorf("statements executed: %q, want none", sent)
+			}
+		})
+	}
+}
