@@ -53,10 +53,11 @@ func TestGainTimesExecutions(t *testing.T) {
 }
 
 func TestMaintenanceRejects(t *testing.T) {
-	// Read: (2 - 1) x 100 = gain 100. Write: same cost before and after,
-	// maintenance 8 x 10 = 80, above half the gain.
+	// Read: (2 - 1) x 100 = gain 100. Write: no read-side saving, its cost
+	// after is the cost before plus the maintenance, 8 x 10 = 80, above
+	// half the gain.
 	ms := func(maint float64) []model.Measure {
-		w := measured(2, "A", 5, 5)
+		w := measured(2, "A", 5, 5+maint)
 		w.Maintenance = maint
 		return []model.Measure{measured(1, "A", 2, 1), w}
 	}
@@ -163,6 +164,19 @@ func TestEstimatedPages(t *testing.T) {
 	}
 	if got := EstimatedPages(0, 12.78, 4); got != 1 {
 		t.Errorf("EstimatedPages(0, …) = %d, want at least 1", got)
+	}
+}
+
+func TestWriteMaintenanceNotDoubleCounted(t *testing.T) {
+	w := workload()
+	w.Queries[0].Executions = 10
+	w.Writes[0].Executions = 1
+	wm := measured(2, "A", 10, 12)
+	wm.Maintenance = 3
+	r := one(t, Score(w, []model.Candidate{cand("A", 1, 2)},
+		[]model.Measure{measured(1, "A", 10, 1), wm}, DefaultThresholds()))
+	if r.Gain != 91 || r.Maintenance != 3 {
+		t.Fatalf("gain %v, maintenance %v, want 91 (90 + 1) and 3", r.Gain, r.Maintenance)
 	}
 }
 
