@@ -114,12 +114,11 @@ func cutPartialLine(f *os.File) (int64, error) {
 	return keep, nil
 }
 
-// Pending returns, for every object of the journal whose last state is not
-// "removed", its last entry, in the order objects first appear. A truncated
-// last line (a crash during Record) is skipped with a warning; any other line
+// Entries returns every line of the journal, in order. A truncated last
+// line (a crash during Record) is skipped with a warning; any other line
 // that does not decode is an error, since skipping it could hide a created
 // object.
-func (ws WS) Pending() ([]Entry, error) {
+func (ws WS) Entries() ([]Entry, error) {
 	data, err := os.ReadFile(ws.journalPath())
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -127,8 +126,7 @@ func (ws WS) Pending() ([]Entry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("journal: %w", err)
 	}
-	last := map[key]Entry{}
-	var order []key
+	var out []Entry
 	for n := 1; len(data) > 0; n++ {
 		line := data
 		complete := false
@@ -148,6 +146,22 @@ func (ws WS) Pending() ([]Entry, error) {
 			}
 			return nil, fmt.Errorf("journal %s: line %d: %w", ws.journalPath(), n, err)
 		}
+		out = append(out, e)
+	}
+	return out, nil
+}
+
+// Pending returns, for every object of the journal whose last state is not
+// "removed", its last entry, in the order objects first appear (the lines
+// read as Entries reads them).
+func (ws WS) Pending() ([]Entry, error) {
+	entries, err := ws.Entries()
+	if err != nil {
+		return nil, err
+	}
+	last := map[key]Entry{}
+	var order []key
+	for _, e := range entries {
 		k := e.key()
 		if _, ok := last[k]; !ok {
 			order = append(order, k)

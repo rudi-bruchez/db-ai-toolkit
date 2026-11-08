@@ -6,13 +6,16 @@ import (
 	"database/sql"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/ittest"
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/runplan"
+	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/workspace"
 )
 
 // runMainEnv makes the test binary run main instead of the tests: a test
@@ -148,5 +151,71 @@ func TestDropLockTimeoutFailsRun(t *testing.T) {
 		if !hasWarning(r, n, "godta cleanup") {
 			t.Errorf("warnings %q: none names %s and says to run godta cleanup", r.Warnings, n)
 		}
+	}
+}
+
+// TestKilledPlanNotReplayed: evaluate is killed with SIGKILL while a
+// hypothetical index of godta_h exists (the lock on godta_h keeps its drop
+// waiting). Running the same plan again is refused with exit 3 before any
+// statement: the journal gains no line and the indexes are unchanged; the
+// message says to run cleanup and then a new dry-run.
+func TestKilledPlanNotReplayed(t *testing.T) {
+	s := newSrvRun(t)
+	s.lockH()
+	cmd := exec.Command(os.Args[0], append([]string{"evaluate", "--target", "server", "--allow-write", "--plan", s.planFile}, s.common...)...)
+	cmd.Env = append(os.Environ(), runMainEnv+"=1")
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	journal := filepath.Join(s.project, workspace.JournalFile)
+	deadline := time.Now().Add(3 * time.Minute)
+	for {
+		data, _ := os.ReadFile(journal)
+		if slices.ContainsFunc(bytes.Split(data, []byte("\n")), func(l []byte) bool {
+			return bytes.Contains(l, []byte(`"table":"godta_h"`)) && bytes.Contains(l, []byte(`"state":"created"`))
+		}) {
+			break
+		}
+		if time.Now().After(deadline) {
+			cmd.Process.Kill()
+			cmd.Wait()
+			t.Fatalf("no index of godta_h journaled created in time; journal:\n%s\nstdout:\n%s", data, stdout.String())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	cmd.Wait()
+	before := s.hypotheticals()
+	if len(before) == 0 {
+		t.Fatalf("no hypothetical index left on godta_h after the kill")
+	}
+	lines, err := os.ReadFile(journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	code, out := s.step("evaluate", "--target", "server", "--allow-write", "--plan", s.planFile)
+	t.Logf("second run: code %d, databases %+v", code, out.Databases)
+	if code != exitRefused || out.OK || len(out.Databases) != 1 {
+		t.Fatalf("code %d, ok %v, databases %+v; want code 3, ok false, one database", code, out.OK, out.Databases)
+	}
+	for _, want := range []string{s.plan.RunID, "cleanup", "--dry-run"} {
+		if !strings.Contains(out.Databases[0].Error, want) {
+			t.Errorf("error %q does not contain %q", out.Databases[0].Error, want)
+		}
+	}
+	after, err := os.ReadFile(journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(lines, after) {
+		t.Errorf("the journal changed during the refused run:\nbefore %s\nafter %s", lines, after)
+	}
+	if now := s.hypotheticals(); strings.Join(now, ",") != strings.Join(before, ",") {
+		t.Errorf("hypothetical indexes %q after the refused run, %q before", now, before)
 	}
 }

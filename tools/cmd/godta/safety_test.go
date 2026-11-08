@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"syscall"
@@ -215,6 +216,66 @@ func TestSignalsCancel(t *testing.T) {
 			t.Errorf("%v: the context was not canceled", sig)
 		}
 		stop()
+	}
+}
+
+// TestPlanReplayRefused: a plan whose run already has entries in the
+// journal (a run killed with its indexes created) is refused before any
+// connection, with exit 3 and a message that says to run cleanup and then a
+// new dry-run.
+func TestPlanReplayRefused(t *testing.T) {
+	f := newEvalFix(t)
+	file, plan := f.dryRun(t)
+	var create runplan.Step
+	for _, st := range plan.Steps {
+		if st.Journal != nil && st.Resolve != "" {
+			create = st
+		}
+	}
+	if create.Journal == nil {
+		t.Fatalf("no creation step in %+v", plan.Steps)
+	}
+	for _, state := range []string{workspace.StatePlanned, workspace.StateCreated} {
+		e := *create.Journal
+		e.State, e.At = state, time.Now().UTC()
+		if err := f.ws.Record(e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	code, out := f.execute(t, context.Background(), noOpen(t), file)
+	if code != exitRefused || out.OK || len(out.Databases) != 1 {
+		t.Fatalf("code %d, output %+v; want code 3, ok false, one database", code, out)
+	}
+	r := out.Databases[0]
+	for _, want := range []string{plan.RunID, "cleanup", "--dry-run"} {
+		if !strings.Contains(r.Error, want) {
+			t.Errorf("error %q does not contain %q", r.Error, want)
+		}
+	}
+}
+
+// TestCloneReplayRefused: the same for a clone plan.
+func TestCloneReplayRefused(t *testing.T) {
+	f := newEvalFix(t)
+	plan := runplan.ForClone(f.w, []model.Candidate{f.cand(2, 3)}, workspace.NewRunID(), nil, "/var/opt/mssql/backup", false, 1<<20)
+	plan.Server, plan.MachineName = "lab01", "LABM"
+	plan = plan.Seal()
+	if err := f.ws.WriteJSON(f.dir, workspace.PlanFile(runplan.PhaseClone), plan); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.ws.Record(workspace.Entry{RunID: plan.RunID, Server: "lab01", Database: "app", Kind: workspace.KindStatistics,
+		Schema: "dbo", Table: "godta_t", Name: "godta_" + plan.RunID + "_s1", State: workspace.StatePlanned, At: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(f.dir, workspace.PlanFile(runplan.PhaseClone))
+	code, out := invoke(t, noOpen(t), append([]string{"clone", "--allow-write", "--plan", file, "--host-dir", t.TempDir()}, f.args...)...)
+	if code != exitRefused || out.OK || len(out.Databases) != 1 {
+		t.Fatalf("code %d, output %+v; want code 3, ok false, one database", code, out)
+	}
+	for _, want := range []string{plan.RunID, "cleanup", "--dry-run"} {
+		if !strings.Contains(out.Databases[0].Error, want) {
+			t.Errorf("error %q does not contain %q", out.Databases[0].Error, want)
+		}
 	}
 }
 
