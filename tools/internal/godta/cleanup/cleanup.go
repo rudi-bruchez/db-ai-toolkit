@@ -300,9 +300,46 @@ func eachRow(ctx context.Context, q conn.Querier, query string, args []any, f fu
 // ErrNotCleanupPlan is returned for a plan of another phase.
 var ErrNotCleanupPlan = errors.New("not a cleanup plan")
 
+// ErrForeignStep refuses a plan with a step that is not the cleanup of a
+// goDTA object: its journal entry does not name an object of the run form
+// (tsql.IsRunName), or its SQL is not the statement runplan.ForCleanup
+// writes for that entry. The checksum is an unkeyed SHA-256, so it tells an
+// accidental change from the dry run's plan, not a plan edited and sealed
+// again: this check is what keeps such a plan from dropping a real object.
+var ErrForeignStep = errors.New("a step is not the cleanup of a goDTA object")
+
+// checkStep returns nil when s drops or deletes the object of its journal
+// entry, of goDTA's name form, with exactly the statement ForCleanup gives
+// for that entry.
+func checkStep(s runplan.Step) error {
+	if s.Journal == nil {
+		return fmt.Errorf("%w: step %d has no journal entry", ErrForeignStep, s.N)
+	}
+	e := *s.Journal
+	if !tsql.IsRunName(e.Name) {
+		return fmt.Errorf("%w: step %d, %s %q is not named like a goDTA object (godta_<run ID>_...)", ErrForeignStep, s.N, e.Kind, e.Name)
+	}
+	if e.Kind == workspace.KindBackupFile {
+		base := e.Path[strings.LastIndexAny(e.Path, `/\`)+1:]
+		if base != e.Name {
+			return fmt.Errorf("%w: step %d, backup file %q is not named %q", ErrForeignStep, s.N, e.Path, e.Name)
+		}
+	}
+	want := runplan.ForCleanup([]workspace.Entry{e})
+	if len(want.Steps) != 1 {
+		return fmt.Errorf("%w: step %d, %s %s: no cleanup statement for this kind", ErrForeignStep, s.N, e.Kind, describe(e))
+	}
+	if s.SQL != want.Steps[0].SQL {
+		return fmt.Errorf("%w: step %d sends %q, the cleanup of %s %s is %q", ErrForeignStep, s.N, s.SQL, e.Kind, describe(e), want.Steps[0].SQL)
+	}
+	return nil
+}
+
 // Run executes the sealed cleanup plan p, step by step, and records each
 // object it removes as "removed" in the journal. It refuses a plan whose
-// checksum is wrong or that was made for another server (runplan.Verify).
+// checksum is wrong or that was made for another server (runplan.Verify),
+// and, before it sends anything, a plan with a step that checkStep refuses
+// (ErrForeignStep).
 //
 // Before each step it checks, by a read, that the object is still there and
 // still goDTA's kind of object: one already gone (an entry left "planned" by
@@ -331,6 +368,11 @@ func Run(ctx context.Context, server conn.Querier, open func(db string) (*sql.DB
 	if err := runplan.Verify(p, inst, p.Database, nil); err != nil {
 		return nil, fmt.Errorf("cleanup: %w", err)
 	}
+	for _, s := range p.Steps {
+		if err := checkStep(s); err != nil {
+			return nil, fmt.Errorf("cleanup: %w", err)
+		}
+	}
 	pools := map[string]*sql.DB{}
 	defer func() {
 		for _, db := range pools {
@@ -356,10 +398,6 @@ func Run(ctx context.Context, server conn.Querier, open func(db string) (*sql.DB
 	var removed []workspace.Entry
 	var errs []error
 	for _, s := range p.Steps {
-		if s.Journal == nil {
-			errs = append(errs, fmt.Errorf("step %d: no journal entry", s.N))
-			continue
-		}
 		e := *s.Journal
 		fail := func(err error) {
 			errs = append(errs, fmt.Errorf("step %d, %s %s: %w", s.N, e.Kind, describe(e), err))

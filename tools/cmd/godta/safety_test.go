@@ -447,9 +447,31 @@ func TestEvaluateRefusedByVerify(t *testing.T) {
 
 // TestCleanupPlanRefused: cleanup --allow-write --plan refuses with exit 3,
 // the code of "refused, nothing written", and sends no drop, a cleanup plan
-// edited after its dry run or made for another machine.
+// edited after its dry run, made for another machine, or whose step was
+// edited to drop a real index and sealed again.
 func TestCleanupPlanRefused(t *testing.T) {
-	for _, c := range refusals {
+	resealed := struct {
+		name   string
+		change func(t *testing.T, f *evalFix, file string)
+		want   string
+	}{"step edited and sealed again", func(t *testing.T, _ *evalFix, file string) {
+		var p runplan.Plan
+		data, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(data, &p); err != nil {
+			t.Fatal(err)
+		}
+		p.Steps[0].SQL = "DROP INDEX [pk] ON [dbo].[godta_t]"
+		if data, err = json.Marshal(p.Seal()); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(file, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}, "not the cleanup of a goDTA object"}
+	for _, c := range append(slices.Clone(refusals), resealed) {
 		t.Run(c.name, func(t *testing.T) {
 			f := newEvalFix(t)
 			if err := f.ws.Record(workspace.Entry{RunID: "abcd1234", Server: "lab01", Database: "app", Kind: workspace.KindHypotheticalIndex,

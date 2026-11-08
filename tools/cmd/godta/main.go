@@ -1301,7 +1301,7 @@ func (a *app) cleanup(args []string) error {
 	}
 	removed, err := cleanup.Run(a.ctx, server, open, a.ws, plan)
 	err = a.interrupted(err, cmdCleanup)
-	if err != nil && (errors.Is(err, runplan.ErrChecksum) || errors.Is(err, runplan.ErrWrongServer)) {
+	if err != nil && (errors.Is(err, runplan.ErrChecksum) || errors.Is(err, runplan.ErrWrongServer) || errors.Is(err, cleanup.ErrForeignStep)) {
 		return refusedf("--plan %s refused: %v", plans[0], err)
 	}
 	a.cleanupResults(inst.ServerName, plan, removed, err != nil)

@@ -611,3 +611,65 @@ func TestCleanupDropTimesOut(t *testing.T) {
 		t.Errorf("%s: %d after the timed out drop, want 1", name, n)
 	}
 }
+
+// TestCleanupRefusesEditedPlan: a cleanup plan whose steps were edited after
+// the dry run to drop a real index is refused before any statement, sealed
+// again or not, and so is one whose journal entry was edited to name the
+// real index. goDTA's own hypothetical index of the plan is not dropped
+// either.
+func TestCleanupRefusesEditedPlan(t *testing.T) {
+	e := newEnv(t)
+	dbName, db := e.smallDB()
+	const real = "ix_real"
+	e.exec(db, tsql.CreateIndex(tsql.IndexDef{Table: godtaH, Name: real, Keys: []tsql.KeyCol{{Name: "x"}}}))
+	ours := runplan.IndexName(workspace.NewRunID(), 1)
+	e.hypothetical(db, ours)
+	en := e.entry(dbName, workspace.KindHypotheticalIndex, ours, workspace.StateCreated)
+	e.record(en)
+	dropReal := tsql.DropIndex(godtaH, real)
+
+	for _, c := range []struct {
+		name string
+		edit func(p runplan.Plan) runplan.Plan
+		want error
+	}{
+		{"step SQL, not sealed again", func(p runplan.Plan) runplan.Plan {
+			p.Steps[0].SQL = dropReal
+			return p
+		}, runplan.ErrChecksum},
+		{"step SQL, sealed again", func(p runplan.Plan) runplan.Plan {
+			p.Steps[0].SQL = dropReal
+			return p.Seal()
+		}, cleanup.ErrForeignStep},
+		{"step SQL and journal entry, sealed again", func(p runplan.Plan) runplan.Plan {
+			j := *p.Steps[0].Journal
+			j.Name = real
+			p.Steps[0].Journal = &j
+			p.Steps[0].SQL = dropReal
+			return p.Seal()
+		}, cleanup.ErrForeignStep},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			p := e.plan([]workspace.Entry{en})
+			p.Steps = slices.Clone(p.Steps)
+			removed, err := cleanup.Run(e.ctx, e.server, e.open, e.ws, c.edit(p))
+			if !errors.Is(err, c.want) {
+				t.Errorf("Run: %v, want %v", err, c.want)
+			}
+			if len(removed) != 0 {
+				t.Errorf("removed %+v, want none", removed)
+			}
+			if n := indexCount(t, e.ctx, db, real); n != 1 {
+				t.Fatalf("real index %s: %d left, want 1", real, n)
+			}
+			if n := indexCount(t, e.ctx, db, ours); n != 1 {
+				t.Errorf("%s: %d left, want 1: nothing of a refused plan is sent", ours, n)
+			}
+		})
+	}
+	// The plan as the dry run wrote it still runs.
+	e.run([]workspace.Entry{en})
+	if n := indexCount(t, e.ctx, db, ours); n != 0 {
+		t.Errorf("%s still there after the plan of the dry run", ours)
+	}
+}
