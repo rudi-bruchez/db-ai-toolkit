@@ -225,6 +225,7 @@
       "origin": "algorithm",
       "gain": null,
       "maintenance": null,
+      "status": "not evaluated: timeout",
       "size_mb": null,
       "formula": "gain = sum((before - after) x executions); maintenance = sum(operator cost x executions); recommended when gain \u003e= 10% of the cost and maintenance \u003c= gain / 2",
       "queries": [

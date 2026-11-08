@@ -1095,7 +1095,7 @@ func (a *app) reportOne(l loaded, target string) (model.SummaryRow, error) {
 	if ev.Error != "" {
 		warnings = append(warnings, "evaluation stopped: "+ev.Error)
 	}
-	if err := report.Write(a.ws, l.dir, l.w, recs, ev.AutoCreatedStats, warnings); err != nil {
+	if err := report.Write(a.ws, l.dir, l.w, recs, evaluated, ev.AutoCreatedStats, warnings); err != nil {
 		return row, err
 	}
 	for _, rec := range recs {
