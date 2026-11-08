@@ -188,11 +188,46 @@ func TestRowsWrittenFallback(t *testing.T) {
 	w.Maintenance = 99 // must not count: not measured
 	r := one(t, Score(workload(), []model.Candidate{cand("A", 1, 2)},
 		[]model.Measure{measured(1, "A", 10, 1), w}, DefaultThresholds()))
-	if r.Maintenance != 50 { // 10 executions x 5 rows
-		t.Errorf("maintenance = %v, want 50", r.Maintenance)
+	if r.Maintenance != 0 || r.RowsWritten != 50 { // 10 executions x 5 rows
+		t.Errorf("maintenance = %v, rows written = %v, want 0 and 50", r.Maintenance, r.RowsWritten)
 	}
 	if !slices.Contains(r.Notes, NoteRowsWritten) {
 		t.Errorf("notes %q lack %q", r.Notes, NoteRowsWritten)
+	}
+}
+
+// A bulk load of 200000 rows that could not be measured must not be
+// compared, in rows, with a gain in cost units: it used to reject a candidate
+// whose real gain was 95 % of the query cost.
+func TestUnmeasuredWriteDowngradesToDiscuss(t *testing.T) {
+	w := workload()
+	w.Writes[0].Executions = 3
+	w.Writes[0].AvgRowcount = 200000
+	u := measured(2, "A", 5, 5)
+	u.Status = "not evaluated: unreplayable (temporary table)"
+	r := one(t, Score(w, []model.Candidate{cand("A", 1, 2)},
+		[]model.Measure{measured(1, "A", 100, 5), u}, DefaultThresholds()))
+	if r.Decision != Discuss {
+		t.Fatalf("decision %q, want discuss (notes %q)", r.Decision, r.Notes)
+	}
+	if r.Maintenance != 0 || r.RowsWritten != 600000 {
+		t.Errorf("maintenance %v, rows written %v, want 0 and 600000", r.Maintenance, r.RowsWritten)
+	}
+	for _, n := range []string{NoteRowsWritten, noteMaintenanceUnknown} {
+		if !slices.Contains(r.Notes, n) {
+			t.Errorf("notes %q lack %q", r.Notes, n)
+		}
+	}
+}
+
+// Other rejections stay rejections, even with an unmeasured write.
+func TestUnmeasuredWriteKeepsOtherRejections(t *testing.T) {
+	u := measured(2, "A", 5, 5)
+	u.Status = "not evaluated: unreplayable (temporary table)"
+	r := one(t, Score(workload(), []model.Candidate{cand("A", 1, 2)},
+		[]model.Measure{measured(1, "A", 1.05, 1), u}, DefaultThresholds()))
+	if r.Decision != Rejected {
+		t.Fatalf("decision %q, want rejected (notes %q)", r.Decision, r.Notes)
 	}
 }
 

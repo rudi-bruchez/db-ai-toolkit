@@ -105,10 +105,12 @@ type ResultRec struct {
 	Existing    *ResultExisting `json:"existing,omitempty"`
 	Gain        *float64        `json:"gain"`
 	Maintenance *float64        `json:"maintenance"`
-	SizeMB      *float64        `json:"size_mb"`
-	Formula     string          `json:"formula,omitempty"`
-	Queries     []ResultQuery   `json:"queries"`
-	Notes       []string        `json:"notes,omitempty"`
+	// RowsWritten is in rows, not cost units; see model.Recommendation.
+	RowsWritten float64       `json:"rows_written,omitempty"`
+	SizeMB      *float64      `json:"size_mb"`
+	Formula     string        `json:"formula,omitempty"`
+	Queries     []ResultQuery `json:"queries"`
+	Notes       []string      `json:"notes,omitempty"`
 }
 
 // ResultExisting is an existing index a candidate is about. Usage counters
@@ -717,6 +719,9 @@ func block(b *strings.Builder, w *model.Workload, it *item, n int) {
 		p("- Status: %s\n", strings.Join(st, "; "))
 	} else {
 		p("- Gain: %s, maintenance: %s, estimated size: %s MB\n", num(r.Gain), num(r.Maintenance), num(r.SizeMB))
+		if r.RowsWritten != 0 {
+			p("- Rows written by the unmeasured writes: %s\n", num(r.RowsWritten))
+		}
 	}
 	if e := it.existing; e != nil {
 		p("- Existing index %s: `%s`; %s\n", e.Name, describeIndex(it.table, *e), usage(e.Usage))
@@ -785,6 +790,9 @@ func renderScript(w *model.Workload, items []*item) string {
 		c := it.rec.Candidate
 		p("\n-- %d. %s, candidate %s, origin %s\n", n, actionText(it), c.ID, origin(c))
 		p("-- Gain %s, maintenance %s, estimated size %s MB\n", num(it.rec.Gain), num(it.rec.Maintenance), num(it.rec.SizeMB))
+		if it.rec.RowsWritten != 0 {
+			p("-- Rows written by the unmeasured writes: %s\n", num(it.rec.RowsWritten))
+		}
 		if it.skip != "" {
 			p("-- Not scripted: %s\n", it.skip)
 			continue
@@ -839,6 +847,7 @@ func result(w *model.Workload, items []*item, autoStats, warnings, redund []stri
 		}
 		if it.section != "not_evaluated" {
 			rr.Gain, rr.Maintenance, rr.SizeMB = ptr(r.Gain), ptr(r.Maintenance), ptr(r.SizeMB)
+			rr.RowsWritten = r.RowsWritten
 		}
 		if e := it.existing; e != nil {
 			rr.Existing = &ResultExisting{Name: e.Name, Definition: describeIndex(it.table, *e), Usage: e.Usage,

@@ -24,14 +24,15 @@ const StatusMeasured = "measured"
 
 // Notes written on the recommendations.
 const (
-	NoteSampled       = "estimates use sampled statistics; a real index has full-scan statistics"
-	NotePlanCache     = "plan cache: no reliable maintenance source"
-	NoteRowsWritten   = "maintenance estimated from rows written"
-	NoteUnreliable    = "unreliable estimate"
-	noteRedundantBy   = "made redundant by "
-	noteGainLow       = "gain below threshold"
-	noteMaintenanceHi = "maintenance above threshold"
-	noteNoMeasure     = "not enough measured queries"
+	NoteSampled            = "estimates use sampled statistics; a real index has full-scan statistics"
+	NotePlanCache          = "plan cache: no reliable maintenance source"
+	NoteRowsWritten        = "maintenance estimated from rows written"
+	noteMaintenanceUnknown = "maintenance of the unmeasured writes is unknown"
+	NoteUnreliable         = "unreliable estimate"
+	noteRedundantBy        = "made redundant by "
+	noteGainLow            = "gain below threshold"
+	noteMaintenanceHi      = "maintenance above threshold"
+	noteNoMeasure          = "not enough measured queries"
 )
 
 // Thresholds are the configurable limits of the decision.
@@ -60,7 +61,7 @@ func Formula(th Thresholds) string {
 		"plus sum over the measured writes of (estimated cost before - (estimated cost after - maintenance)) x executions, " +
 		"the read-side saving of the write only, since its cost after includes the maintenance; " +
 		"maintenance = sum over the measured writes of the cost of the operator maintaining the index x executions " +
-		"(rows written x executions for a write that could not be measured); " +
+		"(a write that could not be measured adds nothing to it: its rows written x executions are reported apart, in rows, and the candidate is at best discuss); " +
 		"recommended when at least " + strconv.Itoa(th.MinQueries) + " query is measured, " +
 		"gain > 0 and gain >= " + pct(th.MinGainRatio) + " of the summed cost before x executions, " +
 		"and maintenance <= " + pct(th.MaxMaintenanceRatio) + " of gain; otherwise rejected; " +
@@ -178,7 +179,7 @@ func Score(w *model.Workload, cands []model.Candidate, ms []model.Measure, th Th
 				continue
 			}
 			q := queries[id]
-			r.Maintenance += float64(q.Executions) * q.AvgRowcount
+			r.RowsWritten += float64(q.Executions) * q.AvgRowcount
 			rowsWritten = true
 		}
 		if rowsWritten {
@@ -200,6 +201,12 @@ func Score(w *model.Workload, cands []model.Candidate, ms []model.Measure, th Th
 			r.Notes = append(r.Notes, noteMaintenanceHi)
 		default:
 			r.Decision = Recommended
+		}
+		if rowsWritten && r.Decision == Recommended {
+			// The maintenance of those writes is not in cost units, so it
+			// cannot be compared with the gain: a human decides.
+			r.Notes = append(r.Notes, noteMaintenanceUnknown)
+			r.Decision = Discuss
 		}
 
 		// Caps: at best discuss.

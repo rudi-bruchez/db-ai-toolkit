@@ -255,6 +255,10 @@ type Recommendation struct {
 	Candidate   Candidate `json:"candidate"`
 	Gain        float64   `json:"gain"`
 	Maintenance float64   `json:"maintenance"`
+	// RowsWritten is executions x average rows of the writes of the
+	// candidate's table that could not be measured. Rows, not cost units:
+	// it is never added to Maintenance.
+	RowsWritten float64   `json:"rows_written,omitempty"`
 	SizeMB      float64   `json:"size_mb"`
 	Decision    string    `json:"decision"`
 	Formula     string    `json:"formula"`
