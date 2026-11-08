@@ -170,6 +170,11 @@ func sectionOf(r model.Recommendation) string {
 	if !measured(r) {
 		return "not_evaluated"
 	}
+	if r.Decision == Recommended && r.Candidate.Decision == model.DecisionDiscuss {
+		// The confrontation left it to discuss (spec section 8.3): no
+		// script, so never among the recommended indexes.
+		return Discuss
+	}
 	switch r.Decision {
 	case Recommended, Discuss:
 		return r.Decision

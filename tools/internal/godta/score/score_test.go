@@ -111,6 +111,26 @@ func TestUnmeasuredHasNoGain(t *testing.T) {
 	}
 }
 
+// TestConfrontDiscussNeverRecommended: a candidate the confrontation left
+// to discuss (an existing index it would widen supports a constraint) is at
+// best discuss, whatever its gain.
+func TestConfrontDiscussNeverRecommended(t *testing.T) {
+	ms := []model.Measure{measured(1, "A", 10, 1)}
+	ok := one(t, Score(workload(), []model.Candidate{cand("A", 1)}, ms, DefaultThresholds()))
+	if ok.Decision != Recommended {
+		t.Fatalf("control, a new candidate: decision %q, want recommended", ok.Decision)
+	}
+	c := cand("A", 1)
+	c.Decision, c.Existing = model.DecisionDiscuss, "pk_Activite"
+	r := one(t, Score(workload(), []model.Candidate{c}, ms, DefaultThresholds()))
+	if r.Decision != Discuss {
+		t.Fatalf("decision %q, want discuss (notes %q)", r.Decision, r.Notes)
+	}
+	if !slices.Contains(r.Notes, NoteConfrontDiscuss+" with pk_Activite") {
+		t.Errorf("notes %q do not say why", r.Notes)
+	}
+}
+
 func TestFormulaStable(t *testing.T) {
 	run := func() string {
 		return one(t, Score(workload(), []model.Candidate{cand("A", 1)},
