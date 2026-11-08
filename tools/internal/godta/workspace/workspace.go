@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -71,30 +72,65 @@ func Open(root string) (WS, error) {
 	return WS{Root: abs}, nil
 }
 
-// SafeName turns a server or database name into a single path component.
-// Every character outside [A-Za-z0-9._-] becomes '_'; when anything was
-// replaced, the first 8 hex digits of the SHA-256 of the original name are
-// appended so that two different names never share a directory. An empty
-// name, "." and ".." are treated as replaced and become "_-<hash>".
+// SafeName turns a server or database name into a single path component
+// that no other name shares, even on a file system that ignores case
+// (Windows, macOS) or reserves device names (Windows).
+//
+// A plain name, made of [a-z0-9._-] only, is kept as it is. Every other name
+// gets the first 8 hex digits of the SHA-256 of the original name appended,
+// after its characters outside [A-Za-z0-9._-] became '_'. So are hashed: a
+// name with an upper-case letter (Sales and SALES, two databases of a
+// case-sensitive instance, would otherwise share a directory on a
+// case-insensitive file system), a name ending with '.' (Windows drops it),
+// a name already of the form <x>-<8 hex digits> (it could be another name's
+// hashed form), and a Windows device name (CON, PRN, AUX, NUL, COM0 to 9,
+// LPT0 to 9, alone or before an extension), which also gets a leading '_'
+// since the device name stays reserved before any extension. An empty name,
+// "." and ".." become "_-<hash>".
 func SafeName(name string) string {
 	if name == "" || name == "." || name == ".." {
 		return "_-" + shortHash(name)
 	}
 	var b strings.Builder
-	replaced := false
+	hash := false
 	for _, r := range name {
 		switch {
-		case r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '.', r == '_', r == '-':
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '.', r == '_', r == '-':
 			b.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+			hash = true
 		default:
 			b.WriteByte('_')
-			replaced = true
+			hash = true
 		}
 	}
-	if !replaced {
-		return name
+	out := b.String()
+	reserved := reservedDevice(out)
+	if !hash && !reserved && !strings.HasSuffix(out, ".") && !hashedForm.MatchString(out) {
+		return out
 	}
-	return b.String() + "-" + shortHash(name)
+	if reserved {
+		out = "_" + out
+	}
+	return out + "-" + shortHash(name)
+}
+
+// hashedForm is the tail SafeName appends: a plain name ending like it is
+// hashed too, so that it never equals another name's hashed form.
+var hashedForm = regexp.MustCompile(`-[0-9a-fA-F]{8}$`)
+
+// reservedDevice reports whether name is a Windows device name, alone or
+// before an extension ("nul", "CON.db"), compared without case.
+func reservedDevice(name string) bool {
+	stem, _, _ := strings.Cut(name, ".")
+	stem = strings.ToUpper(stem)
+	switch stem {
+	case "CON", "PRN", "AUX", "NUL":
+		return true
+	}
+	return len(stem) == 4 && (strings.HasPrefix(stem, "COM") || strings.HasPrefix(stem, "LPT")) &&
+		stem[3] >= '0' && stem[3] <= '9'
 }
 
 func shortHash(s string) string {
