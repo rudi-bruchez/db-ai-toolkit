@@ -257,6 +257,9 @@ const (
 // UsedHypothetical names the hypothetical indexes the plan after reads, by
 // candidate ID like Combined (not by index name): score matches it against
 // Candidate.ID.
+// A combined measure records no Maintenance (0 even for a write): score
+// reads only its UsedHypothetical, its Status and its Notes, never its
+// costs, so it is never compared with the measures of one candidate.
 // Status is "measured" or one of the "not evaluated: ..." statuses.
 type Measure struct {
 	QueryID   int64    `json:"query_id"`
