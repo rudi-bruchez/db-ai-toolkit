@@ -1333,9 +1333,10 @@ func (a *app) cleanupResults(server string, plan runplan.Plan, removed []workspa
 	byDB := groupEntries(removed)
 	leftDB := map[string][]workspace.Entry{}
 	for _, e := range left {
-		leftDB[e.Database] = append(leftDB[e.Database], e)
-		if _, ok := byDB[e.Database]; !ok {
-			byDB[e.Database] = nil
+		db := cleanup.Scope(e)
+		leftDB[db] = append(leftDB[db], e)
+		if _, ok := byDB[db]; !ok {
+			byDB[db] = nil
 		}
 	}
 	for _, db := range sortedKeys(byDB) {
@@ -1381,10 +1382,12 @@ func (a *app) cleanupDryRun(server *sql.DB, inst conn.Instance, open func(string
 	return nil
 }
 
+// groupEntries describes the entries by database: a clone database or a
+// backup file under the database it was made from (cleanup.Scope).
 func groupEntries(entries []workspace.Entry) map[string][]string {
 	by := map[string][]string{}
 	for _, e := range entries {
-		by[e.Database] = append(by[e.Database], describeEntry(e))
+		by[cleanup.Scope(e)] = append(by[cleanup.Scope(e)], describeEntry(e))
 	}
 	return by
 }

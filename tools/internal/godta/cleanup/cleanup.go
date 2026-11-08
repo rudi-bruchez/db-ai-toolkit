@@ -40,6 +40,17 @@ type Found struct {
 	Warnings  []string          `json:"warnings"`
 }
 
+// Scope is the database of e for a selection by --include and --exclude:
+// its Source for a clone database or a backup file, which belong to the
+// server (Database master) but were made from a database, its Database
+// otherwise.
+func Scope(e workspace.Entry) string {
+	if e.Source != "" && (e.Kind == workspace.KindCloneDatabase || e.Kind == workspace.KindBackupFile) {
+		return e.Source
+	}
+	return e.Database
+}
+
 // Entries returns Journal then ByPattern, the input of runplan.ForCleanup.
 func (f Found) Entries() []workspace.Entry {
 	out := make([]workspace.Entry, 0, len(f.Journal)+len(f.ByPattern))
@@ -53,7 +64,10 @@ func (f Found) Entries() []workspace.Entry {
 //
 // selected, when not nil, limits Find to the databases it accepts (cleanup
 // --include, --exclude): the others are never opened, and their journal
-// entries are left out. A database that cannot be opened or read, or that
+// entries are left out (Scope). A clone database or a backup file whose
+// source database is not known (an older journal, a clone found by the name
+// pattern only) is left out with a warning, since it cannot be tied to a
+// selected database. A database that cannot be opened or read, or that
 // disappears meanwhile, is a warning for that database, not a failure.
 func Find(ctx context.Context, server conn.Querier, open func(db string) (*sql.DB, error), ws workspace.WS, selected func(db string) bool) (Found, error) {
 	all := selected == nil
@@ -75,7 +89,12 @@ func Find(ctx context.Context, server conn.Querier, open func(db string) (*sql.D
 			continue
 		}
 		journaled[identity(e)] = true
-		if in(e.Database) {
+		serverObject := e.Kind == workspace.KindCloneDatabase || e.Kind == workspace.KindBackupFile
+		switch {
+		case !all && serverObject && e.Source == "":
+			f.Warnings = append(f.Warnings, fmt.Sprintf("journal: %s %s of run %s does not record its source database: "+
+				"left out of a cleanup limited by --include or --exclude; run cleanup without them to remove it", e.Kind, describe(e), e.RunID))
+		case in(Scope(e)):
 			f.Journal = append(f.Journal, e)
 		}
 	}
@@ -112,7 +131,11 @@ func Find(ctx context.Context, server conn.Querier, open func(db string) (*sql.D
 			f.Unknown = append(f.Unknown, fmt.Sprintf("database %s: a clone whose name matches the pattern only through the collation, not goDTA's", tsql.QuoteName(name)))
 			continue
 		}
-		if !in(ServerDatabase) {
+		if !all {
+			if !journaled[identity(workspace.Entry{Kind: workspace.KindCloneDatabase, Name: name})] {
+				f.Warnings = append(f.Warnings, fmt.Sprintf("database %s: a goDTA clone found by its name, whose source database is unknown: "+
+					"left out of a cleanup limited by --include or --exclude; run cleanup without them to remove it", tsql.QuoteName(name)))
+			}
 			continue
 		}
 		add(workspace.Entry{Database: ServerDatabase, Kind: workspace.KindCloneDatabase, Name: name})
