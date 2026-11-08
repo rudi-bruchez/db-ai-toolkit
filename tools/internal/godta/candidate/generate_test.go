@@ -448,3 +448,31 @@ func TestEqOrderFromExisting(t *testing.T) {
 		t.Errorf("Rules %v, want no %q", d.Rules, RuleEqOrderFromExisting)
 	}
 }
+
+// TestReadOnlyWriteBindsAsRead: INSERT INTO godta_t SELECT ... FROM godta_h
+// reads godta_h and writes godta_t. A candidate on godta_h without queries
+// receives it as a read (it can find its rows through the candidate), one
+// with queries does not, and WritesTable says it writes godta_t only.
+func TestReadOnlyWriteBindsAsRead(t *testing.T) {
+	w := workload()
+	h := scan("godta_h")
+	q := query(5, showplan.Statement{
+		Accesses: []showplan.Access{h},
+		Writes:   []showplan.Write{{Op: "Clustered Index Insert", Objs: []showplan.ObjRef{{Database: dbName, Schema: "dbo", Table: "godta_t", Index: "pk_godta_t"}}}},
+	})
+	q.IsWrite = true
+	w.Writes = []model.Query{q}
+	out := BindQueries([]model.Candidate{
+		{Table: tblH, Keys: keys(asc(1)), Origin: OriginAI},
+		{Table: tblH, Keys: keys(asc(2)), Origin: OriginAlgorithm, Queries: []int64{99}},
+	}, w)
+	if !slices.Equal(out[0].Queries, []int64{5}) {
+		t.Errorf("Queries %v, want [5]: the write reads godta_h", out[0].Queries)
+	}
+	if !slices.Equal(out[1].Queries, []int64{99}) {
+		t.Errorf("Queries %v, want [99]: the write does not write godta_h", out[1].Queries)
+	}
+	if WritesTable(w, q, tblH) || !WritesTable(w, q, tblT) {
+		t.Errorf("WritesTable godta_h %v, godta_t %v, want false and true", WritesTable(w, q, tblH), WritesTable(w, q, tblT))
+	}
+}

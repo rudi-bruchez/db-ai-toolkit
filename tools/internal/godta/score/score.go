@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/candidate"
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/model"
 )
 
@@ -121,13 +122,13 @@ func IndexBytes(t *model.Table, c model.Candidate) (keyAndInclude, clustered flo
 // Queries.
 func Score(w *model.Workload, cands []model.Candidate, ms []model.Measure, th Thresholds) []model.Recommendation {
 	queries := map[int64]model.Query{}
-	writes := map[int64]bool{}
+	writeIDs := map[int64]bool{}
 	for _, q := range w.Queries {
 		queries[q.QueryID] = q
 	}
 	for _, q := range w.Writes {
 		queries[q.QueryID] = q
-		writes[q.QueryID] = true
+		writeIDs[q.QueryID] = true
 	}
 	formula := Formula(th)
 
@@ -137,6 +138,14 @@ func Score(w *model.Workload, cands []model.Candidate, ms []model.Measure, th Th
 		if t := w.Tables[c.Table]; t != nil {
 			kb, cb := IndexBytes(t, c)
 			r.SizeMB = float64(EstimatedPages(t.Rows, kb, cb)) * 8 / 1024
+		}
+
+		// The writes of c's table: a write bound to c that only reads the
+		// table (INSERT INTO b SELECT ... FROM a, for c on a) is a read
+		// here, with no maintenance and no rows written.
+		writes := map[int64]bool{}
+		for id := range writeIDs {
+			writes[id] = candidate.WritesTable(w, queries[id], c.Table)
 		}
 
 		var before float64

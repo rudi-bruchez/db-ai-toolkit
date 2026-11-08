@@ -575,7 +575,10 @@ func ID(c model.Candidate) string {
 // Every candidate, with queries or without, also receives every write whose
 // plan writes its table: its maintenance is measured on the writes of the
 // table (spec section 8.6), and a write such as INSERT ... VALUES writes the
-// table without reading it. The input is not changed.
+// table without reading it. A write that only reads the table (INSERT INTO b
+// SELECT ... FROM a, for a candidate on a) is bound as a read: it can use the
+// candidate to find its rows, and the score, by WritesTable, does not count
+// it among the writes of the table. The input is not changed.
 func BindQueries(cands []model.Candidate, w *model.Workload) []model.Candidate {
 	r := newResolver(w)
 	readers := map[int][]int64{}
@@ -593,13 +596,9 @@ func BindQueries(cands []model.Candidate, w *model.Workload) []model.Candidate {
 						}
 					}
 				}
-				for _, wr := range st.Writes {
-					for _, o := range wr.Objs {
-						if t := r.table(o); t != nil {
-							writers[t.ObjectID] = append(writers[t.ObjectID], q.QueryID)
-						}
-					}
-				}
+			}
+			for _, id := range writtenTables(r, q.Plan) {
+				writers[id] = append(writers[id], q.QueryID)
 			}
 		}
 	}
@@ -614,4 +613,33 @@ func BindQueries(cands []model.Candidate, w *model.Workload) []model.Candidate {
 		out[i].Queries = slices.Compact(qs)
 	}
 	return out
+}
+
+// writtenTables lists the object_ids of the tables an insert, update, delete
+// or merge operator of p names, each once, sorted.
+func writtenTables(r resolver, p *showplan.Plan) []int {
+	var out []int
+	for _, st := range p.Statements {
+		for _, wr := range st.Writes {
+			for _, o := range wr.Objs {
+				if t := r.table(o); t != nil && !slices.Contains(out, t.ObjectID) {
+					out = append(out, t.ObjectID)
+				}
+			}
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// WritesTable reports whether the write q writes table, the object_id of a
+// table of w: an operator of its plan inserts, updates, deletes or merges
+// rows of it. INSERT INTO b SELECT ... FROM a reads a and writes b only. A
+// write without a plan is taken to write the table, nothing saying
+// otherwise.
+func WritesTable(w *model.Workload, q model.Query, table int) bool {
+	if q.Plan == nil {
+		return true
+	}
+	return slices.Contains(writtenTables(newResolver(w), q.Plan), table)
 }
