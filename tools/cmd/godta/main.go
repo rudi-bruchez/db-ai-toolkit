@@ -19,6 +19,12 @@
 // the execution plan its --dry-run wrote, and executes that plan only (spec
 // section 7). evaluate --target lab writes on the lab only: no plan, the lab
 // guards instead (package lab).
+// The self-signed certificate that SQL Server 2016 and 2017 generate at
+// startup has a negative serial number, which crypto/x509 refuses since Go
+// 1.23 ("x509: negative serial number", measured on 2017 CU31). 2016 is in the
+// supported range (spec section 4).
+//
+//go:debug x509negativeserial=1
 package main
 
 import (

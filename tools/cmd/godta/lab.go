@@ -126,6 +126,10 @@ func (a *app) cloneDryRun(p sqlq.Profile, backupDir string, maxBytes, chunk int6
 		backupDir = inst.DefaultBackupPath
 	}
 	if backupDir == "" {
+		// Before 2019 the property is NULL; the registry holds the setting.
+		backupDir, _ = conn.RegistryBackupDir(a.ctx, server)
+	}
+	if backupDir == "" {
 		return usagef("the instance has no default backup directory: pass --backup-dir")
 	}
 	list, err := a.workloads(inst.ServerName)

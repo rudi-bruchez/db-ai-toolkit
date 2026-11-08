@@ -225,6 +225,23 @@ const identifyQuery = `SELECT
   ISNULL((SELECT CAST(value_in_use AS int) FROM sys.configurations
           WHERE name = N'max degree of parallelism'), 0);`
 
+// RegistryBackupDir reads the setup's default backup directory from the
+// instance registry. SERVERPROPERTY('InstanceDefaultBackupPath') is NULL
+// before 2019 (measured on 2017 CU31, where this returns /var/opt/mssql/data).
+// It is not part of Identify, which sends only SELECT statements.
+func RegistryBackupDir(ctx context.Context, q Querier) (string, error) {
+	var d sql.NullString
+	if err := q.QueryRowContext(ctx, backupDirQuery).Scan(&d); err != nil {
+		return "", fmt.Errorf("reading the default backup directory: %w", err)
+	}
+	return d.String, nil
+}
+
+const backupDirQuery = `DECLARE @d nvarchar(4000);
+EXEC master.dbo.xp_instance_regread N'HKEY_LOCAL_MACHINE',
+  N'Software\Microsoft\MSSQLServer\MSSQLServer', N'BackupDirectory', @d OUTPUT;
+SELECT @d;`
+
 // Identify reads the instance identity.
 func Identify(ctx context.Context, q Querier) (Instance, error) {
 	var i Instance
