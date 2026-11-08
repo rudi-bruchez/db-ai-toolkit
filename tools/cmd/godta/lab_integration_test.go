@@ -222,6 +222,9 @@ func TestLabEqualsServer(t *testing.T) {
 	readJSONFile(t, filepath.Join(dir, workspace.EvaluateLabFile), &labEv)
 	w := &model.Workload{}
 	readJSONFile(t, filepath.Join(dir, workspace.CollectFile), w)
+	if w.CollectID == "" || labEv.CollectID != w.CollectID {
+		t.Errorf("collect_id: collect.json %q, evaluate-lab.json %q, want the same", w.CollectID, labEv.CollectID)
+	}
 	var cands []model.Candidate
 	readJSONFile(t, filepath.Join(dir, labCandidatesFile), &cands)
 	defs := map[string]string{}
