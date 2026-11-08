@@ -2,12 +2,15 @@ package main
 
 // journal.go has what the write phases check in the journal of the project:
 // what a run left on a server when it ends, and whether a plan has already
-// run.
+// run or was replaced by a newer --dry-run.
 
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/runplan"
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/workspace"
@@ -97,6 +100,29 @@ func (a *app) planUnused(file string, plan runplan.Plan) error {
 	return refusedf("--plan %s refused: run %s of this plan has already been executed (%d journal entries); an execution plan runs once. "+
 		"To start again, %s, to remove what it left, then run godta %s --dry-run for a new plan",
 		file, plan.RunID, n, cleanupHint, plan.Phase)
+}
+
+// planCurrent refuses an evaluate plan that a later --dry-run replaced: the
+// candidates of the workspace are those of the current plan, not of the one
+// passed, and the plan approved is not the plan that would run.
+func (a *app) planCurrent(file string, plan runplan.Plan) error {
+	dir := a.ws.DBDir(plan.Server, plan.Database)
+	name := workspace.PlanFile(plan.Phase)
+	var cur runplan.Plan
+	if err := a.ws.ReadJSON(dir, name, &cur); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return failedf(fmt.Errorf("--plan %s: reading the current plan: %w", file, err))
+	}
+	if cur.RunID == plan.RunID {
+		return nil
+	}
+	return refusedf("--plan %s refused: it is run %s, made at %s, and a later %s --dry-run replaced it: "+
+		"the current plan of %s is %s, run %s, made at %s, and the candidates of the workspace are that plan's. "+
+		"Show the current plan and pass it to --plan once it is accepted, or run --dry-run again",
+		file, plan.RunID, plan.CreatedAt.Format(time.RFC3339), plan.Phase,
+		plan.Database, filepath.Join(dir, name), cur.RunID, cur.CreatedAt.Format(time.RFC3339))
 }
 
 // refuse records a database whose plan was refused before anything ran.

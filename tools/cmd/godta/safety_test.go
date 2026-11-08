@@ -279,6 +279,35 @@ func TestCloneReplayRefused(t *testing.T) {
 	}
 }
 
+// TestSupersededPlanRefused: a plan approved, then replaced by a newer
+// --dry-run (here with one more candidate), is refused with exit 3 before any
+// connection; the message names the current plan and says the approved one
+// was replaced.
+func TestSupersededPlanRefused(t *testing.T) {
+	f := newEvalFix(t)
+	file, old := f.dryRun(t)
+	approved := filepath.Join(t.TempDir(), "approved-plan.json")
+	data, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(approved, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f.writeCandidates(t, f.cand(2, 3), f.cand(3, 2))
+	current, cur := f.dryRun(t)
+	code, out := f.execute(t, context.Background(), noOpen(t), approved)
+	if code != exitRefused || out.OK || len(out.Databases) != 1 {
+		t.Fatalf("code %d, output %+v; want code 3, ok false, one database", code, out)
+	}
+	msg := out.Databases[0].Error
+	for _, want := range []string{old.RunID, cur.RunID, current, "replaced"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error %q does not contain %q", msg, want)
+		}
+	}
+}
+
 // TestCleanupLeftoverReported: cleanup cannot drop a journaled hypothetical
 // index (lock timeout on every attempt). The run fails, and the database of
 // the index is in the output with a status that says an object is left and
