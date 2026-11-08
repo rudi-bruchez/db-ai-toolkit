@@ -395,3 +395,36 @@ func TestSummary(t *testing.T) {
 		t.Errorf("the total gain of zeta is not in its row:\n%s", b)
 	}
 }
+
+// TestMeasuredPeriodLine: the Query Store counts by interval, so the
+// counters may cover more than the window. The context line gives both, and
+// says why when they differ; when they match it says only that.
+func TestMeasuredPeriodLine(t *testing.T) {
+	w := fixture("godta_it_golden")
+	w.Database.QueryStoreIntervalMinutes = 60
+	w.Measured = &model.Window{From: time.Date(2026, 11, 7, 7, 0, 0, 0, time.UTC),
+		Until: time.Date(2026, 11, 8, 9, 0, 0, 0, time.UTC)}
+	rep, script, res := write(t, w, recs())
+	const line = "- Workload source: Query Store, window requested from 2026-11-07 08:00:00 to 2026-11-08 08:00:00 (UTC), " +
+		"counters measured from 2026-11-07 07:00:00 to 2026-11-08 09:00:00 (UTC): the Query Store counts by interval " +
+		"of 60 minutes, and each interval that overlaps the window is counted whole\n"
+	if !strings.Contains(rep, line) {
+		t.Errorf("rapport.md lacks the line\n%s\ngot:\n%s", line, rep)
+	}
+	if !strings.Contains(script, "-- Workload source: Query Store, window requested from") {
+		t.Errorf("indexes.sql lacks the measured period:\n%s", script)
+	}
+	if !strings.Contains(res, `"measured": {`) || !strings.Contains(res, "2026-11-08T09:00:00Z") {
+		t.Errorf("result.json lacks the measured period:\n%s", res)
+	}
+
+	w.Measured = &w.Window
+	rep, _, _ = write(t, w, recs())
+	const same = "- Workload source: Query Store, from 2026-11-07 08:00:00 to 2026-11-08 08:00:00 (UTC), counters measured over the same period\n"
+	if !strings.Contains(rep, same) {
+		t.Errorf("rapport.md lacks the line\n%s\ngot:\n%s", same, rep)
+	}
+	if strings.Contains(rep, "counts by interval") {
+		t.Error("the interval explanation is given though the periods match")
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf16"
 
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/conn"
@@ -147,12 +148,13 @@ func Database(ctx context.Context, db *sql.DB, inst conn.Instance, info model.DB
 	}
 	switch w.Database.QueryStoreState {
 	case "READ_WRITE", "READ_ONLY":
-		all, err := queryStoreQueries(ctx, db, opt)
+		all, measured, err := queryStoreQueries(ctx, db, opt)
 		if err != nil {
 			return nil, err
 		}
 		if len(all) > 0 {
 			w.Source = model.SourceQueryStore
+			w.Measured = measured
 			if err := splitAndDetail(ctx, db, w, all, opt.TopN, queryStoreDetail); err != nil {
 				return nil, err
 			}
@@ -219,21 +221,26 @@ func readDBInfo(ctx context.Context, db *sql.DB, info model.DBInfo, w *model.Wor
 	}
 	d.IsClone = clone == 1
 	var state, mode sql.NullString
-	err = db.QueryRowContext(ctx, `SELECT /* godta:internal */ actual_state_desc, query_capture_mode_desc
-FROM sys.database_query_store_options;`).Scan(&state, &mode)
+	var interval sql.NullInt64
+	err = db.QueryRowContext(ctx, `SELECT /* godta:internal */ actual_state_desc, query_capture_mode_desc, interval_length_minutes
+FROM sys.database_query_store_options;`).Scan(&state, &mode, &interval)
 	if err != nil && err != sql.ErrNoRows {
 		return fmt.Errorf("reading the query store options: %w", err)
 	}
 	d.QueryStoreState = cmp.Or(state.String, "OFF")
 	if d.QueryStoreState != "OFF" {
 		w.CaptureMode = mode.String
+		d.QueryStoreIntervalMinutes = int(interval.Int64)
 	}
 	w.Database = d
 	return nil
 }
 
 // queryStoreAggregate totals the runtime statistics of each query over the
-// intervals that overlap the window. Only columns present since 2016 are
+// intervals that overlap the window. The Query Store cannot split an
+// interval: each is summed whole, and the first start and the last end of
+// the intervals summed are read with the totals, the period the counters
+// really cover. Only columns present since 2016 are
 // read. set_options is varbinary(8), converted to bigint here. The text is
 // cut to 4000 characters, enough to tell a write from a read; the full text
 // comes with the detail of the queries kept. goDTA's own queries, which carry
@@ -244,7 +251,8 @@ const queryStoreAggregate = `WITH /* godta:internal */ a AS (
     SUM(rs.avg_cpu_time * rs.count_executions) / 1000.0 AS cpu_ms,
     SUM(rs.avg_logical_io_reads * rs.count_executions) AS reads,
     SUM(rs.avg_duration * rs.count_executions) / 1000.0 AS duration_ms,
-    SUM(rs.avg_rowcount * rs.count_executions) / NULLIF(SUM(rs.count_executions), 0) AS avg_rows
+    SUM(rs.avg_rowcount * rs.count_executions) / NULLIF(SUM(rs.count_executions), 0) AS avg_rows,
+    MIN(i.start_time) AS first_start, MAX(i.end_time) AS last_end
   FROM sys.query_store_plan p
   JOIN sys.query_store_runtime_stats rs ON rs.plan_id = p.plan_id
   JOIN sys.query_store_runtime_stats_interval i ON i.runtime_stats_interval_id = rs.runtime_stats_interval_id
@@ -253,7 +261,7 @@ const queryStoreAggregate = `WITH /* godta:internal */ a AS (
 SELECT q.query_id, q.query_hash, ISNULL(q.object_id, 0), q.context_settings_id,
   CONVERT(bigint, cs.set_options), cs.date_first, cs.date_format,
   LEFT(qt.query_sql_text, 4000),
-  a.execs, a.cpu_ms, a.reads, a.duration_ms, ISNULL(a.avg_rows, 0)
+  a.execs, a.cpu_ms, a.reads, a.duration_ms, ISNULL(a.avg_rows, 0), a.first_start, a.last_end
 FROM a
 JOIN sys.query_store_query q ON q.query_id = a.query_id
 JOIN sys.query_store_query_text qt ON qt.query_text_id = q.query_text_id
@@ -261,20 +269,25 @@ JOIN sys.query_context_settings cs ON cs.context_settings_id = q.context_setting
 WHERE qt.query_sql_text NOT LIKE N'%` + tsql.Marker + `%' AND qt.query_sql_text NOT LIKE N'%` + tsql.LegacyMarker + `%'
 ORDER BY q.query_id;`
 
-func queryStoreQueries(ctx context.Context, db *sql.DB, opt Options) ([]model.Query, error) {
+// queryStoreQueries returns the queries of the window, and the period their
+// counters cover: from the first start to the last end of the intervals
+// summed for them, nil without a query.
+func queryStoreQueries(ctx context.Context, db *sql.DB, opt Options) ([]model.Query, *model.Window, error) {
 	rows, err := db.QueryContext(ctx, queryStoreAggregate, opt.Window.From.UTC(), opt.Window.Until.UTC())
 	if err != nil {
-		return nil, fmt.Errorf("reading the query store: %w", err)
+		return nil, nil, fmt.Errorf("reading the query store: %w", err)
 	}
 	defer rows.Close()
 	var out []model.Query
+	var measured *model.Window
 	for rows.Next() {
 		var q model.Query
 		var hash []byte
+		var first, last time.Time
 		if err := rows.Scan(&q.QueryID, &hash, &q.ObjectID, &q.ContextSettingsID,
 			&q.SetOptions, &q.DateFirst, &q.DateFormat, &q.Text,
-			&q.Executions, &q.CPUms, &q.Reads, &q.Duration, &q.AvgRowcount); err != nil {
-			return nil, fmt.Errorf("reading the query store: %w", err)
+			&q.Executions, &q.CPUms, &q.Reads, &q.Duration, &q.AvgRowcount, &first, &last); err != nil {
+			return nil, nil, fmt.Errorf("reading the query store: %w", err)
 		}
 		q.Hash = hexHash(hash)
 		if statementKind(q.Text) == "" {
@@ -282,11 +295,22 @@ func queryStoreQueries(ctx context.Context, db *sql.DB, opt Options) ([]model.Qu
 		}
 		q.IsWrite = isWriteText(q.Text)
 		out = append(out, q)
+		first, last = first.UTC(), last.UTC()
+		if measured == nil {
+			measured = &model.Window{From: first, Until: last}
+			continue
+		}
+		if first.Before(measured.From) {
+			measured.From = first
+		}
+		if last.After(measured.Until) {
+			measured.Until = last
+		}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("reading the query store: %w", err)
+		return nil, nil, fmt.Errorf("reading the query store: %w", err)
 	}
-	return out, nil
+	return out, measured, nil
 }
 
 // detailFunc fills the full text and the plan of the queries kept.

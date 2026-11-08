@@ -32,6 +32,12 @@ type Workload struct {
 	Server    conn.Instance `json:"server"`
 	Database  DBInfo        `json:"database"`
 	Window    Window        `json:"window"`
+	// Measured is the period the Query Store counters cover: from the start
+	// of the first runtime-stats interval summed to the end of the last. The
+	// Query Store counts by interval and cannot split one, so an interval
+	// that overlaps Window is counted whole and Measured may reach outside
+	// Window. Nil from the plan cache.
+	Measured *Window `json:"measured,omitempty"`
 	// Source is SourceQueryStore or SourcePlanCache.
 	Source string `json:"source"`
 	// CaptureMode is the Query Store's query_capture_mode_desc, empty when
@@ -61,6 +67,9 @@ type DBInfo struct {
 	Compat          int    `json:"compat"`
 	QueryStoreState string `json:"query_store_state"`
 	IsClone         bool   `json:"is_clone"`
+	// QueryStoreIntervalMinutes is the Query Store's interval_length_minutes,
+	// the length of one runtime-stats interval; 0 when the Query Store is off.
+	QueryStoreIntervalMinutes int `json:"query_store_interval_minutes,omitempty"`
 	// PlanNames are the other names the database is known by in its plans:
 	// a plan keeps the database name of its compilation, so the Query Store
 	// of a database restored or renamed under another name still names the
