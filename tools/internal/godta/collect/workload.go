@@ -472,6 +472,11 @@ func isWriteText(text string) bool {
 	return k != "" && k != "SELECT"
 }
 
+// ParsePlans parses again the plans of a workload read back from
+// collect.json, where Plan is not written. A plan that does not parse leaves
+// Plan nil, with a warning.
+func ParsePlans(w *model.Workload) { parsePlans(w) }
+
 // parsePlans parses the plan of every query; a plan that does not parse is
 // a warning and leaves Plan nil.
 func parsePlans(w *model.Workload) {

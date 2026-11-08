@@ -150,6 +150,58 @@ DPAPI-encrypted store, Windows only). `sqlq` refuses to load a file holding an i
 Entries carrying `"managedBy": "registered-servers"` are generated and are rewritten on every
 export; edits to them are lost. Entries without that marker are hand-written and never touched.
 
+## goDTA: index advice from the workload
+
+`godta` proposes rowstore nonclustered indexes for the databases of an instance, from what
+the Query Store (or the plan cache) says ran, and measures each one with a hypothetical index
+under `DBCC AUTOPILOT` before recommending it. Use it when the user asks which indexes a
+database needs, or whether an index is worth creating; for a question about one query, a plan
+read through `sqlq -plan` is enough. The skill `index-advisor` describes the phases in detail.
+
+`godta` is the one exception to "all access goes through `sqlq`". It opens its own connections,
+from the same profiles and the same secret resolution, because its measurement needs
+statements the `sqlq` guard refuses by design (`DBCC AUTOPILOT`, `SET AUTOPILOT`,
+`CREATE INDEX ... WITH STATISTICS_ONLY = -1`). The exception covers the `godta` binary and
+nothing else: it does not make `sqlcmd`, an ad-hoc connection string, or an `-allow-write` run
+of `sqlq` acceptable.
+
+```bash
+godta collect    --project <dir> --profile <name> [--include <db>] [--window 24h] [--top 50]
+godta candidates --project <dir> [--suggestions <file>] [--sqlferret <project>]
+godta evaluate   --project <dir> --profile <name> --target server --dry-run [--suggestions <file>]
+godta evaluate   --project <dir> --profile <name> --target server --allow-write --plan <plan-evaluate.json>
+godta report     --project <dir>
+godta cleanup    --project <dir> --profile <name> --dry-run
+godta cleanup    --project <dir> --profile <name> --allow-write --plan <plan-cleanup.json>
+```
+
+The rules for an agent:
+
+- On a profile marked `"environment": "prod"`, name the profile to the user and wait for an
+  explicit yes before the first `godta` command that connects, `collect` included: `collect`
+  writes nothing, but it reads the Query Store and the catalog of every selected database.
+- `evaluate --target server` and `cleanup` write on the server: hypothetical indexes, the
+  statistics the engine creates while compiling, drops of leftovers. Each runs in two steps.
+  The `--dry-run` writes an execution plan (`plan-evaluate.json` per database,
+  `plan-cleanup.json` per server) and executes nothing. Show the user that plan, its `steps`
+  and its `side_effects`, and wait for a yes to that plan, on every profile, `lab` included.
+  Only then run the same command with `--allow-write --plan <file>`.
+- Never pass `--allow-write` on your own initiative, never edit a plan file (its checksum is
+  verified, and a plan made for another server, another database or a changed schema is
+  refused), and never write a plan by hand.
+- A write phase needs a `readwrite` profile and `--allow-write` and `--plan`; any of them
+  missing is exit code `3`. Report it and stop: do not switch the profile, do not look for
+  another path to the same statements.
+- Never run or rewrite `indexes.sql`. It is the DBA's decision, made from `rapport.md`.
+
+Every command prints one JSON object, on success and on failure:
+`{"command", "ok", "databases": [{"server", "name", "status", "files", "warnings", "error"}],
+"plan", "files", "warnings", "error": {"kind", "message"}}`. Exit codes: `0` success, `1`
+usage, `2` a database failed after the connection (the others went on; `databases` says which),
+`3` write refused, `4` could not connect. Without `--profile`, the `GODTA_*` variables of
+`tools/.env.example` give a direct connection; `--env` names the file they are read from
+(default `./.env`), and a variable already set in the environment wins.
+
 ## Reading a SQL Server error log
 
 `errorlog-parse` collapses an ERRORLOG into what is worth reading, at roughly a tenth of the

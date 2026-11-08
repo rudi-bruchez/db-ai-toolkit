@@ -40,6 +40,9 @@ $targets = @{
     'sqlplan' = @(
         (Join-Path $repoRoot 'plugins/sqlserver-toolkit/bin')
     )
+    'godta' = @(
+        (Join-Path $repoRoot 'plugins/sqlserver-toolkit/bin')
+    )
 }
 
 function Get-BinaryName([string]$cmd, [string]$goos) {

@@ -879,16 +879,16 @@ func Summary(ws workspace.WS, rows []model.SummaryRow) error {
 	if len(rows) == 0 {
 		b.WriteString("No database.\n")
 	} else {
-		b.WriteString("| Server | Database | Status | Recommended | To discuss | Rejected | Not evaluated | Warnings |\n")
-		b.WriteString("|---|---|---|---|---|---|---|---|\n")
+		b.WriteString("| Server | Database | Status | Recommended | Total gain | To discuss | Rejected | Not evaluated | Warnings |\n")
+		b.WriteString("|---|---|---|---|---|---|---|---|---|\n")
 		cell := func(s string) string { return strings.ReplaceAll(strings.ReplaceAll(s, "|", "\\|"), "\n", " ") }
 		for _, r := range rows {
 			warn := "none"
 			if len(r.Warnings) > 0 {
 				warn = strings.Join(r.Warnings, "; ")
 			}
-			fmt.Fprintf(&b, "| %s | %s | %s | %d | %d | %d | %d | %s |\n", cell(r.Server), cell(r.Database),
-				cell(r.Status), r.Recommended, r.Discuss, r.Rejected, r.NotEvaluated, cell(warn))
+			fmt.Fprintf(&b, "| %s | %s | %s | %d | %s | %d | %d | %d | %s |\n", cell(r.Server), cell(r.Database),
+				cell(r.Status), r.Recommended, num(r.Gain), r.Discuss, r.Rejected, r.NotEvaluated, cell(warn))
 		}
 	}
 	if err := os.MkdirAll(ws.Root, 0o700); err != nil {
