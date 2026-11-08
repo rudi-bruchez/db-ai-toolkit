@@ -34,7 +34,7 @@ godta collect    --project <dir> --profile <name> --include <db> [--window 24h] 
 godta candidates --project <dir> [--suggestions <file>] [--sqlferret <sqlferret project>]
 godta evaluate   --project <dir> --profile <name> --target server --dry-run [--suggestions <file>] [--max-combined 4] [--lock-timeout 2s]
 godta evaluate   --project <dir> --profile <name> --target server --allow-write --plan <plan-evaluate.json> [--compile-timeout 60s]
-godta report     --project <dir> [--target server|lab]
+godta report     --project <dir> [--target server|lab] [--min-gain-ratio 0.1] [--max-maintenance-ratio 0.5] [--min-queries 1]
 godta cleanup    --project <dir> --profile <name> --dry-run
 godta cleanup    --project <dir> --profile <name> --allow-write --plan <plan-cleanup.json>
 ```
@@ -51,7 +51,11 @@ godta cleanup    --project <dir> --profile <name> --allow-write --plan <plan-cle
    drops them. It refuses a plan whose checksum, server, database or table schemas changed
    since the `--dry-run`. With several databases, pass one `--plan` per database.
 5. `report` scores the measures and writes, per database, `rapport.md`, `indexes.sql` and
-   `result.json`, and `synthese.md` at the root of the project. Offline.
+   `result.json`, and `synthese.md` at the root of the project. Offline. A candidate is
+   recommended when its gain is at least `--min-gain-ratio` of the cost before of its
+   measured queries (default 0.1), its maintenance at most `--max-maintenance-ratio` of the
+   gain (default 0.5), and at least `--min-queries` of its queries are measured (default 1).
+   The formula of `rapport.md` gives the values used.
 6. `cleanup --dry-run`, then `cleanup --allow-write --plan <file>`, removes what an
    interrupted run left (journal first, then the name pattern of a run). Run it whenever a
    database reports objects left: its status contains `left for cleanup`, and a warning

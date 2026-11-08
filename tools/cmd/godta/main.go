@@ -36,6 +36,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/signal"
 	"path"
@@ -1010,6 +1011,12 @@ func (a *app) evaluateOne(p sqlq.Profile, inst conn.Instance, file string, plan 
 func (a *app) report(args []string) error {
 	fs := flag.NewFlagSet(cmdReport, flag.ContinueOnError)
 	target := fs.String("target", "", "which evaluation to score: server or lab (default: server when evaluate-server.json exists, else lab)")
+	th := score.DefaultThresholds()
+	fs.Float64Var(&th.MinGainRatio, "min-gain-ratio", th.MinGainRatio,
+		"smallest gain of a recommended index, as a fraction of the summed cost before x executions of its measured queries")
+	fs.Float64Var(&th.MaxMaintenanceRatio, "max-maintenance-ratio", th.MaxMaintenanceRatio,
+		"largest maintenance of a recommended index, as a fraction of its gain")
+	fs.IntVar(&th.MinQueries, "min-queries", th.MinQueries, "smallest number of measured queries of a recommended index")
 	if err := a.parse(fs, args); err != nil {
 		return err
 	}
@@ -1017,6 +1024,14 @@ func (a *app) report(args []string) error {
 	case "", "server", "lab":
 	default:
 		return usagef("--target %q: want server or lab", *target)
+	}
+	for name, v := range map[string]float64{"min-gain-ratio": th.MinGainRatio, "max-maintenance-ratio": th.MaxMaintenanceRatio} {
+		if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
+			return usagef("--%s must be a number at least 0, got %v", name, v)
+		}
+	}
+	if th.MinQueries < 1 {
+		return usagef("--min-queries must be at least 1, got %d", th.MinQueries)
 	}
 	list, err := a.workloads("")
 	if err != nil {
@@ -1028,7 +1043,7 @@ func (a *app) report(args []string) error {
 	var rows []model.SummaryRow
 	for _, l := range list {
 		r := newResult(l.w)
-		row, err := a.reportOne(l, *target)
+		row, err := a.reportOne(l, *target, th)
 		if err != nil {
 			a.dbFailed(&r, err)
 			a.out.Databases = append(a.out.Databases, r)
@@ -1073,7 +1088,7 @@ func (a *app) evaluationFiles(dir, target string) (evalFile, candFile string) {
 	return pick[0], pick[1]
 }
 
-func (a *app) reportOne(l loaded, target string) (model.SummaryRow, error) {
+func (a *app) reportOne(l loaded, target string, th score.Thresholds) (model.SummaryRow, error) {
 	row := model.SummaryRow{Server: l.w.Server.ServerName, Database: l.w.Database.Name}
 	var ev evaluateFile
 	var cands []model.Candidate
@@ -1090,7 +1105,7 @@ func (a *app) reportOne(l loaded, target string) (model.SummaryRow, error) {
 	} else if err := a.ws.ReadJSON(l.dir, candFile, &cands); err != nil {
 		return row, err
 	}
-	recs := score.Score(l.w, cands, ev.Measures, score.DefaultThresholds())
+	recs := score.Score(l.w, cands, ev.Measures, th)
 	warnings := ev.Warnings
 	if ev.Error != "" {
 		warnings = append(warnings, "evaluation stopped: "+ev.Error)
