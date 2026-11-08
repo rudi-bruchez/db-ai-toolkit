@@ -308,7 +308,7 @@ func checkObjects(st *showplan.Statement, w *model.Workload) string {
 			return "table variable"
 		// Database names follow the instance's collation, which the
 		// workload does not hold: compared without case.
-		case o.Database != "" && !strings.EqualFold(o.Database, w.Database.Name):
+		case o.Database != "" && !w.Database.Matches(o.Database):
 			return "other database: " + o.Database
 		}
 		found := false

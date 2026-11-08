@@ -8,6 +8,8 @@
 package model
 
 import (
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/conn"
@@ -55,6 +57,27 @@ type DBInfo struct {
 	Compat          int    `json:"compat"`
 	QueryStoreState string `json:"query_store_state"`
 	IsClone         bool   `json:"is_clone"`
+	// PlanNames are the other names the database is known by in its plans:
+	// a plan keeps the database name of its compilation, so the Query Store
+	// of a database restored or renamed under another name still names the
+	// old one. Collect records the name when it is the only one the plans
+	// use besides the system databases, and the current name appears in none.
+	PlanNames []string `json:"plan_names,omitempty"`
+}
+
+// Matches reports whether name, a database name as a plan or a source gives
+// it, is this database: its current name or one of its PlanNames. Database
+// names follow the instance collation, which the workload does not hold, so
+// they are compared without case. The empty name never matches: an
+// unqualified reference is the caller's to decide.
+func (d DBInfo) Matches(name string) bool {
+	if name == "" {
+		return false
+	}
+	if strings.EqualFold(name, d.Name) {
+		return true
+	}
+	return slices.ContainsFunc(d.PlanNames, func(n string) bool { return strings.EqualFold(name, n) })
 }
 
 // Window is the collection window, both bounds explicit.

@@ -172,17 +172,58 @@ ORDER BY d.index_handle, c.column_id;`)
 }
 
 // touchedTables resolves the tables the plans read or write in this
-// database, and adds those of the missing index groups. Plan names are the
-// catalog's own spelling, so they are compared exactly, whatever the
-// collation.
+// database, and adds those of the missing index groups. Schema and table
+// names of a plan are the catalog's own spelling, so they are compared
+// exactly, whatever the collation; the database is this one by its current
+// name or by a name its plans were compiled under (model.DBInfo.Matches).
 func touchedTables(ctx context.Context, db *sql.DB, w *model.Workload) ([]int, error) {
-	type name struct{ schema, table string }
-	wanted := map[name]bool{}
+	wanted := planTables(w)
+	set := map[int]bool{}
+	for _, m := range w.MissingIndexes {
+		set[m.Table] = true
+	}
+	if len(wanted) > 0 {
+		rows, err := db.QueryContext(ctx, `SELECT /* godta:collect */ o.object_id, s.name, o.name FROM sys.objects o
+JOIN sys.schemas s ON s.schema_id = o.schema_id
+WHERE o.type IN ('U', 'V');`)
+		if err != nil {
+			return nil, fmt.Errorf("resolving the tables: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id int
+			var n tableName
+			if err := rows.Scan(&id, &n.schema, &n.table); err != nil {
+				return nil, fmt.Errorf("resolving the tables: %w", err)
+			}
+			if wanted[n] {
+				set[id] = true
+			}
+		}
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("resolving the tables: %w", err)
+		}
+	}
+	var ids []int
+	for id := range set {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	return ids, nil
+}
+
+// tableName is a table as a plan names it.
+type tableName struct{ schema, table string }
+
+// planTables lists the tables of this database the plans of w read or
+// write, by name.
+func planTables(w *model.Workload) map[tableName]bool {
+	wanted := map[tableName]bool{}
 	add := func(o showplan.ObjRef) {
-		if o.Table == "" || (o.Database != "" && o.Database != w.Database.Name) {
+		if o.Table == "" || (o.Database != "" && !w.Database.Matches(o.Database)) {
 			return
 		}
-		wanted[name{o.Schema, o.Table}] = true
+		wanted[tableName{o.Schema, o.Table}] = true
 	}
 	for _, list := range [][]model.Query{w.Queries, w.Writes} {
 		for _, q := range list {
@@ -204,38 +245,7 @@ func touchedTables(ctx context.Context, db *sql.DB, w *model.Workload) ([]int, e
 			}
 		}
 	}
-	set := map[int]bool{}
-	for _, m := range w.MissingIndexes {
-		set[m.Table] = true
-	}
-	if len(wanted) > 0 {
-		rows, err := db.QueryContext(ctx, `SELECT /* godta:collect */ o.object_id, s.name, o.name FROM sys.objects o
-JOIN sys.schemas s ON s.schema_id = o.schema_id
-WHERE o.type IN ('U', 'V');`)
-		if err != nil {
-			return nil, fmt.Errorf("resolving the tables: %w", err)
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var id int
-			var n name
-			if err := rows.Scan(&id, &n.schema, &n.table); err != nil {
-				return nil, fmt.Errorf("resolving the tables: %w", err)
-			}
-			if wanted[n] {
-				set[id] = true
-			}
-		}
-		if err := rows.Err(); err != nil {
-			return nil, fmt.Errorf("resolving the tables: %w", err)
-		}
-	}
-	var ids []int
-	for id := range set {
-		ids = append(ids, id)
-	}
-	slices.Sort(ids)
-	return ids, nil
+	return wanted
 }
 
 // indexedViews maps each table to the indexed views that reference it.

@@ -21,7 +21,65 @@ import (
 const (
 	WarnPlanCache       = "plan cache counters are cumulative since compilation"
 	WarnQueryStoreEmpty = "query store has no query in the window"
+	WarnNoTable         = "the workload has queries but no table of this database was resolved from their plans: nothing can be proposed"
 )
+
+// WarnPlanName is the warning of a database whose plans were compiled under
+// another name.
+func WarnPlanName(name string) string {
+	return fmt.Sprintf("the plans were compiled under the name %s, so the database was renamed or restored under another name: references to %s are read as this database", name, name)
+}
+
+// systemDatabases are left out of the names a plan may know this database by.
+var systemDatabases = []string{"master", "model", "msdb", "tempdb", "mssqlsystemresource"}
+
+// planNames returns the name the plans of w were compiled under when it is
+// not the current one: the current name appears in no object reference, and
+// exactly one other name, not a system database, does. Otherwise nil: a
+// database whose plans name it, or name several other databases, keeps its
+// cross-database references excluded.
+func planNames(w *model.Workload) []string {
+	var names []string
+	add := func(o showplan.ObjRef) {
+		if o.Database == "" || slices.ContainsFunc(names, func(n string) bool { return strings.EqualFold(n, o.Database) }) {
+			return
+		}
+		names = append(names, o.Database)
+	}
+	for _, list := range [][]model.Query{w.Queries, w.Writes} {
+		for _, q := range list {
+			if q.Plan == nil {
+				continue
+			}
+			for _, st := range q.Plan.Statements {
+				for _, a := range st.Accesses {
+					add(a.Obj)
+					for _, b := range a.ViewBase {
+						add(b)
+					}
+				}
+				for _, wr := range st.Writes {
+					for _, o := range wr.Objs {
+						add(o)
+					}
+				}
+			}
+		}
+	}
+	var other []string
+	for _, n := range names {
+		if strings.EqualFold(n, w.Database.Name) {
+			return nil
+		}
+		if !slices.ContainsFunc(systemDatabases, func(s string) bool { return strings.EqualFold(s, n) }) {
+			other = append(other, n)
+		}
+	}
+	if len(other) != 1 {
+		return nil
+	}
+	return other
+}
 
 // marker is in the text of every query collect sends to a user database:
 // the Query Store captures them too, and the workload leaves them out. The
@@ -67,10 +125,23 @@ func Database(ctx context.Context, db *sql.DB, inst conn.Instance, info model.DB
 		}
 	}
 	parsePlans(w)
+	if names := planNames(w); names != nil {
+		w.Database.PlanNames = names
+		w.Warnings = append(w.Warnings, WarnPlanName(names[0]))
+	}
 	if err := readCatalog(ctx, db, w); err != nil {
 		return nil, err
 	}
+	warnNoTable(w)
 	return w, nil
+}
+
+// warnNoTable warns when w has queries but no table was resolved: whatever
+// the cause, the empty result that follows is not silent.
+func warnNoTable(w *model.Workload) {
+	if len(w.Queries)+len(w.Writes) > 0 && len(w.Tables) == 0 {
+		w.Warnings = append(w.Warnings, WarnNoTable)
+	}
 }
 
 // readDBInfo reads the database the pool reached and checks it is the one
