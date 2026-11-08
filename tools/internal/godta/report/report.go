@@ -61,7 +61,10 @@ type Result struct {
 	Source      string       `json:"source"`
 	CaptureMode string       `json:"capture_mode"`
 	Window      model.Window `json:"window"`
-	Period      string       `json:"period"`
+	// Measured is the period the Query Store counters cover, whole
+	// intervals, which may reach outside Window; nil from the plan cache.
+	Measured *model.Window `json:"measured,omitempty"`
+	Period   string        `json:"period"`
 	// Skipped and Warnings are collect's; EvaluationWarnings come from the
 	// evaluation.
 	Skipped            []string `json:"skipped"`
@@ -571,13 +574,29 @@ func sameSet(a, b []int) bool {
 }
 
 // period says what the counters cover. From the plan cache there is no
-// window: the counters are cumulated since each plan was compiled.
+// window: the counters are cumulated since each plan was compiled. From the
+// Query Store, the counters cover whole runtime-stats intervals: the period
+// measured is given next to the window requested.
 func period(w *model.Workload) string {
 	if w.Source == model.SourcePlanCache {
 		return "plan cache: execution counters cumulated since each plan was compiled, over no fixed period; " +
 			"the collection window does not bound them"
 	}
-	return fmt.Sprintf("Query Store, from %s to %s (UTC)", fmtTime(w.Window.From), fmtTime(w.Window.Until))
+	from, until := fmtTime(w.Window.From), fmtTime(w.Window.Until)
+	m := w.Measured
+	if m == nil {
+		return fmt.Sprintf("Query Store, from %s to %s (UTC)", from, until)
+	}
+	if m.From.Equal(w.Window.From) && m.Until.Equal(w.Window.Until) {
+		return fmt.Sprintf("Query Store, from %s to %s (UTC), counters measured over the same period", from, until)
+	}
+	interval := "by interval"
+	if n := w.Database.QueryStoreIntervalMinutes; n > 0 {
+		interval = fmt.Sprintf("by interval of %d minutes", n)
+	}
+	return fmt.Sprintf("Query Store, window requested from %s to %s (UTC), counters measured from %s to %s (UTC): "+
+		"the Query Store counts %s, and each interval that overlaps the window is counted whole",
+		from, until, fmtTime(m.From), fmtTime(m.Until), interval)
 }
 
 func fmtTime(t time.Time) string { return t.UTC().Format("2006-01-02 15:04:05") }
@@ -883,7 +902,7 @@ func result(w *model.Workload, items []*item, autoStats, warnings, redund []stri
 		Server: ResultServer{Name: w.Server.ServerName, Version: w.Server.Version, Major: w.Server.Major,
 			Level: w.Server.Level, Edition: w.Server.Edition},
 		Database: w.Database.Name, Source: w.Source, CaptureMode: w.CaptureMode,
-		Window: w.Window, Period: period(w),
+		Window: w.Window, Measured: w.Measured, Period: period(w),
 		Skipped: nonNil(w.Skipped), Warnings: nonNil(w.Warnings), EvaluationWarnings: nonNil(warnings),
 		Formulas: nonNil(formulas(items)), AutoCreatedStats: nonNil(autoStats),
 		Hypotheticals: nonNil(hypotheticals(w)), Redundancies: nonNil(redund),
