@@ -322,7 +322,10 @@ func notEvaluatedStatus(r model.Recommendation, evaluated bool) string {
 
 // plan writes the script of a recommended candidate: CREATE for a new one,
 // CREATE ... DROP_EXISTING for a widened one, CREATE then a guarded DROP for
-// a replacing one.
+// a replacing one. A widened or replacing index keeps the data space of the
+// existing one (spec section 8.3). A new index has no ON clause: SQL Server
+// puts it on the table's data space, and on a partitioned table aligns it on
+// the table's partition scheme and column.
 func (it *item) plan() error {
 	c, t := it.rec.Candidate, it.table
 	switch c.Decision {
@@ -350,8 +353,8 @@ func (it *item) plan() error {
 		}
 		def.DataCompression = e.Compression
 		def.FillFactor = e.FillFactor
-		if e.DataSpace != "" {
-			def.OnTarget = tsql.QuoteName(e.DataSpace)
+		if def.OnTarget, err = onTarget(t, *e); err != nil {
+			return err
 		}
 		if c.Decision == model.DecisionWiden {
 			def.Unique, def.Filter = e.Unique, e.Filter
@@ -389,6 +392,25 @@ func protected(e model.Index) string {
 }
 
 func obj(t *model.Table) tsql.Obj { return tsql.Obj{Schema: t.Schema, Name: t.Name} }
+
+// onTarget is the target of the ON clause that keeps e where it is: its
+// filegroup, or its partition scheme with the partitioning column, [ps]([c]),
+// without which SQL Server refuses the scheme (error 2726). "" when the data
+// space is not known.
+func onTarget(t *model.Table, e model.Index) (string, error) {
+	if e.DataSpace == "" {
+		return "", nil
+	}
+	target := tsql.QuoteName(e.DataSpace)
+	if e.PartitionColumn == 0 {
+		return target, nil
+	}
+	n, err := colName(t, e.PartitionColumn)
+	if err != nil {
+		return "", fmt.Errorf("partitioning column of %s: %w", e.Name, err)
+	}
+	return target + "(" + tsql.QuoteName(n) + ")", nil
+}
 
 func colName(t *model.Table, id int) (string, error) {
 	for _, c := range t.Columns {
@@ -478,6 +500,9 @@ func describeIndex(t *model.Table, e model.Index) string {
 	}
 	if e.DataSpace != "" {
 		s += ", on " + e.DataSpace
+		if n, err := colName(t, e.PartitionColumn); e.PartitionColumn != 0 && err == nil {
+			s += "(" + n + ")"
+		}
 	}
 	return s
 }
@@ -873,10 +898,6 @@ func renderScript(w *model.Workload, items []*item) string {
 		if it.skip != "" {
 			p("-- Not scripted: %s\n", it.skip)
 			continue
-		}
-		if it.existing != nil && it.existing.DataSpace != "" && it.existing.DataSpace != "PRIMARY" {
-			p("-- ON %s is the data space of %s. If it is a partition scheme, remove the ON clause:\n", tsql.QuoteName(it.existing.DataSpace), it.existing.Name)
-			p("-- the index is then aligned with the table (a scheme without its column fails, error 2726).\n")
 		}
 		for _, s := range it.stmts {
 			p("%s\nGO\n", s)

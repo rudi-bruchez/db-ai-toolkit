@@ -428,3 +428,27 @@ func TestMeasuredPeriodLine(t *testing.T) {
 		t.Error("the interval explanation is given though the periods match")
 	}
 }
+
+// TestPartitionSchemeTarget: an index on a partition scheme is widened and
+// replaced on that scheme with its partitioning column, quoted; a scheme
+// alone fails (error 2726). A new index has no ON clause: it is aligned
+// with its table.
+func TestPartitionSchemeTarget(t *testing.T) {
+	w := fixture("godta_it_golden")
+	tt, th := w.Tables[tblT], w.Tables[tblH]
+	tt.Indexes[2].DataSpace, tt.Indexes[2].PartitionColumn = "ps]t", 1
+	th.Indexes[1].DataSpace, th.Indexes[1].PartitionColumn = "ps_h", 2
+	_, script, _ := write(t, w, recs())
+	for _, want := range []string{
+		"CREATE NONCLUSTERED INDEX [nix_t_b] ON [dbo].[godta_t] ([b] ASC) INCLUDE ([c]) WITH (DROP_EXISTING = ON, DATA_COMPRESSION = PAGE, FILLFACTOR = 90) ON [ps]]t]([id])\nGO\n",
+		"CREATE NONCLUSTERED INDEX [IX_godta_h_x_y_abcabc] ON [dbo].[godta_h] ([x] ASC, [y] ASC) WITH (DATA_COMPRESSION = ROW) ON [ps_h]([y])\nGO\n",
+		"CREATE NONCLUSTERED INDEX [IX_godta_t_a_b_a1b2c3] ON [dbo].[godta_t] ([a] ASC, [b] ASC) INCLUDE ([c])\nGO\n",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("indexes.sql lacks\n%s\ngot:\n%s", want, script)
+		}
+	}
+	if strings.Contains(script, "remove the ON clause") {
+		t.Errorf("indexes.sql still tells to remove the ON clause:\n%s", script)
+	}
+}

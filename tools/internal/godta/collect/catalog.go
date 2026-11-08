@@ -363,7 +363,8 @@ func indexKind(typ int) string {
 }
 
 // readIndexes reads the indexes cond selects (a condition on sys.indexes i,
-// built from integers only), with their keys and included columns.
+// built from integers only), with their keys, included columns and
+// partitioning column.
 func readIndexes(ctx context.Context, db *sql.DB, cond string) ([]model.Index, error) {
 	rows, err := db.QueryContext(ctx, `SELECT /* godta:internal */ i.object_id, i.index_id, ISNULL(i.name, N''), i.type,
   i.is_unique, i.is_primary_key, i.is_unique_constraint, i.is_disabled, i.is_hypothetical,
@@ -403,11 +404,20 @@ ORDER BY i.object_id, i.index_id;`)
 		return nil, nil
 	}
 
-	rows, err = db.QueryContext(ctx, `SELECT /* godta:internal */ ic.object_id, ic.index_id, ic.column_id, ic.key_ordinal,
-  ic.is_descending_key, ic.is_included_column
-FROM sys.index_columns ic JOIN sys.indexes i ON i.object_id = ic.object_id AND i.index_id = ic.index_id
-WHERE `+cond+`
-ORDER BY ic.object_id, ic.index_id, ic.key_ordinal, ic.index_column_id;`)
+	// The partitioning column of an index on a partition scheme
+	// (partition_ordinal 1) comes as an extra row with key_ordinal -1: it may
+	// also be a key or an included column, or neither.
+	rows, err = db.QueryContext(ctx, `SELECT /* godta:internal */ u.object_id, u.index_id, u.column_id, u.key_ordinal,
+  u.is_descending_key, u.is_included_column
+FROM (
+  SELECT ic.object_id, ic.index_id, ic.column_id, ic.key_ordinal, ic.is_descending_key, ic.is_included_column, ic.index_column_id
+  FROM sys.index_columns ic JOIN sys.indexes i ON i.object_id = ic.object_id AND i.index_id = ic.index_id
+  WHERE `+cond+`
+  UNION ALL
+  SELECT ic.object_id, ic.index_id, ic.column_id, -1, CAST(0 AS bit), CAST(0 AS bit), 0
+  FROM sys.index_columns ic JOIN sys.indexes i ON i.object_id = ic.object_id AND i.index_id = ic.index_id
+  WHERE (`+cond+`) AND ic.partition_ordinal = 1) u
+ORDER BY u.object_id, u.index_id, u.key_ordinal, u.index_column_id;`)
 	if err != nil {
 		return nil, fmt.Errorf("reading the index columns: %w", err)
 	}
@@ -423,6 +433,8 @@ ORDER BY ic.object_id, ic.index_id, ic.key_ordinal, ic.index_column_id;`)
 			continue
 		}
 		switch {
+		case ord < 0:
+			out[p].PartitionColumn = col
 		case ord > 0:
 			out[p].Keys = append(out[p].Keys, model.KeyCol{ColumnID: col, Desc: desc})
 		case incl:
