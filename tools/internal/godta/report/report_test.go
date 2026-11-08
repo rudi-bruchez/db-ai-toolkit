@@ -254,6 +254,23 @@ func TestUnmeasuredHasNoNumbers(t *testing.T) {
 	}
 }
 
+// TestConfrontDiscussSection: a candidate score recommends but the
+// confrontation left to discuss is listed under To discuss, not scripted.
+func TestConfrontDiscussSection(t *testing.T) {
+	r := recs()[0]
+	r.Candidate.Decision, r.Candidate.Existing = model.DecisionDiscuss, "pk_godta_t"
+	rep, script, _ := write(t, fixture("godta_it_golden"), []model.Recommendation{r})
+	if strings.Contains(section(rep, "Recommended indexes"), r.Candidate.ID) {
+		t.Errorf("the candidate is listed under Recommended indexes:\n%s", rep)
+	}
+	if s := section(rep, "To discuss"); !strings.Contains(s, r.Candidate.ID) || !strings.Contains(s, "to discuss with pk_godta_t") {
+		t.Errorf("the candidate is not under To discuss, with its existing index:\n%s", s)
+	}
+	if !strings.Contains(script, "-- No recommended index.") {
+		t.Errorf("the script has a block for it:\n%s", script)
+	}
+}
+
 func TestPlanCacheWording(t *testing.T) {
 	w := fixture("godta_it_golden")
 	w.Source = model.SourcePlanCache

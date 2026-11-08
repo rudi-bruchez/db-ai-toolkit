@@ -34,6 +34,10 @@ const (
 	noteGainLow            = "gain below threshold"
 	noteMaintenanceHi      = "maintenance above threshold"
 	noteNoMeasure          = "not enough measured queries"
+	// NoteConfrontDiscuss: the confrontation with the existing indexes (spec
+	// section 8.3) left the candidate to discuss, with no script: an existing
+	// index it would widen supports a constraint.
+	NoteConfrontDiscuss = "the confrontation with the existing indexes leaves it to discuss"
 )
 
 // Thresholds are the configurable limits of the decision.
@@ -68,6 +72,7 @@ func Formula(th Thresholds) string {
 		"and maintenance <= " + pct(th.MaxMaintenanceRatio) + " of gain; otherwise rejected; " +
 		"a recommendation becomes discuss when the source is the plan cache, " +
 		"when a combined measure uses other candidates instead of this one, " +
+		"when the confrontation with the existing indexes left it to discuss, " +
 		"or when an estimate is unreliable"
 }
 
@@ -219,6 +224,14 @@ func Score(w *model.Workload, cands []model.Candidate, ms []model.Measure, th Th
 		}
 
 		// Caps: at best discuss.
+		if c.Decision == model.DecisionDiscuss {
+			note := NoteConfrontDiscuss
+			if c.Existing != "" {
+				note += " with " + c.Existing
+			}
+			r.Notes = append(r.Notes, note)
+			r.Decision = capDiscuss(r.Decision)
+		}
 		if w.Source == model.SourcePlanCache {
 			r.Notes = append(r.Notes, NotePlanCache)
 			r.Decision = capDiscuss(r.Decision)
