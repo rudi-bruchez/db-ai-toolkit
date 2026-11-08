@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/model"
+	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/showplan"
 )
 
 // The tables of the truth table. godta_t is (id, a, b, c, pad, d) clustered
@@ -146,5 +147,47 @@ func TestConfrontAllAddsReplacedQueries(t *testing.T) {
 	}
 	if !slices.Equal(c.Queries, []int64{7}) {
 		t.Errorf("input changed: %v", c.Queries)
+	}
+}
+
+// readPlan is a plan of one statement that reads index of godta_h, with an
+// operator tree when root is true.
+func readPlan(index string, root bool) *showplan.Plan {
+	st := showplan.Statement{Accesses: []showplan.Access{{LookupOf: -1,
+		Obj: showplan.ObjRef{Database: dbName, Schema: "dbo", Table: "godta_h", Index: index}}}}
+	if root {
+		st.Root = &showplan.RelOp{PhysicalOp: "Index Seek"}
+	}
+	return &showplan.Plan{Statements: []showplan.Statement{st}}
+}
+
+func TestConfrontAllIgnoresOtherIndex(t *testing.T) {
+	w := workload()
+	h := w.Tables[tblH]
+	h.Indexes = append(h.Indexes, model.Index{ObjectID: tblH, IndexID: 3, Name: "nix_h_y",
+		Kind: model.KindNonclustered, Keys: keys(asc(2))})
+	w.Queries = []model.Query{
+		{QueryID: 1, Plan: readPlan("nix_h_x", true)},  // reads the widened index
+		{QueryID: 3, Plan: readPlan("nix_h_y", true)},  // same table, another index
+		{QueryID: 4, Plan: readPlan("nix_h_x", false)}, // names it, without a plan
+	}
+	out := ConfrontAll([]model.Candidate{cand(tblH, 1, keys(asc(1)), 2)}, w)
+	if out[0].Decision != model.DecisionWiden || out[0].Existing != "nix_h_x" {
+		t.Fatalf("got %q %q, want widen of nix_h_x", out[0].Decision, out[0].Existing)
+	}
+	if !slices.Equal(out[0].Queries, []int64{1}) {
+		t.Errorf("queries %v, want [1]", out[0].Queries)
+	}
+}
+
+func TestConfrontAllWidenTakesExistingKeys(t *testing.T) {
+	tbl := tableT(nc(2, "nix_ba", keys(asc(colB), asc(colA))))
+	w := &model.Workload{Database: model.DBInfo{Name: dbName}, Tables: map[int]*model.Table{tblT: tbl}}
+	out := ConfrontAll([]model.Candidate{cand(tblT, 2, keys(asc(colA), asc(colB)), colC, colD)}, w)
+	if out[0].Decision != model.DecisionWiden || out[0].Existing != "nix_ba" {
+		t.Fatalf("got %q %q, want widen of nix_ba", out[0].Decision, out[0].Existing)
+	}
+	if want := keys(asc(colB), asc(colA)); !slices.Equal(out[0].Keys, want) {
+		t.Errorf("keys %v, want %v", out[0].Keys, want)
 	}
 }
