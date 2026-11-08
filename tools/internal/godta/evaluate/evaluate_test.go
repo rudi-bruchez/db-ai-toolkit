@@ -342,3 +342,53 @@ func TestDropRetriedUnderShortTimeout(t *testing.T) {
 		t.Error("no warning for the index left behind")
 	}
 }
+
+// snapshotExecer passes every statement to a Recorder and, when the
+// statement is at, reads the journal as a kill at that instant would leave
+// it.
+type snapshotExecer struct {
+	*Recorder
+	at   string
+	ws   workspace.WS
+	seen []workspace.Entry
+	took bool
+}
+
+func (e *snapshotExecer) Exec(ctx context.Context, stmt string) error {
+	if stmt == e.at && !e.took {
+		e.took = true
+		e.seen, _ = e.ws.Pending()
+	}
+	return e.Recorder.Exec(ctx, stmt)
+}
+
+// TestCreateJournaledBeforeSent: the "planned" entry of a hypothetical index
+// is in the journal when its CREATE is sent (write-ahead, spec section 7.2):
+// a kill right after the CREATE leaves an entry that cleanup reads from
+// ws.Pending, before any "created" entry exists.
+func TestCreateJournaledBeforeSent(t *testing.T) {
+	w := unitWorkload()
+	c := withID(model.Candidate{Table: tblH, Keys: []model.KeyCol{{ColumnID: 1}}, Include: []int{2},
+		Queries: []int64{99}, Decision: model.DecisionNew})
+	plan := runplan.ForEvaluate(w, []model.Candidate{c}, "abcd1234", nil, 4, 2000).Seal()
+	create, _ := planSteps(t, plan)
+
+	s, rec := NewRecordingSession(w.Server)
+	rec.Results[create.Resolve] = [][]any{{int64(3)}}
+	ws, err := workspace.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap := &snapshotExecer{Recorder: rec, at: create.SQL, ws: ws}
+	s.ex = snap
+	s.reopen = func(context.Context) (execer, error) { return snap, nil }
+	if _, err := Run(context.Background(), s, ws, &plan, w, []model.Candidate{c}, Hooks{}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !snap.took {
+		t.Fatalf("the CREATE was never sent; statements %q", rec.Statements)
+	}
+	if len(snap.seen) != 1 || snap.seen[0].State != workspace.StatePlanned || snap.seen[0].Name != create.Journal.Name {
+		t.Errorf("journal pending when the CREATE was sent: %+v, want %s in state planned", snap.seen, create.Journal.Name)
+	}
+}
