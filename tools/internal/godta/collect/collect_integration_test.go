@@ -388,3 +388,25 @@ func TestCollectSkipsSingleUser(t *testing.T) {
 		}
 	}
 }
+
+// TestCollectLowerCaseHintCaseSensitive: under a case-sensitive database
+// collation sys.sql_modules.definition has the database's collation (measured
+// on 2022), so the scan for INDEX hints must compare without case or a module
+// written with index(...) in lower case is missed.
+func TestCollectLowerCaseHintCaseSensitive(t *testing.T) {
+	f := newFixture(t, "Latin1_General_CS_AS", false)
+	exec(t, f.db, "CREATE TABLE dbo.godta_lc_t (a int NOT NULL, b int NOT NULL, INDEX godta_lc_b (b));")
+	exec(t, f.db, "CREATE PROCEDURE dbo.godta_lc_p AS SELECT a FROM dbo.godta_lc_t with (index(godta_lc_b)) WHERE b = 1;")
+	for range 2 {
+		exec(t, f.db, "SELECT a FROM dbo.godta_lc_t WHERE b = 2;")
+	}
+	exec(t, f.db, "EXEC sys.sp_query_store_flush_db;")
+	w := f.collect(t)
+	ix := index(table(t, w, "godta_lc_t"), "godta_lc_b")
+	if ix == nil {
+		t.Fatal("index godta_lc_b not collected")
+	}
+	if !slices.Contains(ix.NamedIn, "sql_module:dbo.godta_lc_p") {
+		t.Errorf("NamedIn %v, want sql_module:dbo.godta_lc_p", ix.NamedIn)
+	}
+}

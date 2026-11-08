@@ -602,6 +602,12 @@ func densityWidth(ctx context.Context, db *sql.DB, t *model.Table, stat string) 
 // forced plans read. A name found in text is attached to every index of that
 // name among the tables collected: the hint's table is not resolved, which
 // errs on the side of keeping an index.
+//
+// The LIKE filters compare without case through an explicit collation:
+// sys.sql_modules.definition has the database's collation and
+// sys.query_store_query_text the server's (both measured on 2022), so under a
+// _CS_ or _BIN collation a plain LIKE N'%INDEX%' misses index(...) written in
+// lower case. indexNamesInText matches the keyword without case too.
 func readNamedRefs(ctx context.Context, db *sql.DB, w *model.Workload) error {
 	ci := !caseSensitive(w.Database.Collation)
 	attach := func(name, where string) {
@@ -635,7 +641,7 @@ func readNamedRefs(ctx context.Context, db *sql.DB, w *model.Workload) error {
 	}
 	if w.Database.QueryStoreState != "OFF" {
 		if err := texts(`SELECT /* godta:internal */ query_sql_text FROM sys.query_store_query_text
-WHERE query_sql_text LIKE N'%INDEX%'
+WHERE query_sql_text COLLATE Latin1_General_100_CI_AS LIKE N'%INDEX%'
   AND query_sql_text NOT LIKE N'%`+tsql.Marker+`%' AND query_sql_text NOT LIKE N'%`+tsql.LegacyMarker+`%';`, "the query store texts",
 			func(r *sql.Rows) (string, string, error) {
 				var s string
@@ -646,7 +652,7 @@ WHERE query_sql_text LIKE N'%INDEX%'
 	}
 	if err := texts(`SELECT /* godta:internal */ s.name, o.name, m.definition FROM sys.sql_modules m
 JOIN sys.objects o ON o.object_id = m.object_id JOIN sys.schemas s ON s.schema_id = o.schema_id
-WHERE m.definition LIKE N'%INDEX%';`, "the modules",
+WHERE m.definition COLLATE Latin1_General_100_CI_AS LIKE N'%INDEX%';`, "the modules",
 		func(r *sql.Rows) (string, string, error) {
 			var sch, name string
 			var def sql.NullString
