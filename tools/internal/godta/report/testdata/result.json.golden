@@ -1,0 +1,259 @@
+{
+  "server": {
+    "name": "lab01",
+    "version": "16.0.4250.1",
+    "major": 16,
+    "level": "RTM",
+    "edition": "Developer Edition (64-bit)"
+  },
+  "database": "godta_it_golden",
+  "source": "query_store",
+  "capture_mode": "ALL",
+  "window": {
+    "from": "2026-11-07T08:00:00Z",
+    "until": "2026-11-08T08:00:00Z"
+  },
+  "period": "Query Store, from 2026-11-07 08:00:00 to 2026-11-08 08:00:00 (UTC)",
+  "skipped": [
+    "godta_cs: columnstore table: not evaluated"
+  ],
+  "warnings": [
+    "Query Store capture mode is ALL"
+  ],
+  "evaluation_warnings": [
+    "query 99 failed to compile: error 8180"
+  ],
+  "formulas": [
+    "gain = sum((before - after) x executions); maintenance = sum(operator cost x executions); recommended when gain \u003e= 10% of the cost and maintenance \u003c= gain / 2"
+  ],
+  "recommendations": [
+    {
+      "id": "a1b2c3d4e5f6",
+      "section": "recommended",
+      "decision": "recommended",
+      "action": "new",
+      "table": "[dbo].[godta_t]",
+      "definition": "[dbo].[godta_t] ([a] ASC, [b] ASC) INCLUDE ([c])",
+      "index_name": "IX_godta_t_a_b_a1b2c3",
+      "statements": [
+        "CREATE NONCLUSTERED INDEX [IX_godta_t_a_b_a1b2c3] ON [dbo].[godta_t] ([a] ASC, [b] ASC) INCLUDE ([c])"
+      ],
+      "origin": "algorithm",
+      "rules": [
+        "eq-first",
+        "include-outputs"
+      ],
+      "gain": 900,
+      "maintenance": 12.5,
+      "size_mb": 21.4,
+      "formula": "gain = sum((before - after) x executions); maintenance = sum(operator cost x executions); recommended when gain \u003e= 10% of the cost and maintenance \u003c= gain / 2",
+      "queries": [
+        {
+          "query_id": 11,
+          "text": "SELECT c FROM dbo.godta_t\n  WHERE a = @a AND b = @b",
+          "executions": 100,
+          "is_write": false,
+          "status": "measured",
+          "before": 10,
+          "after": 1,
+          "maintenance": 0
+        },
+        {
+          "query_id": 21,
+          "text": "UPDATE dbo.godta_t SET c = c + 'x' WHERE a = 500",
+          "executions": 10,
+          "is_write": true,
+          "status": "measured",
+          "before": 2,
+          "after": 2,
+          "maintenance": 1.25
+        }
+      ],
+      "notes": [
+        "estimates use sampled statistics; a real index has full-scan statistics"
+      ]
+    },
+    {
+      "id": "0f0f0f0f0f0f",
+      "section": "recommended",
+      "decision": "recommended",
+      "action": "widen",
+      "table": "[dbo].[godta_t]",
+      "definition": "[dbo].[godta_t] ([b] ASC) INCLUDE ([c])",
+      "index_name": "nix_t_b",
+      "statements": [
+        "CREATE NONCLUSTERED INDEX [nix_t_b] ON [dbo].[godta_t] ([b] ASC) INCLUDE ([c]) WITH (DROP_EXISTING = ON, DATA_COMPRESSION = PAGE, FILLFACTOR = 90) ON [PRIMARY]"
+      ],
+      "origin": "ai",
+      "reason": "query 12 looks up c after a seek on b",
+      "existing": {
+        "name": "nix_t_b",
+        "definition": "[dbo].[godta_t] ([b] ASC), nonclustered, compression PAGE, fill factor 90, on PRIMARY",
+        "usage": {
+          "seeks": 4,
+          "scans": 1,
+          "lookups": 0,
+          "updates": 9,
+          "leaf_inserts": 3,
+          "leaf_updates": 0,
+          "leaf_deletes": 0
+        },
+        "dropped": false
+      },
+      "gain": 300,
+      "maintenance": 3,
+      "size_mb": 9.5,
+      "formula": "gain = sum((before - after) x executions); maintenance = sum(operator cost x executions); recommended when gain \u003e= 10% of the cost and maintenance \u003c= gain / 2",
+      "queries": [
+        {
+          "query_id": 12,
+          "text": "SELECT TOP 10 c FROM dbo.godta_t WHERE b = 3",
+          "executions": 40,
+          "is_write": false,
+          "status": "measured",
+          "before": 8.5,
+          "after": 1,
+          "maintenance": 0
+        }
+      ]
+    },
+    {
+      "id": "abcabcabcabc",
+      "section": "recommended",
+      "decision": "recommended",
+      "action": "replace",
+      "table": "[dbo].[godta_h]",
+      "definition": "[dbo].[godta_h] ([x] ASC, [y] ASC)",
+      "index_name": "IX_godta_h_x_y_abcabc",
+      "statements": [
+        "CREATE NONCLUSTERED INDEX [IX_godta_h_x_y_abcabc] ON [dbo].[godta_h] ([x] ASC, [y] ASC) WITH (DATA_COMPRESSION = ROW) ON [PRIMARY]",
+        "IF EXISTS (SELECT 1 FROM sys.indexes WHERE object_id = OBJECT_ID(N'[dbo].[godta_h]') AND name = N'IX_godta_h_x_y_abcabc') DROP INDEX [nix_h_x] ON [dbo].[godta_h]"
+      ],
+      "origin": "missing_index",
+      "existing": {
+        "name": "nix_h_x",
+        "definition": "[dbo].[godta_h] ([x] ASC), nonclustered, compression ROW, on PRIMARY",
+        "usage": {
+          "seeks": 120,
+          "scans": 0,
+          "lookups": 0,
+          "updates": 2,
+          "leaf_inserts": 0,
+          "leaf_updates": 0,
+          "leaf_deletes": 0
+        },
+        "dropped": true
+      },
+      "gain": 150,
+      "maintenance": 1,
+      "size_mb": 8,
+      "formula": "gain = sum((before - after) x executions); maintenance = sum(operator cost x executions); recommended when gain \u003e= 10% of the cost and maintenance \u003c= gain / 2",
+      "queries": [
+        {
+          "query_id": 13,
+          "text": "SELECT y FROM dbo.godta_h WHERE x = 42 AND y \u003e 'a'",
+          "executions": 25,
+          "is_write": false,
+          "status": "measured",
+          "before": 7,
+          "after": 1,
+          "maintenance": 0
+        }
+      ]
+    },
+    {
+      "id": "dddddddddddd",
+      "section": "discuss",
+      "decision": "discuss",
+      "action": "new",
+      "table": "[dbo].[godta_t]",
+      "definition": "[dbo].[godta_t] ([c] ASC) INCLUDE ([a])",
+      "origin": "algorithm",
+      "gain": 4,
+      "maintenance": 3,
+      "size_mb": 30,
+      "formula": "gain = sum((before - after) x executions); maintenance = sum(operator cost x executions); recommended when gain \u003e= 10% of the cost and maintenance \u003c= gain / 2",
+      "queries": [
+        {
+          "query_id": 14,
+          "text": "SELECT a FROM dbo.godta_t WHERE c = '7'",
+          "executions": 5,
+          "is_write": false,
+          "status": "measured",
+          "before": 2,
+          "after": 1.2,
+          "maintenance": 0
+        }
+      ],
+      "notes": [
+        "made redundant by a1b2c3d4e5f6"
+      ]
+    },
+    {
+      "id": "eeeeeeeeeeee",
+      "section": "rejected",
+      "decision": "rejected",
+      "action": "new",
+      "table": "[dbo].[godta_t]",
+      "definition": "[dbo].[godta_t] ([pad] ASC)",
+      "origin": "ai",
+      "reason": "pad is searched",
+      "gain": 0,
+      "maintenance": 0,
+      "size_mb": 200,
+      "formula": "gain = sum((before - after) x executions); maintenance = sum(operator cost x executions); recommended when gain \u003e= 10% of the cost and maintenance \u003c= gain / 2",
+      "queries": [
+        {
+          "query_id": 15,
+          "text": "SELECT `pad` FROM dbo.godta_t WHERE pad = ''",
+          "executions": 2,
+          "is_write": false,
+          "status": "measured",
+          "before": 3,
+          "after": 3,
+          "maintenance": 0
+        }
+      ]
+    },
+    {
+      "id": "ffffffffffff",
+      "section": "not_evaluated",
+      "decision": "rejected",
+      "action": "new",
+      "table": "[dbo].[godta_h]",
+      "definition": "[dbo].[godta_h] ([y] ASC)",
+      "origin": "algorithm",
+      "gain": null,
+      "maintenance": null,
+      "size_mb": null,
+      "formula": "gain = sum((before - after) x executions); maintenance = sum(operator cost x executions); recommended when gain \u003e= 10% of the cost and maintenance \u003c= gain / 2",
+      "queries": [
+        {
+          "query_id": 13,
+          "text": "SELECT y FROM dbo.godta_h WHERE x = 42 AND y \u003e 'a'",
+          "executions": 25,
+          "is_write": false,
+          "status": "not evaluated: timeout",
+          "before": null,
+          "after": null,
+          "maintenance": null
+        }
+      ]
+    }
+  ],
+  "auto_created_stats": [
+    "[dbo].[godta_t].[_WA_Sys_00000003_0123ABCD]"
+  ],
+  "hypotheticals": [
+    "[dbo].[godta_t].[_dta_index_godta_t_5_1]"
+  ],
+  "redundancies": [
+    "[dbo].[godta_r].[ix_r2] is an exact duplicate of [dbo].[godta_r].[ix_r1]",
+    "the keys of [dbo].[godta_r].[ix_r1] are a prefix of the keys of [dbo].[godta_r].[ix_r3]",
+    "[dbo].[godta_r].[ix_r4] has the same keys as [dbo].[godta_r].[ix_r1], with other included columns",
+    "the keys of [dbo].[godta_r].[ix_r2] are a prefix of the keys of [dbo].[godta_r].[ix_r3]",
+    "[dbo].[godta_r].[ix_r4] has the same keys as [dbo].[godta_r].[ix_r2], with other included columns",
+    "the keys of [dbo].[godta_r].[ix_r4] are a prefix of the keys of [dbo].[godta_r].[ix_r3]"
+  ],
+  "script": "indexes.sql"
+}

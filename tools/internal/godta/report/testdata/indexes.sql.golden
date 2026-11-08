@@ -1,0 +1,36 @@
+-- goDTA index script for database godta_it_golden on lab01
+-- Workload source: Query Store, from 2026-11-07 08:00:00 to 2026-11-08 08:00:00 (UTC)
+-- Statements have no terminating semicolon; each batch ends with a GO line
+-- (sqlcmd, SSMS). Read every block and run only what you decided to run.
+-- A replaced index is dropped after its replacement is created, and only if it exists.
+
+USE [godta_it_golden]
+GO
+-- CREATE INDEX needs these options on a table with an indexed view or a computed column.
+SET ANSI_NULLS ON
+SET ANSI_PADDING ON
+SET ANSI_WARNINGS ON
+SET ARITHABORT ON
+SET CONCAT_NULL_YIELDS_NULL ON
+SET QUOTED_IDENTIFIER ON
+SET NUMERIC_ROUNDABORT OFF
+GO
+
+-- 1. new index, candidate a1b2c3d4e5f6, origin algorithm
+-- Gain 900.00, maintenance 12.50, estimated size 21.40 MB
+CREATE NONCLUSTERED INDEX [IX_godta_t_a_b_a1b2c3] ON [dbo].[godta_t] ([a] ASC, [b] ASC) INCLUDE ([c])
+GO
+
+-- 2. widen nix_t_b, candidate 0f0f0f0f0f0f, origin AI suggestion
+-- Gain 300.00, maintenance 3.00, estimated size 9.50 MB
+CREATE NONCLUSTERED INDEX [nix_t_b] ON [dbo].[godta_t] ([b] ASC) INCLUDE ([c]) WITH (DROP_EXISTING = ON, DATA_COMPRESSION = PAGE, FILLFACTOR = 90) ON [PRIMARY]
+GO
+
+-- 3. replace nix_h_x, candidate abcabcabcabc, origin missing index DMV
+-- Gain 150.00, maintenance 1.00, estimated size 8.00 MB
+CREATE NONCLUSTERED INDEX [IX_godta_h_x_y_abcabc] ON [dbo].[godta_h] ([x] ASC, [y] ASC) WITH (DATA_COMPRESSION = ROW) ON [PRIMARY]
+GO
+-- Code that did not run during the collection window (month-end jobs, reports, ad hoc
+-- queries) is invisible to goDTA: check that nothing else needs nix_h_x before dropping it.
+IF EXISTS (SELECT 1 FROM sys.indexes WHERE object_id = OBJECT_ID(N'[dbo].[godta_h]') AND name = N'IX_godta_h_x_y_abcabc') DROP INDEX [nix_h_x] ON [dbo].[godta_h]
+GO
