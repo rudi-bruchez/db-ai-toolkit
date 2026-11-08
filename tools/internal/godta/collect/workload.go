@@ -26,31 +26,79 @@ const (
 )
 
 // WarnPlanName is the warning of a database whose plans were compiled under
-// another name.
-func WarnPlanName(name string) string {
-	return fmt.Sprintf("the plans were compiled under the name %s, so the database was renamed or restored under another name: references to %s are read as this database", name, name)
+// another name: n queries name its tables under it.
+func WarnPlanName(name string, n int) string {
+	queries := fmt.Sprintf("%d queries", n)
+	if n == 1 {
+		queries = "1 query"
+	}
+	return fmt.Sprintf("the plans of %s were compiled under the name %s, so the database was renamed or restored under another name: references to %s are read as this database", queries, name, name)
+}
+
+// WarnPlanNamesSeveral is the warning of plans that name the tables of
+// several other databases: none is read as this one.
+func WarnPlanNamesSeveral(names []string) string {
+	return fmt.Sprintf("the plans name the tables of several other databases (%s): none is read as this database, and their references are left out", strings.Join(names, ", "))
+}
+
+// WarnPlanNameMissing is the warning of plans that name the tables of one
+// other database, some of which this database does not have: it is not read
+// as this one.
+func WarnPlanNameMissing(name string, missing []string) string {
+	const shown = 5
+	list := strings.Join(missing[:min(shown, len(missing))], ", ")
+	if len(missing) > shown {
+		list += fmt.Sprintf(" and %d more", len(missing)-shown)
+	}
+	return fmt.Sprintf("the plans name the tables of the database %s, and %s are not in this database: %s is not read as this database, and its references are left out", name, list, name)
 }
 
 // systemDatabases are left out of the names a plan may know this database by.
 var systemDatabases = []string{"master", "model", "msdb", "tempdb", "mssqlsystemresource"}
 
+// systemSchemas hold the catalog, which every database has: a reference to
+// them says nothing of which database a plan was compiled for.
+var systemSchemas = []string{"sys", "INFORMATION_SCHEMA"}
+
+func containsFold(list []string, s string) bool {
+	return slices.ContainsFunc(list, func(n string) bool { return strings.EqualFold(n, s) })
+}
+
 // planNames returns the name the plans of w were compiled under when it is
-// not the current one: the current name appears in no object reference, and
-// exactly one other name, not a system database, does. Otherwise nil: a
-// database whose plans name it, or name several other databases, keeps its
-// cross-database references excluded.
-func planNames(w *model.Workload) []string {
-	var names []string
-	add := func(o showplan.ObjRef) {
-		if o.Database == "" || slices.ContainsFunc(names, func(n string) bool { return strings.EqualFold(n, o.Database) }) {
-			return
-		}
-		names = append(names, o.Database)
-	}
+// not the current one, and the warning to give. Only references to user
+// objects count: a schema other than sys and INFORMATION_SCHEMA, in a
+// database that is not a system one. goDTA's own catalog reads, compiled
+// under the current name, name only the catalog. The alias is the one other
+// name with such references, provided every table referenced under it is in
+// here, the current database's catalog; whether the current name has user
+// references too does not matter, a renamed database that keeps running has
+// old plans under the old name and new ones under the new name. Two or more
+// other names, or a table missing here, give no alias and a warning naming
+// them: their references stay excluded.
+func planNames(w *model.Workload, here map[tableName]int) ([]string, string) {
+	var names []string                     // other names, first spelling, in order
+	tables := map[string][]tableName{}     // by lower-case name
+	queries := map[string]map[int64]bool{} // by lower-case name
 	for _, list := range [][]model.Query{w.Queries, w.Writes} {
 		for _, q := range list {
 			if q.Plan == nil {
 				continue
+			}
+			add := func(o showplan.ObjRef) {
+				if o.Database == "" || o.Table == "" || containsFold(systemSchemas, o.Schema) ||
+					containsFold(systemDatabases, o.Database) || strings.EqualFold(o.Database, w.Database.Name) {
+					return
+				}
+				k := strings.ToLower(o.Database)
+				if _, ok := queries[k]; !ok {
+					names = append(names, o.Database)
+					queries[k] = map[int64]bool{}
+				}
+				queries[k][q.QueryID] = true
+				t := tableName{o.Schema, o.Table}
+				if !slices.Contains(tables[k], t) {
+					tables[k] = append(tables[k], t)
+				}
 			}
 			for _, st := range q.Plan.Statements {
 				for _, a := range st.Accesses {
@@ -67,19 +115,25 @@ func planNames(w *model.Workload) []string {
 			}
 		}
 	}
-	var other []string
-	for _, n := range names {
-		if strings.EqualFold(n, w.Database.Name) {
-			return nil
-		}
-		if !slices.ContainsFunc(systemDatabases, func(s string) bool { return strings.EqualFold(s, n) }) {
-			other = append(other, n)
+	switch len(names) {
+	case 0:
+		return nil, ""
+	case 1:
+	default:
+		return nil, WarnPlanNamesSeveral(names)
+	}
+	name := names[0]
+	k := strings.ToLower(name)
+	var missing []string
+	for _, t := range tables[k] {
+		if _, ok := here[t]; !ok {
+			missing = append(missing, tsql.Obj{Schema: t.schema, Name: t.table}.Quoted())
 		}
 	}
-	if len(other) != 1 {
-		return nil
+	if len(missing) > 0 {
+		return nil, WarnPlanNameMissing(name, missing)
 	}
-	return other
+	return []string{name}, WarnPlanName(name, len(queries[k]))
 }
 
 // Database collects one database. db is a pool opened on that database
@@ -121,11 +175,18 @@ func Database(ctx context.Context, db *sql.DB, inst conn.Instance, info model.DB
 		}
 	}
 	parsePlans(w)
-	if names := planNames(w); names != nil {
-		w.Database.PlanNames = names
-		w.Warnings = append(w.Warnings, WarnPlanName(names[0]))
+	// The alias of a renamed database is checked against its catalog: the
+	// tables and views are read before it, and resolved after it.
+	objects, err := readObjects(ctx, db)
+	if err != nil {
+		return nil, err
 	}
-	if err := readCatalog(ctx, db, w); err != nil {
+	names, warning := planNames(w, objects)
+	w.Database.PlanNames = names
+	if warning != "" {
+		w.Warnings = append(w.Warnings, warning)
+	}
+	if err := readCatalog(ctx, db, w, objects); err != nil {
 		return nil, err
 	}
 	warnNoTable(w)

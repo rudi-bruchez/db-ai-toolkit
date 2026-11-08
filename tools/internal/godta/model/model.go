@@ -64,8 +64,11 @@ type DBInfo struct {
 	// PlanNames are the other names the database is known by in its plans:
 	// a plan keeps the database name of its compilation, so the Query Store
 	// of a database restored or renamed under another name still names the
-	// old one. Collect records the name when it is the only one the plans
-	// use besides the system databases, and the current name appears in none.
+	// old one. Collect records the name when it is the only other one under
+	// which the plans name user objects (schemas other than sys and
+	// INFORMATION_SCHEMA, outside the system databases), and every table they
+	// name under it is in this database, whether or not the current name has
+	// plans too.
 	PlanNames []string `json:"plan_names,omitempty"`
 }
 

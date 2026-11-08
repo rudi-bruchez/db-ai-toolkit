@@ -25,17 +25,14 @@ ORDER BY name;`
 // readCatalog reads everything about the tables the workload touches, the
 // hypothetical indexes, the missing index groups, the scoped configurations
 // and the named references to indexes.
-func readCatalog(ctx context.Context, db *sql.DB, w *model.Workload) error {
+func readCatalog(ctx context.Context, db *sql.DB, w *model.Workload, objects map[tableName]int) error {
 	if err := readScopedConfigs(ctx, db, w); err != nil {
 		return err
 	}
 	if err := readMissingIndexes(ctx, db, w); err != nil {
 		return err
 	}
-	ids, err := touchedTables(ctx, db, w)
-	if err != nil {
-		return err
-	}
+	ids := touchedTables(w, objects)
 	views, err := indexedViews(ctx, db, ids)
 	if err != nil {
 		return err
@@ -103,7 +100,11 @@ func ReadCatalog(ctx context.Context, db *sql.DB, w *model.Workload) error {
 	if w.Tables == nil {
 		w.Tables = map[int]*model.Table{}
 	}
-	return readCatalog(ctx, db, w)
+	objects, err := readObjects(ctx, db)
+	if err != nil {
+		return err
+	}
+	return readCatalog(ctx, db, w, objects)
 }
 
 func viewSet(views map[int][]int) map[int]struct{} {
@@ -171,45 +172,52 @@ ORDER BY d.index_handle, c.column_id;`)
 	return rows.Err()
 }
 
-// touchedTables resolves the tables the plans read or write in this
-// database, and adds those of the missing index groups. Schema and table
-// names of a plan are the catalog's own spelling, so they are compared
-// exactly, whatever the collation; the database is this one by its current
-// name or by a name its plans were compiled under (model.DBInfo.Matches).
-func touchedTables(ctx context.Context, db *sql.DB, w *model.Workload) ([]int, error) {
-	wanted := planTables(w)
+// readObjects reads the tables and views of the database, by name. Schema
+// and table names of a plan are the catalog's own spelling, so they are
+// compared exactly, whatever the collation.
+func readObjects(ctx context.Context, db *sql.DB) (map[tableName]int, error) {
+	rows, err := db.QueryContext(ctx, `SELECT /* godta:internal */ o.object_id, s.name, o.name FROM sys.objects o
+JOIN sys.schemas s ON s.schema_id = o.schema_id
+WHERE o.type IN ('U', 'V');`)
+	if err != nil {
+		return nil, fmt.Errorf("reading the tables: %w", err)
+	}
+	defer rows.Close()
+	out := map[tableName]int{}
+	for rows.Next() {
+		var id int
+		var n tableName
+		if err := rows.Scan(&id, &n.schema, &n.table); err != nil {
+			return nil, fmt.Errorf("reading the tables: %w", err)
+		}
+		out[n] = id
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading the tables: %w", err)
+	}
+	return out, nil
+}
+
+// touchedTables resolves, in objects, the tables the plans read or write in
+// this database, and adds those of the missing index groups. The database is
+// this one by its current name or by a name its plans were compiled under
+// (model.DBInfo.Matches).
+func touchedTables(w *model.Workload, objects map[tableName]int) []int {
 	set := map[int]bool{}
 	for _, m := range w.MissingIndexes {
 		set[m.Table] = true
 	}
-	if len(wanted) > 0 {
-		rows, err := db.QueryContext(ctx, `SELECT /* godta:internal */ o.object_id, s.name, o.name FROM sys.objects o
-JOIN sys.schemas s ON s.schema_id = o.schema_id
-WHERE o.type IN ('U', 'V');`)
-		if err != nil {
-			return nil, fmt.Errorf("resolving the tables: %w", err)
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var id int
-			var n tableName
-			if err := rows.Scan(&id, &n.schema, &n.table); err != nil {
-				return nil, fmt.Errorf("resolving the tables: %w", err)
-			}
-			if wanted[n] {
-				set[id] = true
-			}
-		}
-		if err := rows.Err(); err != nil {
-			return nil, fmt.Errorf("resolving the tables: %w", err)
+	for n := range planTables(w) {
+		if id, ok := objects[n]; ok {
+			set[id] = true
 		}
 	}
-	var ids []int
+	ids := make([]int, 0, len(set))
 	for id := range set {
 		ids = append(ids, id)
 	}
 	slices.Sort(ids)
-	return ids, nil
+	return ids
 }
 
 // tableName is a table as a plan names it.
