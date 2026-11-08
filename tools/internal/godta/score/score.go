@@ -56,7 +56,9 @@ func DefaultThresholds() Thresholds {
 // the same from one run to the next.
 func Formula(th Thresholds) string {
 	pct := func(f float64) string { return strconv.FormatFloat(f*100, 'f', -1, 64) + "%" }
-	return "gain = sum over the measured queries of (estimated cost before - estimated cost after) x executions; " +
+	return "gain = sum over the measured reads of (estimated cost before - estimated cost after) x executions, " +
+		"plus sum over the measured writes of (estimated cost before - (estimated cost after - maintenance)) x executions, " +
+		"the read-side saving of the write only, since its cost after includes the maintenance; " +
 		"maintenance = sum over the measured writes of the cost of the operator maintaining the index x executions " +
 		"(rows written x executions for a write that could not be measured); " +
 		"recommended when at least " + strconv.Itoa(th.MinQueries) + " query is measured, " +
@@ -158,9 +160,14 @@ func Score(w *model.Workload, cands []model.Candidate, ms []model.Measure, th Th
 			measured[m.QueryID] = true
 			exec := float64(queries[m.QueryID].Executions)
 			before += m.Before * exec
-			r.Gain += (m.Before - m.After) * exec
 			if writes[m.QueryID] {
+				// After includes the maintenance of the hypothetical index:
+				// the gain keeps only the read-side saving of the write,
+				// the maintenance is counted once, below.
+				r.Gain += (m.Before - (m.After - m.Maintenance)) * exec
 				r.Maintenance += m.Maintenance * exec
+			} else {
+				r.Gain += (m.Before - m.After) * exec
 			}
 		}
 
