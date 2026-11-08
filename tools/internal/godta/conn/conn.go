@@ -194,18 +194,18 @@ type Querier interface {
 
 // Instance is the identity of the instance a connection reached.
 type Instance struct {
-	ServerName           string
-	MachineName          string
-	Edition              string
-	EngineEdition        int
-	Major                int
-	Level                string
-	Version              string
-	IsEnterpriseFeatures bool
-	CanCompress          bool
-	CPUCount             int
-	MaxDOP               int
-	DefaultBackupPath    string
+	ServerName           string `json:"server_name"`
+	MachineName          string `json:"machine_name"`
+	Edition              string `json:"edition"`
+	EngineEdition        int    `json:"engine_edition"`
+	Major                int    `json:"major"`
+	Level                string `json:"level"`
+	Version              string `json:"version"`
+	IsEnterpriseFeatures bool   `json:"is_enterprise_features"`
+	CanCompress          bool   `json:"can_compress"`
+	CPUCount             int    `json:"cpu_count"`
+	MaxDOP               int    `json:"max_dop"`
+	DefaultBackupPath    string `json:"default_backup_path"`
 }
 
 // identifyQuery reads the identity in one statement. SERVERPROPERTY returns
