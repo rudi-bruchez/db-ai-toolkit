@@ -821,7 +821,7 @@ func (a *app) evaluateDryRun(p sqlq.Profile, suggestions string, maxCombined, lo
 		planPath, warnings, err := a.planOne(p, inst, l, suggestions, maxCombined, lockMS)
 		r.Warnings = warnings
 		if err != nil {
-			a.dbFailed(&r, err)
+			a.refuse(&r, err)
 			a.out.Databases = append(a.out.Databases, r)
 			continue
 		}
@@ -859,6 +859,9 @@ func (a *app) planOne(p sqlq.Profile, inst conn.Instance, l loaded, suggestions 
 	if err != nil {
 		return "", warnings, err
 	}
+	if err := a.catalogCurrent(db, w); err != nil {
+		return "", warnings, err
+	}
 	fp, err := runplan.ReadFingerprints(a.ctx, db, runplan.Tables(w))
 	if err != nil {
 		return "", warnings, err
@@ -873,6 +876,22 @@ func (a *app) planOne(p sqlq.Profile, inst conn.Instance, l loaded, suggestions 
 		return "", warnings, err
 	}
 	return filepath.Join(l.dir, name), warnings, nil
+}
+
+// catalogCurrent refuses a --dry-run on a database whose indexes changed
+// since collect: the candidates were confronted with the collected ones, so
+// an index created since would not cover a candidate that duplicates it,
+// and the queries that now use it would measure against another reference.
+func (a *app) catalogCurrent(db *sql.DB, w *model.Workload) error {
+	drift, err := collect.CatalogDrift(a.ctx, db, w)
+	if err != nil {
+		return err
+	}
+	if len(drift) > 0 {
+		return refusedf("the indexes of the workload's tables changed since collect: %s; "+
+			"collect again, then run candidates and the --dry-run again", strings.Join(drift, "; "))
+	}
+	return nil
 }
 
 // readPlan reads an execution plan file of the given phase.

@@ -339,6 +339,31 @@ func (c *fakeConn) QueryContext(ctx context.Context, q string, _ []driver.NamedV
 			r.rows = append(r.rows, []driver.Value{int64(t.ObjectID), t.Schema, t.Name, time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC)})
 		}
 		return r, nil
+	case strings.Contains(q, "FROM sys.indexes i LEFT JOIN sys.data_spaces"):
+		// collect's index reader, which the --dry-run uses to compare the
+		// live indexes with collect.json: the indexes of tables.
+		r := &fakeRows{cols: 14}
+		for _, t := range c.f.tables {
+			for _, ix := range t.Indexes {
+				r.rows = append(r.rows, []driver.Value{int64(ix.ObjectID), int64(ix.IndexID), ix.Name, kindType[ix.Kind],
+					ix.Unique, ix.PrimaryKey, ix.UniqueConstraint, ix.Disabled, false, ix.Filter, int64(ix.FillFactor),
+					ix.DataSpace, ix.DataPages, ix.Compression})
+			}
+		}
+		return r, nil
+	case strings.Contains(q, "FROM sys.index_columns ic"):
+		r := &fakeRows{cols: 6}
+		for _, t := range c.f.tables {
+			for _, ix := range t.Indexes {
+				for n, k := range ix.Keys {
+					r.rows = append(r.rows, []driver.Value{int64(ix.ObjectID), int64(ix.IndexID), int64(k.ColumnID), int64(n + 1), k.Desc, false})
+				}
+				for _, id := range ix.Include {
+					r.rows = append(r.rows, []driver.Value{int64(ix.ObjectID), int64(ix.IndexID), int64(id), int64(0), false, true})
+				}
+			}
+		}
+		return r, nil
 	case strings.Contains(q, "FROM sys.indexes AS i"):
 		return &fakeRows{cols: 12}, nil
 	case !c.f.lenient:
@@ -354,6 +379,10 @@ func (c *fakeConn) QueryContext(ctx context.Context, q string, _ []driver.NamedV
 	}
 	return nil, fmt.Errorf("fake: unexpected query %q", q)
 }
+
+// kindType is the sys.indexes type of an index kind.
+var kindType = map[string]int64{model.KindHeap: 0, model.KindClustered: 1, model.KindNonclustered: 2,
+	model.KindClusteredColumnstore: 5, model.KindNonclusteredColumnstore: 6}
 
 type fakeRows struct {
 	cols int

@@ -208,3 +208,23 @@ func TestEvaluateRefusesRecollected(t *testing.T) {
 		t.Errorf("statements sent: %q", got)
 	}
 }
+
+// TestDryRunRefusesIndexDrift: an index created on a table of the workload
+// after collect makes evaluate --dry-run refuse, exit 3, saying to collect
+// again, and write no plan.
+func TestDryRunRefusesIndexDrift(t *testing.T) {
+	f := newEvalFix(t)
+	f.tbl.Indexes = append(f.tbl.Indexes, model.Index{ObjectID: 1001, IndexID: 2, Name: "ix_new", Kind: model.KindNonclustered,
+		Keys: []model.KeyCol{{ColumnID: 2}}, Include: []int{3}})
+	code, out := invoke(t, f.fake.open, append([]string{"evaluate", "--target", "server", "--dry-run"}, f.args...)...)
+	if code != exitRefused || len(out.Databases) != 1 {
+		t.Fatalf("code %d, output %+v, want refused", code, out)
+	}
+	msg := out.Databases[0].Error
+	if !strings.Contains(msg, "[ix_new] created") || !strings.Contains(msg, "collect again") {
+		t.Errorf("the error %q does not name the new index and say to collect again", msg)
+	}
+	if _, err := os.Stat(filepath.Join(f.dir, workspace.PlanFile(runplan.PhaseEvaluate))); err == nil {
+		t.Errorf("a plan was written")
+	}
+}

@@ -313,3 +313,41 @@ func TestCollectScopedConfigTyped(t *testing.T) {
 		t.Errorf("LEGACY_CARDINALITY_ESTIMATION base type %q, want bit", types["LEGACY_CARDINALITY_ESTIMATION"])
 	}
 }
+
+// TestCatalogDrift: the live indexes of a freshly collected database are
+// those of collect.json; an index created, changed or dropped since is
+// named.
+func TestCatalogDrift(t *testing.T) {
+	f := newFixture(t, "", true)
+	ittest.RunWorkload(t, f.db, 1)
+	w := f.collect(t)
+	ctx := ctxT(t)
+	drift, err := CatalogDrift(ctx, f.db, w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(drift) != 0 {
+		t.Fatalf("control, right after collect: drift %q, want none", drift)
+	}
+	exec(t, f.db, "CREATE INDEX godta_drift_new ON dbo.godta_t (c) INCLUDE (a);")
+	exec(t, f.db, "DROP INDEX nix_h_x ON dbo.godta_h; CREATE INDEX nix_h_x ON dbo.godta_h (x) INCLUDE (y);")
+	drift, err = CatalogDrift(ctx, f.db, w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(drift, "\n")
+	for _, want := range []string{"[dbo].[godta_t]: index [godta_drift_new] created", "[dbo].[godta_h]: index [nix_h_x] changed"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("drift lacks %q:\n%s", want, got)
+		}
+	}
+	exec(t, f.db, "DROP INDEX godta_drift_new ON dbo.godta_t;")
+	exec(t, f.db, "DROP INDEX nix_h_x ON dbo.godta_h;")
+	drift, err = CatalogDrift(ctx, f.db, w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(drift, "\n"); got != "[dbo].[godta_h]: index [nix_h_x] dropped" {
+		t.Errorf("after the drops, drift %q, want nix_h_x dropped alone", got)
+	}
+}
