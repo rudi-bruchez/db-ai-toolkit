@@ -19,6 +19,12 @@ CREATE NONCLUSTERED INDEX [godta_ab12cd34_1] ON [dbo].[Ord]]er s] ([a] ASC, [b] 
 -- CreateIndexDropExisting without options
 CREATE UNIQUE NONCLUSTERED INDEX [godta_ab12cd34_1] ON [dbo].[Ord]]er s] ([a] ASC, [b] DESC) WITH (DROP_EXISTING = ON)
 
+-- CreateIndex online
+CREATE NONCLUSTERED INDEX [godta_ab12cd34_1] ON [dbo].[Ord]]er s] ([a] ASC, [b] DESC) INCLUDE ([c]) WHERE a = 933 WITH (ONLINE = ON, DATA_COMPRESSION = PAGE, FILLFACTOR = 90) ON [PRIMARY]
+
+-- CreateIndexDropExisting online
+CREATE NONCLUSTERED INDEX [godta_ab12cd34_1] ON [dbo].[Ord]]er s] ([a] ASC, [b] DESC) INCLUDE ([c]) WHERE a = 933 WITH (DROP_EXISTING = ON, ONLINE = ON, DATA_COMPRESSION = PAGE, FILLFACTOR = 90) ON [PRIMARY]
+
 -- DropIndex
 DROP INDEX [godta_ab12cd34_1] ON [dbo].[Ord]]er s]
 

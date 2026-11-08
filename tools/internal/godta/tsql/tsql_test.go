@@ -88,6 +88,8 @@ func goldenCases() [][2]string {
 	unique.DataCompression = ""
 	unique.FillFactor = 0
 	unique.OnTarget = ""
+	online := goldenIndex
+	online.Online = true
 	backup := "/var/opt/mssql/backup/godta_ab12cd34_O'Brien.bak"
 	cases := [][2]string{
 		{"Obj.Quoted", goldenTable.Quoted()},
@@ -97,6 +99,8 @@ func goldenCases() [][2]string {
 		{"CreateIndex unique without options", CreateIndex(unique)},
 		{"CreateIndexDropExisting", CreateIndexDropExisting(goldenIndex)},
 		{"CreateIndexDropExisting without options", CreateIndexDropExisting(unique)},
+		{"CreateIndex online", CreateIndex(online)},
+		{"CreateIndexDropExisting online", CreateIndexDropExisting(online)},
 		{"DropIndex", DropIndex(goldenTable, "godta_ab12cd34_1")},
 		{"CreateStatistics", CreateStatistics(goldenTable, "godta_ab12cd34_s'1", []string{"a", "x y"})},
 		{"DropStatistics", DropStatistics(goldenTable, "godta_ab12cd34_s'1")},

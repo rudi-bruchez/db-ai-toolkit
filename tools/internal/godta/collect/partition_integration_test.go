@@ -19,10 +19,11 @@ CREATE TABLE dbo.godta_p (id int NOT NULL, p int NOT NULL, k int NOT NULL, v int
   CONSTRAINT pk_godta_p PRIMARY KEY CLUSTERED (id, p)) ON ps_godta(p);
 INSERT dbo.godta_p (id, p, k, v, w)
 SELECT TOP (3000) n, n % 300, n % 97, n % 89, n FROM (SELECT ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) n FROM sys.all_columns) s;
-CREATE INDEX ix_p_k ON dbo.godta_p(k) ON ps_godta(p);
+CREATE INDEX ix_p_k ON dbo.godta_p(k) WITH (DATA_COMPRESSION = PAGE) ON ps_godta(p);
 CREATE INDEX ix_p_v ON dbo.godta_p(v) ON ps_godta(p);`
 
-// TestPartitionedScriptRuns collects an index on a partition scheme, then
+// TestPartitionedScriptRuns collects an index on a partition scheme (ix_p_k
+// with PAGE compression), then
 // widens one, replaces another and adds a new one through report, and runs
 // indexes.sql inside a transaction rolled back. Every batch must succeed:
 // ON [ps_godta] without its column fails (error 2726). Every index the
@@ -81,6 +82,15 @@ func TestPartitionedScriptRuns(t *testing.T) {
 	script := string(b)
 	if !strings.Contains(script, "ON [ps_godta]([p])") {
 		t.Errorf("indexes.sql does not name the scheme with its column:\n%s", script)
+	}
+	// The lab is Developer Edition, Enterprise features: the widening is an
+	// online DROP_EXISTING that keeps the compression and the scheme, and it
+	// must run below.
+	if !w.Server.IsEnterpriseFeatures {
+		t.Fatalf("the lab instance %q has no Enterprise features: the online statement is not tested", w.Server.Edition)
+	}
+	if want := "CREATE NONCLUSTERED INDEX [ix_p_k] ON [dbo].[godta_p] ([k] ASC) INCLUDE ([v]) WITH (DROP_EXISTING = ON, ONLINE = ON, DATA_COMPRESSION = PAGE) ON [ps_godta]([p])"; !strings.Contains(script, want) {
+		t.Errorf("indexes.sql lacks\n%s\ngot:\n%s", want, script)
 	}
 
 	ctx := ctxT(t)
