@@ -53,8 +53,14 @@ godta cleanup    --project <dir> --profile <name> --allow-write --plan <plan-cle
 5. `report` scores the measures and writes, per database, `rapport.md`, `indexes.sql` and
    `result.json`, and `synthese.md` at the root of the project. Offline.
 6. `cleanup --dry-run`, then `cleanup --allow-write --plan <file>`, removes what an
-   interrupted run left (journal first, then the name pattern of a run). Run it after any
-   `evaluate` that did not end with `ok: true`.
+   interrupted run left (journal first, then the name pattern of a run). Run it whenever a
+   database reports objects left: its status contains `left for cleanup`, and a warning
+   names each object. `clone`, `evaluate` and `cleanup` itself report them this way, with
+   `ok: false` and exit code `2`, even when the measures were taken. Run it as well after
+   any write phase that did not end with `ok: true`, and after one that was killed.
+
+Ctrl-C (SIGINT) or SIGTERM stops the measuring, still drops what the run created, and the
+run then reports what it could not drop.
 
 ## The lab mode
 

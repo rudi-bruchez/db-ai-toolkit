@@ -266,6 +266,7 @@ func (a *app) cloneWrite(p sqlq.Profile, plans []string, hostDir string) error {
 			return err
 		}
 		file, err := lab.Clone(a.ctx, db, a.ws, it.plan, hostDir)
+		err = a.interrupted(err, cmdClone)
 		if file.HostPath != "" {
 			r.Files = []string{file.HostPath, filepath.Join(a.ws.DBDir(it.plan.Server, it.plan.Database), workspace.LabFile)}
 		}
@@ -274,9 +275,10 @@ func (a *app) cloneWrite(p sqlq.Profile, plans []string, hostDir string) error {
 			r.Status = fmt.Sprintf("cloned: %d bytes", file.Bytes)
 		case errors.Is(err, lab.ErrLeftForCleanup) && file.HostPath != "":
 			// The file is usable; what stayed on the source is in the
-			// journal for cleanup, and the run says so by its exit code.
+			// journal for cleanup, and noteLeft says so in the status and
+			// by the exit code.
 			a.failed = true
-			r.Status = fmt.Sprintf("cloned: %d bytes, objects left for cleanup", file.Bytes)
+			r.Status = fmt.Sprintf("cloned: %d bytes", file.Bytes)
 			r.Warnings = []string{err.Error()}
 		case errors.Is(err, runplan.ErrChecksum), errors.Is(err, runplan.ErrWrongServer),
 			errors.Is(err, runplan.ErrWrongDatabase), errors.Is(err, runplan.ErrSchemaDrift):
@@ -286,6 +288,7 @@ func (a *app) cloneWrite(p sqlq.Profile, plans []string, hostDir string) error {
 		default:
 			a.dbFailed(&r, err)
 		}
+		a.noteLeft(&r, it.plan.RunID)
 		a.out.Databases = append(a.out.Databases, r)
 	}
 	return nil
@@ -335,7 +338,7 @@ func (a *app) evaluateLab(o labOptions) error {
 	}
 	for _, l := range list {
 		r := newResult(l.w)
-		file, err := a.labOne(lp, labServer, labi, l, o, &r)
+		file, runID, err := a.labOne(lp, labServer, labi, l, o, &r)
 		if file != "" {
 			r.Files = []string{file, filepath.Join(l.dir, labCandidatesFile)}
 		}
@@ -348,23 +351,25 @@ func (a *app) evaluateLab(o labOptions) error {
 			} else {
 				a.dbFailed(&r, err)
 			}
+			a.noteLeft(&r, runID)
 			a.out.Databases = append(a.out.Databases, r)
 			continue
 		}
 		r.Status = "evaluated on the lab"
+		a.noteLeft(&r, runID)
 		a.out.Databases = append(a.out.Databases, r)
 	}
 	return nil
 }
 
-func (a *app) labOne(lp sqlq.Profile, labServer *sql.DB, labi conn.Instance, l loaded, o labOptions, r *dbResult) (string, error) {
+func (a *app) labOne(lp sqlq.Profile, labServer *sql.DB, labi conn.Instance, l loaded, o labOptions, r *dbResult) (file, runID string, err error) {
 	w := l.w
 	if err := lab.CheckDistinct(w.Server, labi); err != nil {
-		return "", refusedf("%v", err)
+		return "", "", refusedf("%v", err)
 	}
 	warning, err := lab.CheckSameVersion(w.Server, labi)
 	if err != nil {
-		return "", refusedf("%v", err)
+		return "", "", refusedf("%v", err)
 	}
 	var warnings []string
 	addWarning := func(list ...string) {
@@ -379,13 +384,13 @@ func (a *app) labOne(lp sqlq.Profile, labServer *sql.DB, labi conn.Instance, l l
 	state, err := lab.LoadState(a.ws, l.dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return "", fmt.Errorf("%w: run clone first", err)
+			return "", "", fmt.Errorf("%w: run clone first", err)
 		}
-		return "", err
+		return "", "", err
 	}
 	if state.Prepared == nil {
 		if err := checkHostFile(state.File, o.hostDir); err != nil {
-			return "", refusedf("%v", err)
+			return "", "", refusedf("%v", err)
 		}
 		db := strings.TrimSuffix(filepath.Base(state.File.HostPath), ".bak")
 		open := func(name string) (*sql.DB, error) {
@@ -397,39 +402,40 @@ func (a *app) labOne(lp sqlq.Profile, labServer *sql.DB, labi conn.Instance, l l
 		}
 		prep, err := lab.Restore(a.ctx, a.ws, l.dir, labServer, open, w.Server, labi, w, state.File, o.containerDir, o.dataDir, db)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 		state.Prepared = &prep
 	} else if err := lab.CheckCloneDB(a.ctx, labServer, state.Prepared.Database); err != nil {
-		return "", refusedf("%v", err)
+		return "", "", refusedf("%v", err)
 	}
 	addWarning(state.Prepared.Warnings...)
 
 	var cands []model.Candidate
 	if err := a.ws.ReadJSON(l.dir, workspace.CandidatesFile, &cands); err != nil {
-		return "", fmt.Errorf("%w: run candidates first", err)
+		return "", "", fmt.Errorf("%w: run candidates first", err)
 	}
 	if o.suggestions != "" {
 		ai, rejected, err := suggest.Load(o.suggestions, w)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 		addWarning(rejected...)
 		cands = mergeCandidates(cands, candidate.ConfrontAll(candidate.BindQueries(ai, w), w))
 	}
 	if err := a.ws.WriteJSON(l.dir, labCandidatesFile, cands); err != nil {
-		return "", err
+		return "", "", err
 	}
 	db, err := a.connect(lp, state.Prepared.Database)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	s, err := evaluate.NewSession(a.ctx, db, labi, o.compileTimeout, o.lockMS)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	defer s.Close()
 	res, runErr := evaluate.Run(a.ctx, s, a.ws, nil, w, cands, lab.StatsHook(*state.Prepared, w))
+	runErr = a.interrupted(runErr, cmdEvaluate)
 	addWarning(res.Warnings...)
 	ev := evaluateFile{
 		RunID:            runIDOf(state.Prepared.Database),
@@ -441,9 +447,9 @@ func (a *app) labOne(lp sqlq.Profile, labServer *sql.DB, labi conn.Instance, l l
 		ev.Error = runErr.Error()
 	}
 	if err := a.ws.WriteJSON(l.dir, workspace.EvaluateLabFile, ev); err != nil {
-		return "", errors.Join(runErr, err)
+		return "", res.RunID, errors.Join(runErr, err)
 	}
-	return filepath.Join(l.dir, workspace.EvaluateLabFile), runErr
+	return filepath.Join(l.dir, workspace.EvaluateLabFile), res.RunID, runErr
 }
 
 // runIDOf is the run ID of a goDTA object name, godta_<run ID>_...

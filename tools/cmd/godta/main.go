@@ -42,6 +42,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/dotenv"
@@ -185,10 +186,18 @@ func credentialsPath() string {
 }
 
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := signalContext()
 	code := run(ctx, os.Args[1:], realDeps())
 	stop()
 	os.Exit(code)
+}
+
+// signalContext is the context of a run: SIGINT (Ctrl-C) and SIGTERM
+// cancel it instead of killing the process, so that a write phase stops
+// measuring and still drops what it created, each phase on a context of its
+// own with a deadline, then reports what it left.
+func signalContext() (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 }
 
 // listFlag is a repeatable string flag.
@@ -902,21 +911,24 @@ func (a *app) evaluateWrite(p sqlq.Profile, plans []string, compileTimeout time.
 			r.Files = []string{file}
 		}
 		if err != nil {
-			var ce *codeError
-			if errors.As(err, &ce) && ce.code == exitRefused {
-				a.refused = true
-				r.Status = "refused"
-				r.Error = err.Error()
-			} else {
-				a.dbFailed(&r, err)
-			}
-			a.out.Databases = append(a.out.Databases, r)
-			continue
+			a.refuse(&r, err)
+		} else {
+			r.Status = "evaluated"
 		}
-		r.Status = "evaluated"
+		a.noteLeft(&r, it.plan.RunID)
 		a.out.Databases = append(a.out.Databases, r)
 	}
 	return nil
+}
+
+// interrupted turns the end of the run's context into an error: a run
+// canceled by a signal is not a success, even when the drops that followed
+// all went through.
+func (a *app) interrupted(err error, phase string) error {
+	if err != nil || a.ctx.Err() == nil {
+		return err
+	}
+	return fmt.Errorf("%s: interrupted: %w", phase, context.Cause(a.ctx))
 }
 
 func (a *app) evaluateOne(p sqlq.Profile, inst conn.Instance, file string, plan runplan.Plan, compileTimeout time.Duration, r *dbResult) (string, error) {
@@ -955,6 +967,7 @@ func (a *app) evaluateOne(p sqlq.Profile, inst conn.Instance, file string, plan 
 	}
 	defer s.Close()
 	res, runErr := evaluate.Run(a.ctx, s, a.ws, &plan, w, cands, evaluate.Hooks{})
+	runErr = a.interrupted(runErr, cmdEvaluate)
 	ev := evaluateFile{
 		RunID:            plan.RunID,
 		Plan:             file,
@@ -1163,18 +1176,53 @@ func (a *app) cleanup(args []string) error {
 		return a.cleanupDryRun(server, inst, open)
 	}
 	removed, err := cleanup.Run(a.ctx, server, open, a.ws, plan)
-	byDB := groupEntries(removed)
-	for _, db := range sortedKeys(byDB) {
-		a.out.Databases = append(a.out.Databases, dbResult{Server: inst.ServerName, Name: db,
-			Status: fmt.Sprintf("%d removed", len(byDB[db])), Warnings: byDB[db]})
+	err = a.interrupted(err, cmdCleanup)
+	if err != nil && (errors.Is(err, runplan.ErrChecksum) || errors.Is(err, runplan.ErrWrongServer)) {
+		return refusedf("--plan %s refused: %v", plans[0], err)
 	}
+	a.cleanupResults(inst.ServerName, plan, removed, err != nil)
 	if err != nil {
-		if errors.Is(err, runplan.ErrChecksum) || errors.Is(err, runplan.ErrWrongServer) {
-			return refusedf("--plan %s refused: %v", plans[0], err)
-		}
 		return failedf(err)
 	}
 	return nil
+}
+
+// cleanupResults gives, per database, what cleanup removed and, when it
+// failed, the objects of its plan it did not remove: those are still on the
+// server, and the status of their database says so.
+func (a *app) cleanupResults(server string, plan runplan.Plan, removed []workspace.Entry, failed bool) {
+	id := func(e workspace.Entry) string {
+		return strings.Join([]string{e.Server, e.Database, e.Kind, e.Schema, e.Table, e.Name, e.Path}, "\x00")
+	}
+	gone := map[string]bool{}
+	for _, e := range removed {
+		gone[id(e)] = true
+	}
+	var left []workspace.Entry
+	if failed {
+		for _, st := range plan.Steps {
+			if st.Journal != nil && !gone[id(*st.Journal)] {
+				left = append(left, *st.Journal)
+			}
+		}
+	}
+	byDB := groupEntries(removed)
+	leftDB := map[string][]workspace.Entry{}
+	for _, e := range left {
+		leftDB[e.Database] = append(leftDB[e.Database], e)
+		if _, ok := byDB[e.Database]; !ok {
+			byDB[e.Database] = nil
+		}
+	}
+	for _, db := range sortedKeys(byDB) {
+		r := dbResult{Server: server, Name: db, Status: fmt.Sprintf("%d removed", len(byDB[db])), Warnings: byDB[db]}
+		if l := leftDB[db]; len(l) > 0 {
+			r.Status += fmt.Sprintf(", %s left for cleanup", objects(len(l)))
+			r.Warnings = append(r.Warnings, fmt.Sprintf("not removed, still on the server: %s; see the error, then %s again",
+				describeEntries(l), cleanupHint))
+		}
+		a.out.Databases = append(a.out.Databases, r)
+	}
 }
 
 func (a *app) cleanupDryRun(server *sql.DB, inst conn.Instance, open func(string) (*sql.DB, error)) error {
@@ -1213,14 +1261,7 @@ func (a *app) cleanupDryRun(server *sql.DB, inst conn.Instance, open func(string
 func groupEntries(entries []workspace.Entry) map[string][]string {
 	by := map[string][]string{}
 	for _, e := range entries {
-		desc := e.Kind + " " + e.Name
-		if e.Table != "" {
-			desc = e.Kind + " " + e.Schema + "." + e.Table + "." + e.Name
-		}
-		if e.Path != "" {
-			desc += " (" + e.Path + ")"
-		}
-		by[e.Database] = append(by[e.Database], desc)
+		by[e.Database] = append(by[e.Database], describeEntry(e))
 	}
 	return by
 }

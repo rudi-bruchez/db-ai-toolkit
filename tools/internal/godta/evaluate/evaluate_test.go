@@ -217,3 +217,50 @@ func TestMaintenanceNarrowAndWide(t *testing.T) {
 		t.Errorf("another index: maintenance %g, want 0", got)
 	}
 }
+
+// TestInterruptedCreateLookedUp: the end of ctx interrupts the CREATE of a
+// hypothetical index, whose outcome is then unknown. The drops look the
+// index up on their own context: found, it is dropped and journaled
+// "removed"; not found, no drop is sent and its "planned" entry is closed.
+func TestInterruptedCreateLookedUp(t *testing.T) {
+	w := unitWorkload()
+	c := withID(model.Candidate{Table: tblH, Keys: []model.KeyCol{{ColumnID: 1}}, Include: []int{2},
+		Queries: []int64{99}, Decision: model.DecisionNew})
+	plan := runplan.ForEvaluate(w, []model.Candidate{c}, "abcd1234", nil, 4, 2000).Seal()
+	var create, drop runplan.Step
+	for _, st := range plan.Steps {
+		switch {
+		case st.Candidate == "":
+		case st.Resolve != "":
+			create = st
+		default:
+			drop = st
+		}
+	}
+	for _, found := range []bool{true, false} {
+		s, rec := NewRecordingSession(w.Server)
+		ws, err := workspace.Open(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		rec.Fail[create.SQL] = context.Canceled
+		if found {
+			rec.Results[create.Resolve] = [][]any{{int64(3)}}
+		}
+		if _, err := Run(ctx, s, ws, &plan, w, []model.Candidate{c}, Hooks{}); !errors.Is(err, context.Canceled) {
+			t.Errorf("found %v: Run error %v, want context.Canceled", found, err)
+		}
+		want := 0
+		if found {
+			want = 1
+		}
+		if n := rec.Count(drop.SQL); n != want {
+			t.Errorf("found %v: the drop was sent %d times, want %d", found, n, want)
+		}
+		if pending, _ := ws.Pending(); len(pending) != 0 {
+			t.Errorf("found %v: journal entries left %+v, want none", found, pending)
+		}
+	}
+}
