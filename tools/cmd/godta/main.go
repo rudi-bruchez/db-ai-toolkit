@@ -577,6 +577,7 @@ func (a *app) collect(args []string) error {
 	if err != nil {
 		return err
 	}
+	collectID := workspace.NewRunID()
 	keep, skipped, err := collect.Databases(a.ctx, server, opt)
 	if err != nil {
 		return failedf(err)
@@ -602,6 +603,7 @@ func (a *app) collect(args []string) error {
 			a.out.Databases = append(a.out.Databases, r)
 			continue
 		}
+		w.CollectID = collectID
 		dir := a.ws.DBDir(inst.ServerName, info.Name)
 		if err := a.ws.WriteJSON(dir, workspace.CollectFile, w); err != nil {
 			a.dbFailed(&r, err)
@@ -713,9 +715,12 @@ func (a *app) candidates(args []string) error {
 	return nil
 }
 
-// evaluateFile is evaluate-server.json.
+// evaluateFile is evaluate-server.json and evaluate-lab.json. CollectID is
+// the collection the measures were taken for: report scores them only with
+// that collection's counters.
 type evaluateFile struct {
 	RunID            string          `json:"run_id"`
+	CollectID        string          `json:"collect_id,omitempty"`
 	Plan             string          `json:"plan"`
 	Measures         []model.Measure `json:"measures"`
 	AutoCreatedStats []string        `json:"auto_created_stats"`
@@ -977,6 +982,10 @@ func (a *app) evaluateOne(p sqlq.Profile, inst conn.Instance, file string, plan 
 	if err := a.ws.ReadJSON(dir, workspace.CollectFile, w); err != nil {
 		return "", err
 	}
+	if w.CollectID != plan.CollectID {
+		return "", refusedf("--plan %s refused: the plan was made from collection %s, and collect ran again since (collection %s); "+
+			"run evaluate --target server --dry-run again and show the new plan", file, orUnknown(plan.CollectID), orUnknown(w.CollectID))
+	}
 	collect.ParsePlans(w)
 	var cands []model.Candidate
 	if err := a.ws.ReadJSON(dir, evaluateCandidatesFile, &cands); err != nil {
@@ -991,6 +1000,7 @@ func (a *app) evaluateOne(p sqlq.Profile, inst conn.Instance, file string, plan 
 	runErr = a.interrupted(runErr, cmdEvaluate)
 	ev := evaluateFile{
 		RunID:            plan.RunID,
+		CollectID:        w.CollectID,
 		Plan:             file,
 		Measures:         res.Measures,
 		AutoCreatedStats: res.AutoCreatedStats,
@@ -1040,6 +1050,21 @@ func (a *app) report(args []string) error {
 	if len(list) == 0 {
 		return usagef("no collected database in %s matches: run collect first", a.ws.Root)
 	}
+	var stale []string
+	for _, l := range list {
+		why, err := a.staleEvaluation(l, *target)
+		if err != nil {
+			return failedf(err)
+		}
+		if why != "" {
+			stale = append(stale, fmt.Sprintf("database %s: %s", l.w.Database.Name, why))
+		}
+	}
+	if len(stale) > 0 {
+		return usagef("the evaluation does not belong to the current collection and candidates, nothing written: %s; "+
+			"run evaluate again (evaluate --target server --dry-run, then --allow-write --plan, or evaluate --target lab) before report",
+			strings.Join(stale, "; "))
+	}
 	var rows []model.SummaryRow
 	for _, l := range list {
 		r := newResult(l.w)
@@ -1088,6 +1113,47 @@ func (a *app) evaluationFiles(dir, target string) (evalFile, candFile string) {
 	return pick[0], pick[1]
 }
 
+// staleEvaluation says why the evaluation report would read in l.dir does
+// not belong to the current collection and candidates, or "": it measured
+// another collection (collect ran again since), or a later evaluate
+// --dry-run replaced the plan and the candidate list it was made from.
+func (a *app) staleEvaluation(l loaded, target string) (string, error) {
+	evalFile, _ := a.evaluationFiles(l.dir, target)
+	var ev evaluateFile
+	if err := a.ws.ReadJSON(l.dir, evalFile, &ev); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", nil
+		}
+		return "", err
+	}
+	if ev.CollectID != "" && ev.CollectID != l.w.CollectID {
+		return fmt.Sprintf("%s measured collection %s, and collect ran again since (collection %s)",
+			evalFile, ev.CollectID, orUnknown(l.w.CollectID)), nil
+	}
+	if evalFile != workspace.EvaluateServerFile {
+		return "", nil
+	}
+	var plan runplan.Plan
+	if err := a.ws.ReadJSON(l.dir, workspace.PlanFile(runplan.PhaseEvaluate), &plan); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", nil
+		}
+		return "", err
+	}
+	if plan.RunID != ev.RunID {
+		return fmt.Sprintf("%s is run %s, and a later evaluate --dry-run made plan %s, run %s, whose candidates replaced it",
+			evalFile, ev.RunID, workspace.PlanFile(runplan.PhaseEvaluate), plan.RunID), nil
+	}
+	return "", nil
+}
+
+func orUnknown(s string) string {
+	if s == "" {
+		return "unknown"
+	}
+	return s
+}
+
 func (a *app) reportOne(l loaded, target string, th score.Thresholds) (model.SummaryRow, error) {
 	row := model.SummaryRow{Server: l.w.Server.ServerName, Database: l.w.Database.Name}
 	var ev evaluateFile
@@ -1107,6 +1173,10 @@ func (a *app) reportOne(l loaded, target string, th score.Thresholds) (model.Sum
 	}
 	recs := score.Score(l.w, cands, ev.Measures, th)
 	warnings := ev.Warnings
+	if evaluated && ev.CollectID == "" {
+		warnings = append(warnings, evalFile+" does not record the collection it measured: "+
+			"if collect ran after the evaluation, its measures are scored with newer counters; run evaluate again to be sure")
+	}
 	if ev.Error != "" {
 		warnings = append(warnings, "evaluation stopped: "+ev.Error)
 	}

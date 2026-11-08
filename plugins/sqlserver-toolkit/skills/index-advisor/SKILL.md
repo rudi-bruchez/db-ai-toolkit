@@ -55,7 +55,11 @@ godta cleanup    --project <dir> --profile <name> --allow-write --plan <plan-cle
    recommended when its gain is at least `--min-gain-ratio` of the cost before of its
    measured queries (default 0.1), its maintenance at most `--max-maintenance-ratio` of the
    gain (default 0.5), and at least `--min-queries` of its queries are measured (default 1).
-   The formula of `rapport.md` gives the values used.
+   The formula of `rapport.md` gives the values used. `report` refuses, with exit code `1`
+   and before writing anything, an evaluation that does not belong to the current collection
+   and candidates: `collect` ran again after it, or a later `evaluate --dry-run` replaced its
+   plan. Run `evaluate` again, then `report`. An execution plan made before a new `collect` is
+   refused the same way, with exit code `3`.
 6. `cleanup --dry-run`, then `cleanup --allow-write --plan <file>`, removes what an
    interrupted run left (journal first, then the name pattern of a run). Run it whenever a
    database reports objects left: its status contains `left for cleanup`, and a warning

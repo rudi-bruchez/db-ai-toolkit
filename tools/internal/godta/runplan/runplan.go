@@ -60,6 +60,9 @@ type Plan struct {
 	MachineName string    `json:"machine_name"`
 	Database    string    `json:"database"`
 	CreatedAt   time.Time `json:"created_at"`
+	// CollectID is the collection the plan was made from (evaluate): its
+	// execution refuses a workspace collected again since.
+	CollectID string `json:"collect_id,omitempty"`
 	// MaxCombined and LockTimeoutMS are the values chosen at --dry-run for
 	// evaluate; the lock timeout is also the SQL of its SET LOCK_TIMEOUT step.
 	MaxCombined   int                `json:"max_combined,omitempty"`
@@ -191,6 +194,7 @@ func ForEvaluate(w *model.Workload, cands []model.Candidate, runID string, fp []
 		MachineName:   w.Server.MachineName,
 		Database:      w.Database.Name,
 		CreatedAt:     time.Now().UTC(),
+		CollectID:     w.CollectID,
 		MaxCombined:   maxCombined,
 		LockTimeoutMS: lockTimeoutMS,
 		Schema:        sortedFingerprints(fp),
