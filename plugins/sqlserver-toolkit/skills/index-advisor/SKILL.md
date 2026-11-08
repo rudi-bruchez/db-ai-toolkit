@@ -59,6 +59,10 @@ godta cleanup    --project <dir> --profile <name> --allow-write --plan <plan-cle
    `ok: false` and exit code `2`, even when the measures were taken. Run it as well after
    any write phase that did not end with `ok: true`, and after one that was killed.
 
+An execution plan runs once. Running the same `--plan` again, after a crash or after a run
+that ended, is refused with exit code `3` before any statement: run `cleanup`, then a new
+`--dry-run`, and show the new plan.
+
 Ctrl-C (SIGINT) or SIGTERM stops the measuring, still drops what the run created, and the
 run then reports what it could not drop.
 

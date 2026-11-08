@@ -256,10 +256,26 @@ func (a *app) cloneWrite(p sqlq.Profile, plans []string, hostDir string) error {
 	if info, err := os.Stat(hostDir); err != nil || !info.IsDir() {
 		return usagef("--host-dir %s: not a directory", hostDir)
 	}
+	// A plan already executed is refused from the journal, before any
+	// connection.
+	var todo []item
+	for _, it := range items {
+		if err := a.planUnused(it.file, it.plan); err != nil {
+			r := dbResult{Server: it.plan.Server, Name: it.plan.Database}
+			a.refuse(&r, err)
+			a.noteLeft(&r, it.plan.RunID)
+			a.out.Databases = append(a.out.Databases, r)
+			continue
+		}
+		todo = append(todo, it)
+	}
+	if len(todo) == 0 {
+		return nil
+	}
 	if _, _, err := a.server(p); err != nil {
 		return err
 	}
-	for _, it := range items {
+	for _, it := range todo {
 		r := dbResult{Server: it.plan.Server, Name: it.plan.Database}
 		db, err := a.connect(p, it.plan.Database)
 		if err != nil {

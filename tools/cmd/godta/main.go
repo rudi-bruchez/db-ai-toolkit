@@ -900,11 +900,27 @@ func (a *app) evaluateWrite(p sqlq.Profile, plans []string, compileTimeout time.
 		}
 		items = append(items, item{f, plan})
 	}
+	// A plan already executed is refused from the journal, before any
+	// connection.
+	var todo []item
+	for _, it := range items {
+		if err := a.planUnused(it.file, it.plan); err != nil {
+			r := dbResult{Server: it.plan.Server, Name: it.plan.Database}
+			a.refuse(&r, err)
+			a.noteLeft(&r, it.plan.RunID)
+			a.out.Databases = append(a.out.Databases, r)
+			continue
+		}
+		todo = append(todo, it)
+	}
+	if len(todo) == 0 {
+		return nil
+	}
 	_, inst, err := a.server(p)
 	if err != nil {
 		return err
 	}
-	for _, it := range items {
+	for _, it := range todo {
 		r := dbResult{Server: it.plan.Server, Name: it.plan.Database}
 		file, err := a.evaluateOne(p, inst, it.file, it.plan, compileTimeout, &r)
 		if file != "" {

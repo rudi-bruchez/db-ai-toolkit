@@ -1,13 +1,15 @@
 package main
 
 // journal.go has what the write phases check in the journal of the project:
-// what a run left on a server when it ends.
+// what a run left on a server when it ends, and whether a plan has already
+// run.
 
 import (
 	"errors"
 	"fmt"
 	"strings"
 
+	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/runplan"
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/workspace"
 )
 
@@ -71,6 +73,30 @@ func (a *app) noteLeft(r *dbResult, runID string) {
 	r.Status += fmt.Sprintf(", %s left for cleanup", objects(len(left)))
 	r.Warnings = append(r.Warnings, fmt.Sprintf("run %s left %s on the server: %s; %s",
 		runID, objects(len(left)), describeEntries(left), cleanupHint))
+}
+
+// planUnused refuses a plan whose run ID already has entries in the
+// journal: the plan was executed before (a run killed with its objects
+// created, or one that ended), and executing it again would create objects
+// under names that exist, measure nothing and leave the first run's objects
+// in place. Nothing is sent.
+func (a *app) planUnused(file string, plan runplan.Plan) error {
+	entries, err := a.ws.Entries()
+	if err != nil {
+		return failedf(fmt.Errorf("--plan %s: reading the journal: %w", file, err))
+	}
+	n := 0
+	for _, e := range entries {
+		if e.RunID == plan.RunID {
+			n++
+		}
+	}
+	if n == 0 {
+		return nil
+	}
+	return refusedf("--plan %s refused: run %s of this plan has already been executed (%d journal entries); an execution plan runs once. "+
+		"To start again, %s, to remove what it left, then run godta %s --dry-run for a new plan",
+		file, plan.RunID, n, cleanupHint, plan.Phase)
 }
 
 // refuse records a database whose plan was refused before anything ran.
