@@ -900,11 +900,15 @@ func (a *app) evaluateWrite(p sqlq.Profile, plans []string, compileTimeout time.
 		}
 		items = append(items, item{f, plan})
 	}
-	// A plan already executed is refused from the journal, before any
-	// connection.
+	// A plan already executed, or replaced by a newer --dry-run, is refused
+	// from the journal and the workspace, before any connection.
 	var todo []item
 	for _, it := range items {
-		if err := a.planUnused(it.file, it.plan); err != nil {
+		err := a.planUnused(it.file, it.plan)
+		if err == nil {
+			err = a.planCurrent(it.file, it.plan)
+		}
+		if err != nil {
 			r := dbResult{Server: it.plan.Server, Name: it.plan.Database}
 			a.refuse(&r, err)
 			a.noteLeft(&r, it.plan.RunID)
