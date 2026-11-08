@@ -351,3 +351,23 @@ func TestCatalogDrift(t *testing.T) {
 		t.Errorf("after the drops, drift %q, want nix_h_x dropped alone", got)
 	}
 }
+
+// TestCollectSkipsSingleUser: Databases reads user_access_desc: a database
+// set to SINGLE_USER, then RESTRICTED_USER, is skipped with its reason.
+func TestCollectSkipsSingleUser(t *testing.T) {
+	f := newFixture(t, "", false)
+	db := ittest.NewDatabase(t, f.server, "")
+	for mode, reason := range map[string]string{"SINGLE_USER": ReasonSingleUser, "RESTRICTED_USER": ReasonRestrictedUser} {
+		exec(t, f.server, "ALTER DATABASE "+tsql.QuoteName(db)+" SET "+mode+" WITH ROLLBACK IMMEDIATE;")
+		keep, skipped, err := Databases(ctxT(t), f.server, Options{Include: []string{f.name, db}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(keep) != 1 || keep[0].Name != f.name {
+			t.Errorf("%s: kept %v, want %s alone", mode, keep, f.name)
+		}
+		if !slices.Contains(skipped, Skip{Name: db, Reason: reason}) {
+			t.Errorf("%s: skipped %v, want %s %s", mode, skipped, db, reason)
+		}
+	}
+}

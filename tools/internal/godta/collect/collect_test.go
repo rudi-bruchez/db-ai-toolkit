@@ -8,7 +8,7 @@ import (
 )
 
 func userDB(name string) dbRow {
-	return dbRow{info: model.DBInfo{Name: name}, state: "ONLINE"}
+	return dbRow{info: model.DBInfo{Name: name}, state: "ONLINE", userAccess: "MULTI_USER"}
 }
 
 func TestDatabaseFilter(t *testing.T) {
@@ -26,6 +26,24 @@ func TestDatabaseFilter(t *testing.T) {
 	}
 	if len(skipped) != 2 {
 		t.Errorf("skipped %v, want AU_Test1 and NZ_Prod", skipped)
+	}
+}
+
+// TestSkipsRestrictedAccess: a database in SINGLE_USER or RESTRICTED_USER is
+// skipped with its reason, never connected to.
+func TestSkipsRestrictedAccess(t *testing.T) {
+	single, restricted := userDB("single"), userDB("restricted")
+	single.userAccess, restricted.userAccess = "SINGLE_USER", "RESTRICTED_USER"
+	keep, skipped, err := classify([]dbRow{userDB("multi"), single, restricted}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keep) != 1 || keep[0].Name != "multi" {
+		t.Errorf("kept %v, want multi alone", keep)
+	}
+	want := []Skip{{Name: "single", Reason: ReasonSingleUser}, {Name: "restricted", Reason: ReasonRestrictedUser}}
+	if !slices.Equal(skipped, want) {
+		t.Errorf("skipped %v, want %v", skipped, want)
 	}
 }
 

@@ -62,6 +62,10 @@ const (
 	ReasonOffline             = "offline"
 	ReasonUnreadableSecondary = "unreadable secondary"
 	ReasonReadOnly            = "read_only"
+	// SINGLE_USER and RESTRICTED_USER are maintenance states a DBA sets:
+	// connecting could take the only connection, or one meant for the DBA.
+	ReasonSingleUser     = "single_user"
+	ReasonRestrictedUser = "restricted_user"
 )
 
 // dbRow is one row of sys.databases, with what classify decides on.
@@ -71,6 +75,7 @@ type dbRow struct {
 	state               string // state_desc
 	readOnly            bool
 	unreadableSecondary bool
+	userAccess          string // user_access_desc
 }
 
 // databasesQuery lists the databases. A database is an unreadable secondary
@@ -78,7 +83,7 @@ type dbRow struct {
 // not allow connections; the HADR views are empty without availability
 // groups. DATABASEPROPERTYEX returns NULL for an offline database.
 const databasesQuery = `SELECT /* godta:collect */ d.database_id, d.name, ISNULL(d.collation_name, N''), d.compatibility_level,
-  d.state_desc, d.is_read_only,
+  d.state_desc, d.is_read_only, d.user_access_desc,
   ISNULL(CAST(DATABASEPROPERTYEX(d.name, 'IsClone') AS int), 0),
   CASE WHEN d.database_id <= 4 OR d.is_distributor = 1 THEN 1 ELSE 0 END,
   CASE WHEN EXISTS (SELECT 1 FROM sys.dm_hadr_database_replica_states rs
@@ -92,7 +97,8 @@ ORDER BY d.name;`
 // Databases lists the databases of the server q is connected to, and keeps
 // those to collect. Left out, with the reason: system databases, those the
 // patterns filter out, clones (IsClone), names of goDTA's own objects
-// (tsql.IsRunName: its clones), offline, unreadable secondaries, READ_ONLY.
+// (tsql.IsRunName: its clones), offline, unreadable secondaries, SINGLE_USER
+// and RESTRICTED_USER, READ_ONLY.
 // A clone is also READ_ONLY: the clone reason is checked first.
 func Databases(ctx context.Context, q conn.Querier, opt Options) (keep []model.DBInfo, skipped []Skip, err error) {
 	if err := checkPatterns(opt); err != nil {
@@ -108,7 +114,7 @@ func Databases(ctx context.Context, q conn.Querier, opt Options) (keep []model.D
 		var r dbRow
 		var clone, system, secondary int
 		if err := rows.Scan(&r.info.ID, &r.info.Name, &r.info.Collation, &r.info.Compat,
-			&r.state, &r.readOnly, &clone, &system, &secondary); err != nil {
+			&r.state, &r.readOnly, &r.userAccess, &clone, &system, &secondary); err != nil {
 			return nil, nil, fmt.Errorf("listing the databases: %w", err)
 		}
 		r.info.IsClone, r.system, r.unreadableSecondary = clone == 1, system == 1, secondary == 1
@@ -165,6 +171,10 @@ func classify(dbs []dbRow, opt Options) (keep []model.DBInfo, skipped []Skip, er
 			reason = strings.ToLower(d.state)
 		case d.unreadableSecondary:
 			reason = ReasonUnreadableSecondary
+		case d.userAccess == "SINGLE_USER":
+			reason = ReasonSingleUser
+		case d.userAccess == "RESTRICTED_USER":
+			reason = ReasonRestrictedUser
 		case d.readOnly:
 			reason = ReasonReadOnly
 		}
