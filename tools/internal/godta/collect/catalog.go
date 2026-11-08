@@ -94,6 +94,18 @@ func readCatalog(ctx context.Context, db *sql.DB, w *model.Workload) error {
 	return readNamedRefs(ctx, db, w)
 }
 
+// ReadCatalog is the catalog half of Database, for a workload whose queries
+// and database the caller filled: the tables their plans read or write, with
+// their indexed views, indexes, statistics and columns. The integration tests
+// of evaluate use it to describe a fresh database without compiling anything
+// on it, which would create the statistics they need missing.
+func ReadCatalog(ctx context.Context, db *sql.DB, w *model.Workload) error {
+	if w.Tables == nil {
+		w.Tables = map[int]*model.Table{}
+	}
+	return readCatalog(ctx, db, w)
+}
+
 func viewSet(views map[int][]int) map[int]struct{} {
 	s := map[int]struct{}{}
 	for _, vs := range views {
