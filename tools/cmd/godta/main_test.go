@@ -271,7 +271,7 @@ func TestDryRunWritesPlanOnly(t *testing.T) {
 // compilations return no plan and their measures come out not evaluated.
 // A statement sent on a done context fails with the context's error;
 // otherwise onExec, when set, sees it, and failExec gives its error (nil
-// runs it).
+// runs it). answer, when set, sees every query first and may give its rows.
 type fakeServer struct {
 	inst     conn.Instance
 	tables   []*model.Table
@@ -279,6 +279,7 @@ type fakeServer struct {
 	dbName   string
 	failExec func(q string) error
 	onExec   func(q string)
+	answer   func(q string) (driver.Rows, bool)
 	mu       sync.Mutex
 	queries  []string
 	execs    []string
@@ -328,7 +329,14 @@ func (c *fakeConn) QueryContext(ctx context.Context, q string, _ []driver.NamedV
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if c.f.answer != nil {
+		if rows, ok := c.f.answer(q); ok {
+			return rows, nil
+		}
+	}
+	c.f.mu.Lock()
 	i := c.f.inst
+	c.f.mu.Unlock()
 	switch {
 	case strings.Contains(q, "@@SERVERNAME"):
 		return &fakeRows{cols: 10, rows: [][]driver.Value{{i.ServerName, i.MachineName, i.Edition, int64(i.EngineEdition),
