@@ -9,11 +9,13 @@ Microsoft SQL Server.
 |------|------|---------|
 | Skill | `errorlog-diagnostics` | Triage SQL Server ERRORLOG files from a folder |
 | Skill | `live-query` | Answer questions against a connected instance, read-only |
+| Skill | `index-advisor` | Propose and measure indexes from the workload, with `godta` |
 | Skill | `page-salvage` | Recover the rows of a page with a bad checksum before `REPAIR_ALLOW_DATA_LOSS` (writes; sqlcmd, sysadmin) |
 | Command | `/diagnose-errorlog <folder>` | Entry point that runs the skill on a path |
 | Tool | `errorlog-parse` (Go, in `bin/`) | Strips ERRORLOG noise before the skill reads it |
 | Tool | `sqlq` (Go, in `bin/`) | Runs a guarded read-only query and returns JSON |
 | Tool | `sqlplan` (Go, in `bin/`) | Draws execution plans in the browser |
+| Tool | `godta` (Go, in `bin/`) | Index advisor: collects the workload, measures candidates under `AUTOPILOT`, writes a report and a script |
 
 ## The `errorlog-parse` preprocessor
 

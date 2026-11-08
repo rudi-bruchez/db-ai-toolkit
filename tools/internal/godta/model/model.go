@@ -264,12 +264,14 @@ type Recommendation struct {
 
 // SummaryRow is one database of the summary across databases (task 12).
 type SummaryRow struct {
-	Server       string   `json:"server"`
-	Database     string   `json:"database"`
-	Status       string   `json:"status"`
-	Recommended  int      `json:"recommended"`
-	Discuss      int      `json:"discuss"`
-	Rejected     int      `json:"rejected"`
-	NotEvaluated int      `json:"not_evaluated"`
-	Warnings     []string `json:"warnings,omitempty"`
+	Server       string `json:"server"`
+	Database     string `json:"database"`
+	Status       string `json:"status"`
+	Recommended  int    `json:"recommended"`
+	Discuss      int    `json:"discuss"`
+	Rejected     int    `json:"rejected"`
+	NotEvaluated int    `json:"not_evaluated"`
+	// Gain is the sum of the gains of the recommended candidates.
+	Gain     float64  `json:"gain"`
+	Warnings []string `json:"warnings,omitempty"`
 }

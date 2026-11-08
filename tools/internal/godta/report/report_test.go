@@ -292,7 +292,7 @@ func TestSummary(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows := []model.SummaryRow{
-		{Server: "lab01", Database: "zeta", Status: "evaluated", Recommended: 2, Discuss: 1, Rejected: 3},
+		{Server: "lab01", Database: "zeta", Status: "evaluated", Recommended: 2, Discuss: 1, Rejected: 3, Gain: 1234.5},
 		{Server: "lab01", Database: "alpha", Status: "skipped: offline", Warnings: []string{"a|b"}},
 	}
 	if err := Summary(ws, rows); err != nil {
@@ -303,4 +303,7 @@ func TestSummary(t *testing.T) {
 		t.Fatal(err)
 	}
 	golden(t, "synthese.md.golden", string(b))
+	if !strings.Contains(string(b), "| lab01 | zeta | evaluated | 2 | 1234.50 | 1 |") {
+		t.Errorf("the total gain of zeta is not in its row:\n%s", b)
+	}
 }
