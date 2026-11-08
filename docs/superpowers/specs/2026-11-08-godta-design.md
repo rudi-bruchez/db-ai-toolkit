@@ -124,9 +124,16 @@ par `--dry-run`, et refusée sur un profil `readonly`.
 Rudi crée pour goDTA un profil `readwrite` distinct du profil `readonly` de `sqlq` sur le même
 serveur. Le drapeau seul ne suffit pas, le profil seul non plus.
 
-Gardes du labo, toutes obligatoires : le profil du labo n'a pas `"environment": "prod"` ; la base
-visée a `DATABASEPROPERTYEX(<base>, 'IsClone') = 1` (la propriété survit à la sauvegarde et à la
-restauration, mesuré) ; son nom commence par le préfixe de goDTA.
+Gardes du labo, toutes obligatoires, vérifiées avant la première instruction sur le labo (le
+`RESTORE` compris) :
+
+- le profil du labo déclare `"environment": "lab"` ; une valeur absente ou autre est refusée
+  (liste d'autorisation, pas d'exclusion : le champ est facultatif dans les profils) ;
+- l'instance du labo n'est pas celle de la source : `@@SERVERNAME` et
+  `SERVERPROPERTY('MachineName')` diffèrent sur les deux connexions ;
+- pour `evaluate`, la base visée a `DATABASEPROPERTYEX(<base>, 'IsClone') = 1` (la propriété
+  survit à la sauvegarde et à la restauration, mesuré) et son nom commence par le préfixe de
+  goDTA.
 
 ### 7.1 Le `--dry-run` et le plan d'exécution
 
@@ -136,11 +143,17 @@ de travail : l'identifiant d'exécution (fixé à ce moment), la liste ordonnée
 avec leurs noms d'objets définitifs, et, pour chaque valeur résolue à l'exécution, la requête de
 catalogue qui la résoudra. C'est ce fichier qui se montre au client. La phase réelle prend ce
 fichier en entrée (`--plan <fichier>`) et n'exécute que lui ; elle refuse un plan dont la
-somme de contrôle a changé ou dont le serveur et la base ne correspondent pas.
+somme de contrôle a changé, dont le serveur et la base ne correspondent pas, ou dont l'empreinte
+de schéma a bougé : le plan enregistre, pour chaque table concernée, ses index (définition) et
+son `modify_date`. Un index ajouté entre la validation et l'exécution ne serait pas déclaré à
+`AUTOPILOT` (§8.5) et fausserait la mesure.
 
-Le plan d'exécution dit aussi les effets de bord mesurés (§8.5) : le verrou `S` sur la table à
-la création, le `Sch-M` à la suppression, la lecture échantillonnée de la table, la remise à
-zéro des suggestions d'index manquants de la table, les statistiques auto-créées.
+Le plan d'exécution dit aussi les effets de bord (§8.4, §8.5) : le verrou `S` sur la table
+pendant la création de l'index hypothétique, qui bloque les écrivains le temps de la lecture
+échantillonnée ; le `Sch-M` à la suppression, qui fait attendre toute requête arrivant derrière ;
+la remise à zéro des suggestions d'index manquants de la table ; les statistiques auto-créées ;
+la création et la suppression des statistiques `godta_*` et leurs effets possibles sur les
+recompilations (à mesurer, §11) ; les procédures temporaires créées dans `tempdb` pour le rejeu.
 
 ### 7.2 Gabarits et noms
 
@@ -155,7 +168,7 @@ Avant toute création, l'identité de chaque objet (base, table, nom, chemin du 
 sauvegarde) est écrite dans l'espace de travail : c'est ce journal, et non une recherche par
 motif, qui guide d'abord `cleanup`. Le motif sert de filet. Les fichiers de sauvegarde se
 suppriment par la connexion SQL avec `master.sys.xp_delete_files` (non documentée, mesurée sur
-Linux) ; un fichier dont le chemin n'a pas été journalisé avant le crash est signalé, pas cherché.
+Linux 2022 seulement ; sur les versions qui ne l'ont pas, `xp_delete_file`, à mesurer en §11) ; un fichier dont le chemin n'a pas été journalisé avant le crash est signalé, pas cherché.
 
 ## 8. Le déroulement
 
@@ -177,12 +190,18 @@ non lisibles sont listées comme écartées avec la raison) :
 
 - version, édition, niveau de compatibilité, état du Query Store ;
 - charge : top N requêtes (N configurable) par nombre d'exécutions et par coût (CPU, lectures
-  logiques, durée) sur la fenêtre, avec `query_id`, `query_hash`, `context_settings_id`, texte,
+  logiques, durée) sur la fenêtre, avec `query_id`, `query_hash`, `context_settings_id` et ses
+  options `SET` (`sys.query_context_settings`), texte,
   dernier plan connu et ses `ParameterCompiledValue` ; la fenêtre a une borne de fin explicite
   (`--until`, défaut : maintenant), enregistrée dans la sortie ;
-- les requêtes d'écriture (`INSERT`, `UPDATE`, `DELETE`, `MERGE`) de la fenêtre qui touchent les
-  tables concernées, avec leurs exécutions et les colonnes qu'elles modifient : c'est la source
-  principale du coût de maintenance (§8.6) ;
+- les requêtes d'écriture (`INSERT`, `UPDATE`, `DELETE`, `MERGE`) de la fenêtre, avec leurs
+  exécutions, leur nombre moyen de lignes (`avg_rowcount`) et leur plan. Le Query Store ne dit ni
+  la table écrite ni les colonnes modifiées : on les lit dans le plan (opérateurs de mise à jour,
+  leurs objets cibles, `SetPredicate`), qui montre aussi les écritures en cascade des clés
+  étrangères et la maintenance des vues indexées. Les instructions des déclencheurs sont des
+  requêtes à part, rattachées au déclencheur. C'est la source principale du coût de maintenance
+  (§8.6). En mode de capture `AUTO`, les écritures rares et peu coûteuses manquent : le rapport
+  indique le mode de capture ;
 - repli sur le cache de plans si le Query Store est éteint ou vide sur la fenêtre. Ses compteurs
   sont cumulés depuis la compilation de chaque plan, pas sur la fenêtre : le rapport le dit et
   n'affiche jamais ces chiffres comme « sur 24 h ». La base d'une requête ad hoc se lit par
@@ -190,10 +209,14 @@ non lisibles sont listées comme écartées avec la raison) :
 - index existants des tables touchées, réels seulement (`is_hypothetical = 0`, les restes du DTA
   ou de goDTA sont listés à part et proposés au nettoyage) : clés dans l'ordre avec leur sens
   (`is_descending_key`), colonnes incluses, unicité, contrainte appuyée (clé primaire, unique),
-  filtre et sa définition, état désactivé, compression, taille, clé de l'index cluster ;
+  filtre et sa définition, état désactivé, compression, facteur de remplissage, groupe de
+  fichiers ou schéma de partition, taille, clé de l'index cluster ;
   `sys.dm_db_index_usage_stats` et `sys.dm_db_index_operational_stats`, à titre indicatif ;
-- références nommées aux index existants : indications `WITH (INDEX(...))` dans les textes du
-  Query Store, repères de plan (`sys.plan_guides`), plans forcés du Query Store ;
+- références nommées aux index existants : indications `INDEX(...)` dans les textes du Query
+  Store et dans les définitions des modules (`sys.sql_modules`, qui couvrent le code non exécuté
+  pendant la fenêtre), repères de plan (`sys.plan_guides`), plans forcés du Query Store. Le code
+  envoyé par les applications et non exécuté pendant la fenêtre reste invisible : le rapport le
+  rappelle à côté de tout `DROP` ;
 - statistiques existantes par colonne (pour savoir lesquelles manqueront au clone) ;
 - suggestions d'index manquants (`sys.dm_db_missing_index_*`) et éléments `MissingIndex` des
   plans ;
@@ -228,10 +251,25 @@ Il faut écrire un lecteur de plans XML : `tools/internal/sqlplan` ne fait que d
 colonnes de sortie, les tris demandés, `ParameterList` et les groupes `MissingIndex`. Il réutilise
 `sqlplan.Decode` pour l'encodage.
 
-Règles de génération : clés d'égalité d'abord, puis une inégalité, puis éventuellement les
-colonnes d'un tri demandé avec leur sens ; colonnes de sortie en `INCLUDE`, moins celles déjà
-en clé et moins la clé de l'index cluster (présente d'office dans tout index non cluster ; la
-mettre en `INCLUDE` en plus d'une clé provoque l'erreur 1910).
+Règles de génération : clés d'égalité d'abord ; puis, soit une inégalité, soit les colonnes d'un
+tri demandé avec leur sens, mais pas les deux, sauf si la colonne de l'inégalité est elle-même la
+première colonne du tri (après un intervalle sur `b`, les lignes d'un index `(a, b, c)` ne sont
+plus triées sur `c`, la colonne de tri ne ferait qu'élargir la clé) ; colonnes de sortie en
+`INCLUDE`, moins celles déjà en clé et moins la clé de l'index cluster (présente d'office dans
+tout index non cluster ; la mettre en `INCLUDE` en plus d'une clé provoque l'erreur 1910).
+Avant la confrontation, les colonnes d'égalité d'un candidat sont rangées dans l'ordre où elles
+apparaissent dans l'index existant le plus proche, s'il y en a un, sinon dans un ordre fixe.
+
+La confrontation compare des clés effectives, pas les clés déclarées de `sys.index_columns` :
+
+- index non cluster non unique sur une table cluster : clés déclarées suivies des colonnes de la
+  clé cluster qui n'y sont pas déjà (la documentation du guide de conception des index le dit :
+  elles sont ajoutées à la clé et servent au traitement des requêtes) ;
+- index non cluster unique : clés déclarées ; la clé cluster est au niveau feuille, comme un
+  inclus ;
+- index cluster : clés déclarées, et il contient toutes les colonnes. Il n'est jamais la cible
+  d'un « élargir » ni d'un « remplacer » ;
+- tas : pas de clé ajoutée (le localisateur de ligne n'est pas une colonne).
 
 Le modèle de couverture décide si un besoin est satisfait par un index existant. Un index
 existant E couvre un candidat C si toutes ces conditions tiennent :
@@ -239,23 +277,28 @@ existant E couvre un candidat C si toutes ces conditions tiennent :
 1. E est réel, actif (`is_disabled = 0`), non hypothétique ;
 2. E n'est pas filtré, ou son filtre est impliqué par les prédicats de toutes les requêtes qui
    ont produit C (en pratique : sans démonstration simple de l'implication, E ne couvre pas) ;
-3. les colonnes d'égalité de C forment, dans un ordre quelconque, le début des clés de E (les
-   permutations d'égalités se valent), suivies dans l'ordre des autres clés de C avec le même sens
-   ou le sens inverse sur toutes à la fois ;
-4. chaque colonne incluse de C est présente dans E, en clé, en inclus, ou comme clé de l'index
-   cluster.
+3. les colonnes d'égalité de C forment, dans un ordre quelconque et sans considération de sens,
+   le début des clés effectives de E (les permutations d'égalités se valent, le sens d'une
+   colonne d'égalité est indifférent), suivies dans l'ordre des autres clés de C ; pour ces
+   dernières, le sens compte, avec le même sens ou le sens inverse sur toutes à la fois ;
+4. chaque colonne incluse de C est présente dans E, en clé effective, en inclus, ou au niveau
+   feuille (clé cluster d'un non cluster unique ; toute colonne pour un index cluster).
 
 Confrontation, dans cet ordre, pour chaque candidat :
 
 - couvert par un existant : écarté, avec le nom de l'existant ;
-- un existant satisfait les conditions 1 à 3 mais pas 4 : « élargir l'existant » (même clé,
-  inclus réunis), sauf si l'existant appuie une contrainte. SQL Server refuse alors
+- un existant non cluster satisfait les conditions 1 à 3 mais pas 4 : « élargir l'existant »
+  (même clé, inclus réunis, par `DROP_EXISTING = ON` en reprenant sa compression, son facteur de
+  remplissage et son groupe de fichiers ou schéma de partition), sauf si l'existant appuie une
+  contrainte. SQL Server refuse alors
   `DROP_EXISTING` (erreur 1907) et le `DROP INDEX` (erreur 3723) : le candidat passe en
   « à discuter », sans script, avec l'explication ;
-- les clés d'un existant sont un préfixe strict de celles du candidat, et l'existant n'est ni
-  cluster, ni unique, ni filtré, ni appuyé sur une contrainte, ni nommé dans une indication, un
-  repère de plan ou un plan forcé : « remplacer », le candidat recevant l'union des inclus des
-  deux ; dans tous les autres cas, le candidat est proposé à côté de l'existant ;
+- les clés effectives d'un existant sont un préfixe strict de celles du candidat (après la mise
+  en ordre des égalités ci-dessus), et l'existant n'est ni cluster, ni unique, ni filtré, ni
+  appuyé sur une contrainte, ni nommé dans une indication, un module, un repère de plan ou un
+  plan forcé : « remplacer », le candidat recevant l'union des inclus des deux et les options
+  physiques de l'existant ; dans tous les autres cas, le candidat est proposé à côté de
+  l'existant ;
 - sinon : nouveau candidat.
 
 Deux index existants qui ensemble couvrent un candidat ne le couvrent pas : l'intersection
@@ -273,23 +316,33 @@ Cette phase vient après la génération des candidats, parce qu'elle en dépend
 
 1. Statistiques : pour chaque candidat, `CREATE STATISTICS godta_<run>_<n>` sur ses colonnes de
    clé dans l'ordre (densités du préfixe et histogramme de la première colonne) ; pour chaque
-   colonne d'un prédicat sans statistique, une statistique d'une colonne. Échantillonnage par
+   colonne sans statistique utilisée par une requête retenue (prédicat, jointure, regroupement,
+   tri), une statistique d'une colonne, puisque le labo n'en créera pas. Échantillonnage par
    défaut du moteur. C'est une lecture échantillonnée de la table et une écriture de
    métadonnées, listée dans le plan d'exécution.
-2. `DBCC CLONEDATABASE` de la base vers `godta_<run>_<base>`. Le clone copie les statistiques
-   existantes, dont celles de l'étape 1, et le Query Store (comportement par défaut, mesuré).
+2. `DBCC CLONEDATABASE (<base>, godta_<run>_<base>) WITH NO_QUERYSTORE` (option disponible
+   depuis 2016 SP1). Le clone copie les statistiques existantes, dont celles de l'étape 1. Le
+   Query Store n'est pas copié : `collect` l'a déjà lu sur la source, et le copier grossirait le
+   fichier et exporterait des textes pour rien. `DBCC CLONEDATABASE` exige `sysadmin`.
 3. Suppression des statistiques de l'étape 1 sur la source.
 4. `BACKUP DATABASE` du clone, compressé, dans le répertoire de sauvegarde par défaut de
    l'instance ou dans `--backup-dir`, chemin journalisé avant.
 5. Rapatriement du fichier par la connexion SQL, `OPENROWSET(BULK …, SINGLE_BLOB)`, sans partage
    réseau (mesuré : lecture complète juste après le `BACKUP`, sans verrou ; 3,6 Mo pour la base
-   de démonstration). Limite de taille configurable.
+   de démonstration avec son Query Store). Le résultat est un `varbinary(max)`, plafonné à 2 Go :
+   au-delà, ou au-delà d'une limite configurable plus basse, la phase s'arrête et le dit.
 6. Suppression de la base clone et du fichier sur la source (`xp_delete_files`).
 7. Dépôt du fichier dans un répertoire de l'hôte monté dans le conteneur (chemin hôte et chemin
    vu par le conteneur en configuration), `RESTORE FILELISTONLY`, puis `RESTORE … WITH MOVE` de
    chaque fichier logique vers le répertoire de données du labo (les chemins de la source, souvent
    Windows, n'existent pas sur le conteneur), puis `ALTER DATABASE … SET READ_WRITE` (un clone est
-   en lecture seule ; sans ce passage, la création d'un index hypothétique échoue, erreur 3906).
+   en lecture seule ; sans ce passage, la création d'un index hypothétique échoue, erreur 3906),
+   puis `AUTO_CREATE_STATISTICS OFF` et `AUTO_UPDATE_STATISTICS OFF` sur le clone : sinon chaque
+   compilation sur le labo peut créer ou recalculer des statistiques à partir de tables vides
+   (colonnes de jointure, de regroupement, de tri, suggestions de l'IA) et fausser le coût de
+   référence comme le coût candidat. Microsoft ne prend en charge un clone que comme copie en
+   lecture seule pour le diagnostic : l'usage en écriture qu'en fait goDTA sort de ce cadre,
+   c'est assumé et limité au labo.
 
 goDTA ne gère pas le conteneur lui-même (ni démarrage ni arrêt) : il se connecte au profil du
 labo.
@@ -312,24 +365,39 @@ Mécanisme, sur une connexion épinglée, chaque instruction dans son propre lot
 2. `CREATE INDEX godta_<run>_<n> ON … WITH STATISTICS_ONLY = -1`, sous `SET LOCK_TIMEOUT`
    court. La valeur `-1` est obligatoire : sans valeur, l'index est créé sans statistique et
    l'estimation est fausse même sur une base pleine (mesuré par quatre relecteurs). Sur le labo,
-   l'index n'aura pas non plus de statistiques propres (table vide) : ce sont les statistiques
-   `godta_*` copiées par le clone qui servent à l'estimation, ce que le spike doit confirmer ;
+   la table est vide : l'index obtient un objet de statistiques vide (en-tête à `NULL`, mesuré),
+   en concurrence avec la statistique `godta_*` copiée sur les mêmes colonnes. Rien ne garantit
+   aujourd'hui que l'optimiseur choisisse la seconde ; c'est le point 2 du spike, qui compare
+   aussi une autre voie : poser sur l'index hypothétique du labo le flux de la statistique
+   `godta_*` (`UPDATE STATISTICS … WITH STATS_STREAM`, même liste de colonnes) ;
 3. `DBCC AUTOPILOT(0, <db>, <table>, <index_id>, <pages>)` pour l'index hypothétique, avec un
    nombre de pages estimé (lignes × largeur de ligne de l'index / 8 060 octets environ) : sans ce
    paramètre, l'index est compté comme une seule page et toute lecture d'intervalle paraît
    gratuite ;
-4. `DBCC AUTOPILOT(0, <db>, <table>, <index_id>)` pour chaque index réel non cluster de la table
-   qui doit rester visible. Un index réel non déclaré est caché à l'optimiseur sous
+4. `DBCC AUTOPILOT(0, <db>, <table>, <index_id>, <pages>)` pour chaque index réel non cluster
+   de chaque table que la requête lit (lues dans son plan, jointures comprises) et des vues
+   indexées qu'elle peut utiliser, avec leur nombre de pages réel
+   (`sys.dm_db_partition_stats`). Un index réel non déclaré est caché à l'optimiseur sous
    `AUTOPILOT` (vérifié par le contrôleur : un seek sur l'index réel à 0,0037 devient un balayage
    à 0,436). C'est aussi ce qui permet de mesurer un `DROP` : pour évaluer un remplacement, on ne
-   déclare pas l'index remplacé ;
+   déclare pas l'index remplacé. Le comportement de l'index cluster et des tas sous `AUTOPILOT`
+   (visibles d'office, mesuré pour un index cluster) et des vues indexées est à confirmer (§11) ;
 5. `SET AUTOPILOT ON`, seul dans son lot ; le résultat de ce lot est vérifié avant de continuer.
    S'il a échoué, la requête suivante s'exécuterait pour de bon : goDTA s'arrête ;
 6. la requête rejouée ; le résultat doit être un document `ShowPlanXML`, sinon goDTA abandonne la
    connexion et marque l'erreur ;
 7. `SET AUTOPILOT OFF` ;
-8. la même séquence sans l'index candidat donne le coût de référence, dans les mêmes conditions ;
+8. la même séquence sans l'index candidat donne le coût de référence, dans les mêmes conditions.
+   Contrôle obligatoire : ce coût de référence et la forme du plan doivent être identiques à ceux
+   d'un simple `SET SHOWPLAN_XML ON` de la même requête sans `AUTOPILOT`. Un écart signifie qu'une
+   déclaration manque ; la mesure est alors écartée, jamais publiée ;
 9. `DROP INDEX` de l'index hypothétique.
+
+Avant le rejeu, la session reçoit les options `SET` du `context_settings_id` de la requête
+(`ANSI_NULLS`, `QUOTED_IDENTIFIER`, `ARITHABORT`, etc.) : les valeurs par défaut d'une connexion
+Go ne sont pas celles des applications, et un index filtré ou une vue indexée n'est utilisé que
+sous les options requises. Une procédure temporaire de rejeu est créée sous ces mêmes options,
+puisqu'elle fige `ANSI_NULLS` et `QUOTED_IDENTIFIER` à sa création.
 
 Rejeu des requêtes : c'est le point le moins sûr (§11). Mesuré : le texte du Query Store
 `(@P1 int)SELECT …` tel quel échoue (erreurs 1050 et 137) ; `EXEC sp_executesql` sous
@@ -351,9 +419,13 @@ Effets mesurés sur le serveur, à dire dans le plan d'exécution :
 
 - la création prend un verrou `S` sur la table (et `Sch-S`) : un écrivain en cours la bloque,
   un lecteur non ; elle lit la table par échantillonnage ;
-- la suppression prend `Sch-M` : un lecteur long la bloque. Une suppression qui échoue sur le
-  délai de verrou laisserait l'index derrière : goDTA la retente avec attente croissante, et
-  après échec la journalise pour `cleanup`, sans abandonner la session ;
+- la création garde ce verrou `S` pendant la lecture échantillonnée : elle bloque les
+  écrivains pendant ce temps ;
+- la suppression prend `Sch-M` : un lecteur long la bloque, et pendant qu'elle attend, toute
+  nouvelle requête sur la table attend derrière elle. Une suppression qui échoue sur le délai de
+  verrou laisserait l'index derrière : goDTA la retente avec un délai court et fixe et une pause
+  entre deux tentatives (jamais un délai qui s'allonge, qui allongerait d'autant la file
+  d'attente), puis, après la dernière, la journalise pour `cleanup` ;
 - les plans en cache des tables touchées ne sont pas invalidés (mesuré : même `plan_handle`,
   `plan_generation_num` inchangé) ;
 - les suggestions d'index manquants de la table sont effacées par la création : `collect` doit
@@ -373,12 +445,15 @@ Pour chaque index recommandé :
 
 - gain : somme sur les requêtes concernées de (coût estimé avant − coût estimé après) × nombre
   d'exécutions sur la fenêtre (Query Store), ou depuis la compilation (cache de plans, signalé) ;
-- coût de maintenance, sur la même fenêtre : exécutions des requêtes d'écriture du Query Store
-  qui touchent la table et, pour les `UPDATE`, seulement celles qui modifient une colonne de
-  l'index (un index non cluster n'est pas maintenu quand l'`UPDATE` ne touche aucune de ses
-  colonnes, mesuré). Les compteurs des DMV (`leaf_*_count` en lignes, `user_updates` en
-  instructions, remis à zéro par une reconstruction ou l'éviction des métadonnées, sans
-  horodatage) ne sont affichés qu'à titre indicatif, jamais rapportés à la fenêtre ;
+- coût de maintenance, sur la même fenêtre : lignes écrites dans la table par les requêtes
+  d'écriture du Query Store (exécutions × `avg_rowcount`), tirées de leurs plans (§8.2). Pour un
+  `UPDATE`, ne comptent que ceux qui modifient une colonne de l'index ou la clé cluster
+  (modifier la clé cluster maintient tous les index non cluster) ; un index non cluster n'est
+  pas maintenu quand l'`UPDATE` ne touche aucune de ses colonnes (mesuré). Les compteurs des DMV
+  (`leaf_*_count` en lignes, `user_updates` en instructions, remis à zéro par une
+  reconstruction ou l'éviction des métadonnées, sans horodatage) ne sont affichés qu'à titre
+  indicatif, jamais rapportés à la fenêtre. En repli sur le cache de plans, la maintenance n'a
+  pas de source fiable : aucun index n'y est `recommandé`, au mieux `à discuter` ;
 - taille estimée de l'index (lignes × largeur des clés et des inclus) ;
 - pour un remplacement, la mesure inclut les requêtes qui utilisaient l'index remplacé, évaluées
   sans lui ;
@@ -452,8 +527,9 @@ Déjà établi par le panel sur 2022 CU26 (à reconfirmer sur 2025) : `STATISTIC
 syntaxe `DBCC AUTOPILOT (typeid [, dbid [, {maxQueryCost | tabid [, indid [, pages [, flag [,
 rowcounts]]]]} ]])` (obtenue par `DBCC TRACEON(2588); DBCC HELP('AUTOPILOT')`), le masquage des
 index non déclarés, la remise à zéro par le type 5, le paramètre `pages`, la copie du Query Store
-par le clone, le rapatriement par `OPENROWSET`, `xp_delete_files`, la persistance d'`IsClone`, le
-fonctionnement sous un utilisateur `db_owner` sans `sysadmin`.
+par le clone, le rapatriement par `OPENROWSET`, `xp_delete_files`, la persistance d'`IsClone`, la
+création d'index hypothétiques et `DBCC AUTOPILOT` sous un utilisateur `db_owner` sans `sysadmin`
+(la phase `clone` exige en revanche `sysadmin`, pour `DBCC CLONEDATABASE`).
 
 Reste à mesurer :
 
@@ -469,7 +545,16 @@ Reste à mesurer :
 4. Le comportement de `DBCC AUTOPILOT` et de `STATISTICS_ONLY = -1` sur 2016 (ou la version
    plancher retenue) et sur Managed Instance si elle reste dans le périmètre.
 5. Le nombre de pages à donner à `AUTOPILOT` : l'estimation de §8.5 contre la taille d'un index
-   réel de même définition.
+   réel de même définition ; et l'effet d'un index réel déclaré sans `pages`.
+6. Les statistiques sur le labo, suite du point 2 : avec et sans statistiques automatiques,
+   objet vide de l'index hypothétique contre statistique `godta_*` copiée, flux `STATS_STREAM`
+   posé sur l'index hypothétique.
+7. `AUTOPILOT` sur une requête à jointure (index déclarés de plusieurs tables), un tas, une vue
+   indexée ; le contrôle de §8.5 (référence sous `AUTOPILOT` égale au `SHOWPLAN_XML` simple) sur
+   toutes les requêtes rejouables de la base de démonstration.
+8. Les effets de `CREATE STATISTICS` et `DROP STATISTICS` sur les plans en cache des tables
+   (recompilations), et la durée de la lecture échantillonnée sur une grande table.
+9. `xp_delete_files` et `xp_delete_file` sur la version plancher et sous Windows.
 
 Si le point 1 échoue largement, goDTA ne mesure que les requêtes non paramétrées et les
 procédures, et le document est révisé. Si le point 2 échoue, le mode labo est retiré.
@@ -516,6 +601,9 @@ Par Claude, à vérifier à la lecture :
 - `collect` toujours sur la source ;
 - coût de maintenance tiré des requêtes d'écriture du Query Store, les DMV à titre indicatif ;
 - remplacement mesuré en masquant l'index remplacé sous `AUTOPILOT` ;
+- clone sans Query Store, statistiques automatiques coupées sur le labo ;
+- contrôle de chaque référence `AUTOPILOT` contre un `SHOWPLAN_XML` simple ;
+- profil de labo déclaré `"environment": "lab"` et instance différente de la source ;
 - modèle de couverture de §8.3, élargissement d'un index de contrainte en « à discuter » ;
 - statistiques `_WA_Sys_*` auto-créées listées, pas supprimées ;
 - sqlferret comme source de candidats seulement ;
@@ -563,3 +651,23 @@ Cl = Claude ; d = directif, n = neutre).
 Constats rejetés : aucun. Les points vérifiés sans défaut (copie du Query Store par le clone,
 `OPENROWSET` juste après le `BACKUP`, import de `tools/internal/sqlq` sans changer les garanties
 du binaire `sqlq`, droits `db_owner` suffisants) sont repris en §11 comme acquis.
+
+### 14.1 Relecture des corrections
+
+Les corrections ci-dessus (commit `a35ebc2`) ont été relues à part, par un sous-agent Claude neuf
+chargé de les attaquer, sans instance SQL Server. Traitement :
+
+| Constat | Traitement |
+|---|---|
+| Le modèle de couverture ignore que la clé cluster fait partie de la clé d'un index non cluster non unique : un remplacement aurait recréé un index identique ; il traite mal l'index cluster ; le sens d'une égalité ; préfixe strict contre permutations ; options physiques perdues | clés effectives, égalités sans sens, égalités rangées avant la confrontation, index cluster jamais cible, options physiques reprises, §8.3 |
+| Contradiction sur les statistiques de l'index hypothétique au labo ; statistiques automatiques du clone | objet vide reconnu, choix de l'optimiseur renvoyé au spike, statistiques automatiques coupées, §8.4, §8.5, §11 |
+| `AUTOPILOT` limité aux index d'une table ; `pages` des index réels ; vues indexées, tas | toutes les tables lues par la requête, pages réelles, contrôle contre `SHOWPLAN_XML`, §8.5, §11 |
+| Colonne de tri après une inégalité | règle de génération corrigée, §8.3 |
+| Options `SET` du contexte ignorées au rejeu ; procédure temporaire non listée | options appliquées, procédure créée sous ces options et listée, §7.1, §8.5 |
+| Retente du `DROP` à délai croissant ; la création bloque les écrivains | délai court et fixe avec pause, effet dit, §7.1, §8.5 |
+| Le Query Store ne donne ni table ni colonnes écrites ; cascades, vues indexées, déclencheurs ; lignes contre exécutions ; clé cluster ; mode de capture ; repli sur le cache | lecture des plans d'écriture, `avg_rowcount`, clé cluster, mode de capture signalé, pas de `recommandé` en repli, §8.2, §8.6 |
+| Les gardes du labo ne protègent pas le `RESTORE` ; champ `environment` facultatif | `environment` à `lab` exigé, instance différente de la source, vérifiées avant toute instruction, §7 |
+| Query Store copié inutilement ; plafond de 2 Go ; `sysadmin` exigé par le clone ; `xp_delete_files` sur la version plancher | `NO_QUERYSTORE`, plafond dit, droits corrigés, point 9 du spike, §8.4, §11 |
+| Indications dans les modules ; dérive de schéma entre validation et exécution ; effets des statistiques `godta_*` | `sys.sql_modules`, empreinte de schéma dans le plan d'exécution, point 8 du spike, §7.1, §8.2 |
+
+Aucun constat rejeté.
