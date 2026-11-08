@@ -265,7 +265,8 @@ type read struct {
 }
 
 // reads lists what each read of a statement asks of its table. A lookup is
-// merged with the read it completes. A read of an indexed view gives no
+// merged with the read it completes, for its residual predicate and its
+// output only: its seek is on the row locator. A read of an indexed view gives no
 // candidate (Generate skips the view, whose columns are not its base
 // table's); it counts for the base tables in BindQueries.
 func reads(r resolver, st showplan.Statement) []read {
@@ -286,6 +287,13 @@ func reads(r resolver, st showplan.Statement) []read {
 			}
 		}
 		for _, g := range group {
+			// A lookup seeks on the row locator, the clustered key of the
+			// table (OrderID = [OrderID]) or the bookmark of a heap: that
+			// is how the plan finds the row, not what the query asks. It
+			// gives its residual predicate and its output, not its seek.
+			if g.LookupOf >= 0 {
+				g.SeekCols, g.SeekEq = nil, nil
+			}
 			for k, c := range g.SeekCols {
 				id := r.column(t, a.Obj, c)
 				if k < len(g.SeekEq) && g.SeekEq[k] {
