@@ -339,7 +339,7 @@ func tablesOf(w *model.Workload, st *showplan.Statement, current string) []*mode
 	}
 	var out []*model.Table
 	for _, o := range objs {
-		if o.Table == "" || (o.Database != "" && !strings.EqualFold(o.Database, w.Database.Name) &&
+		if o.Table == "" || (o.Database != "" && !w.Database.Matches(o.Database) &&
 			(current == "" || !strings.EqualFold(o.Database, current))) {
 			continue
 		}

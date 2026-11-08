@@ -653,7 +653,7 @@ func queryColumns(w *model.Workload, p *showplan.Plan, f func(t *model.Table, id
 			refs = append(refs, s.Cols...)
 		}
 		for _, c := range refs {
-			if c.Table == "" || (c.Database != "" && !strings.EqualFold(c.Database, w.Database.Name)) {
+			if c.Table == "" || (c.Database != "" && !w.Database.Matches(c.Database)) {
 				continue
 			}
 			t := candidate.TableByName(w, c.Schema, c.Table)

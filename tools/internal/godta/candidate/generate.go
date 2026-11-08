@@ -65,7 +65,7 @@ func (r resolver) same(a, b string) bool {
 // table returns the table an object names, nil for another database, a
 // temporary table or an object collect did not read.
 func (r resolver) table(o showplan.ObjRef) *model.Table {
-	if o.Table == "" || (o.Database != "" && !r.same(o.Database, r.w.Database.Name)) {
+	if o.Table == "" || (o.Database != "" && !r.w.Database.Matches(o.Database)) {
 		return nil
 	}
 	ids := make([]int, 0, len(r.w.Tables))
@@ -161,7 +161,7 @@ func Generate(w *model.Workload) []model.Candidate {
 func FromSources(srcs []sqlferret.Source, w *model.Workload) []model.Candidate {
 	g := newGenerator(w)
 	for _, s := range srcs {
-		if s.Database == "" || !g.r.same(s.Database, w.Database.Name) {
+		if !w.Database.Matches(s.Database) {
 			continue
 		}
 		g.plan(s.Plan, OriginSqlferret, OriginSqlferret, nil)
