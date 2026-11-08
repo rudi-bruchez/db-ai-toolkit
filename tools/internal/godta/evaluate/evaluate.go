@@ -58,6 +58,9 @@ type Hooks struct {
 
 // Result is what Run measured.
 type Result struct {
+	// RunID is the run ID of the plan: the one given, or, in the lab mode,
+	// the one Run made. The journal entries of the run carry it.
+	RunID    string
 	Measures []model.Measure
 	// AutoCreatedStats are the automatic statistics the compilations
 	// created, [schema].[table].[name].
@@ -79,9 +82,12 @@ type planned struct {
 	hide    map[int]bool // index_ids of t hidden (widen, replace)
 	indexID int
 	created bool
-	status  string // set when the candidate cannot be measured
-	errText string
-	notes   []string
+	// uncertain is a creation interrupted by the end of ctx: the index may
+	// exist, so the drops look it up.
+	uncertain bool
+	status    string // set when the candidate cannot be measured
+	errText   string
+	notes     []string
 }
 
 func (pc *planned) pages() int64 {
@@ -141,6 +147,7 @@ func Run(ctx context.Context, s *Session, ws workspace.WS, p *runplan.Plan, w *m
 		defer s.usePlan(nil)
 	}
 	r := &run{s: s, ws: ws, plan: plan, w: w, h: h, maxCombined: plan.MaxCombined, refs: map[int64]*ref{}}
+	r.res.RunID = plan.RunID
 	if r.maxCombined <= 0 {
 		r.maxCombined = DefaultMaxCombined
 	}
@@ -529,6 +536,7 @@ func (r *run) createOne(ctx context.Context, pc *planned) error {
 		}
 		status, fatal := classify(ctx, err)
 		if fatal {
+			pc.uncertain = ctx.Err() != nil
 			return err
 		}
 		pc.status, pc.errText = status, err.Error()
@@ -746,30 +754,64 @@ func sameObjs(a, b []showplan.ObjRef) bool {
 // drops runs step 8 for the created candidates of g: the plan's short lock
 // timeout, then each drop, three attempts two seconds apart. A drop that
 // succeeds is journaled "removed"; one that fails three times stays
-// "created" for cleanup, with a warning. They run even when ctx is done.
+// "created" for cleanup, with a warning. They run even when ctx is done, on
+// a context of their own with a deadline. A creation that the end of ctx
+// interrupted is looked up first: found, it is journaled "created" and
+// dropped; not found, its "planned" entry is closed as "removed".
 func (r *run) drops(ctx context.Context, g *tableRun) error {
 	dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
 	defer cancel()
-	var created []*planned
+	var created, uncertain []*planned
 	for _, pc := range g.cands {
-		if pc.created {
+		switch {
+		case pc.created:
 			created = append(created, pc)
+		case pc.uncertain:
+			uncertain = append(uncertain, pc)
 		}
 	}
-	if len(created) == 0 {
+	if len(created)+len(uncertain) == 0 {
 		return nil
+	}
+	// mayExist journals an interrupted creation "created": cleanup checks
+	// whether the index is there before it drops it.
+	mayExist := func(pc *planned) error {
+		return r.ws.Record(stamp(*pc.create.Journal, workspace.StateCreated))
 	}
 	if err := r.s.Exec(dctx, tsql.SetLockTimeout(runplan.DropLockTimeoutMS)); err != nil {
 		if errors.Is(err, ErrNotInPlan) {
 			return err
 		}
 		if rerr := r.s.replace(dctx); rerr != nil {
-			r.warn("table %s: the session is lost, %d hypothetical index(es) left for cleanup", quoted(g.t), len(created))
+			for _, pc := range uncertain {
+				if jerr := mayExist(pc); jerr != nil {
+					rerr = errors.Join(rerr, jerr)
+				}
+			}
+			r.warn("table %s: the session is lost, %d hypothetical index(es) left for cleanup", quoted(g.t), len(created)+len(uncertain))
 			return errors.Join(errSessionLost, err, rerr)
 		}
 		if err := r.s.Exec(dctx, tsql.SetLockTimeout(runplan.DropLockTimeoutMS)); err != nil {
 			return fmt.Errorf("evaluate: %w", err)
 		}
+	}
+	for _, pc := range uncertain {
+		rows, err := r.s.query(dctx, pc.create.Resolve)
+		if _, found := intOf(rows); err == nil && !found {
+			if err := r.ws.Record(stamp(*pc.drop.Journal, workspace.StateRemoved)); err != nil {
+				return err
+			}
+			continue
+		}
+		if jerr := mayExist(pc); jerr != nil {
+			return jerr
+		}
+		if err != nil {
+			r.warn("hypothetical index %s on %s: its creation was interrupted and it could not be looked up (%v): left in the journal for cleanup",
+				pc.name, quoted(pc.t), err)
+			continue
+		}
+		created = append(created, pc)
 	}
 	for _, pc := range created {
 		var err error

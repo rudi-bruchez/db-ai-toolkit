@@ -265,13 +265,23 @@ func TestDryRunWritesPlanOnly(t *testing.T) {
 }
 
 // fakeServer is a database/sql driver that answers the identity and the
-// fingerprint queries and records every statement.
+// fingerprint queries and records every statement. With lenient, it also
+// answers DB_NAME() and DB_ID() with dbName and database_id 5, and any other
+// query with no row, which is enough for evaluate to run a plan: the
+// compilations return no plan and their measures come out not evaluated.
+// A statement sent on a done context fails with the context's error;
+// otherwise onExec, when set, sees it, and failExec gives its error (nil
+// runs it).
 type fakeServer struct {
-	inst    conn.Instance
-	tables  []*model.Table
-	mu      sync.Mutex
-	queries []string
-	execs   []string
+	inst     conn.Instance
+	tables   []*model.Table
+	lenient  bool
+	dbName   string
+	failExec func(q string) error
+	onExec   func(q string)
+	mu       sync.Mutex
+	queries  []string
+	execs    []string
 }
 
 func (f *fakeServer) open(context.Context, sqlq.Profile, string, string) (*sql.DB, error) {
@@ -293,17 +303,31 @@ func (c *fakeConn) Prepare(string) (driver.Stmt, error) { return nil, errors.New
 func (c *fakeConn) Close() error                        { return nil }
 func (c *fakeConn) Begin() (driver.Tx, error)           { return nil, errors.New("fake: no transaction") }
 
-func (c *fakeConn) ExecContext(_ context.Context, q string, _ []driver.NamedValue) (driver.Result, error) {
+func (c *fakeConn) ExecContext(ctx context.Context, q string, _ []driver.NamedValue) (driver.Result, error) {
 	c.f.mu.Lock()
-	defer c.f.mu.Unlock()
 	c.f.execs = append(c.f.execs, q)
+	c.f.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if c.f.onExec != nil {
+		c.f.onExec(q)
+	}
+	if c.f.failExec != nil {
+		if err := c.f.failExec(q); err != nil {
+			return nil, err
+		}
+	}
 	return driver.RowsAffected(0), nil
 }
 
-func (c *fakeConn) QueryContext(_ context.Context, q string, _ []driver.NamedValue) (driver.Rows, error) {
+func (c *fakeConn) QueryContext(ctx context.Context, q string, _ []driver.NamedValue) (driver.Rows, error) {
 	c.f.mu.Lock()
 	c.f.queries = append(c.f.queries, q)
 	c.f.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	i := c.f.inst
 	switch {
 	case strings.Contains(q, "@@SERVERNAME"):
@@ -317,6 +341,16 @@ func (c *fakeConn) QueryContext(_ context.Context, q string, _ []driver.NamedVal
 		return r, nil
 	case strings.Contains(q, "FROM sys.indexes AS i"):
 		return &fakeRows{cols: 12}, nil
+	case !c.f.lenient:
+	case strings.Contains(q, "FROM sys.indexes WHERE object_id = OBJECT_ID(@p1)"):
+		// cleanup's check that a journaled hypothetical index is there.
+		return &fakeRows{cols: 2, rows: [][]driver.Value{{int64(1), int64(1)}}}, nil
+	case q == "SELECT DB_NAME()":
+		return &fakeRows{cols: 1, rows: [][]driver.Value{{c.f.dbName}}}, nil
+	case q == "SELECT DB_ID(), DB_NAME()":
+		return &fakeRows{cols: 2, rows: [][]driver.Value{{int64(5), c.f.dbName}}}, nil
+	default:
+		return &fakeRows{cols: 1}, nil
 	}
 	return nil, fmt.Errorf("fake: unexpected query %q", q)
 }
