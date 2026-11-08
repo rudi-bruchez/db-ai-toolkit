@@ -2,6 +2,7 @@ package collect
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/model"
@@ -70,5 +71,42 @@ func TestDedupTopN(t *testing.T) {
 	// by reads and duration the second place is 2 again.
 	if want := []int64{1, 2, 3}; !slices.Equal(ids, want) {
 		t.Errorf("got %v, want %v", ids, want)
+	}
+}
+
+// TestDatabasesQueryReplicaRole pins the text the lab cannot measure: the
+// secondary test counts a NULL role as not primary and skips a READ_ONLY
+// secondary, and the read-only flag reads Updateability.
+func TestDatabasesQueryReplicaRole(t *testing.T) {
+	for _, want := range []string{unreadableSecondaryPredicate, readOnlyExpr} {
+		if !strings.Contains(databasesQuery, want) {
+			t.Errorf("databasesQuery lacks %q", want)
+		}
+	}
+	for _, want := range []string{"ISNULL(rs.is_primary_replica, 0) = 0", "secondary_role_allow_connections < 2"} {
+		if !strings.Contains(unreadableSecondaryPredicate, want) {
+			t.Errorf("unreadableSecondaryPredicate lacks %q", want)
+		}
+	}
+	if !strings.Contains(readOnlyExpr, "DATABASEPROPERTYEX(d.name, 'Updateability')") {
+		t.Errorf("readOnlyExpr does not read Updateability: %s", readOnlyExpr)
+	}
+}
+
+// TestClassifySecondaryAndReadOnly: the two flags the query computes map to
+// their reasons.
+func TestClassifySecondaryAndReadOnly(t *testing.T) {
+	sec, ro := userDB("sec"), userDB("ro")
+	sec.unreadableSecondary, ro.readOnly = true, true
+	keep, skipped, err := classify([]dbRow{sec, ro, userDB("rw")}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keep) != 1 || keep[0].Name != "rw" {
+		t.Errorf("kept %v, want rw alone", keep)
+	}
+	want := []Skip{{Name: "sec", Reason: ReasonUnreadableSecondary}, {Name: "ro", Reason: ReasonReadOnly}}
+	if !slices.Equal(skipped, want) {
+		t.Errorf("skipped %v, want %v", skipped, want)
 	}
 }
