@@ -43,6 +43,37 @@ func TestSafeNameDistinguishes(t *testing.T) {
 	}
 }
 
+// TestSafeNameCaseInsensitive: no two distinct names share a directory on a
+// file system that ignores case, no name gives a Windows device name, and a
+// plain lower-case name keeps its path.
+func TestSafeNameCaseInsensitive(t *testing.T) {
+	names := []string{"Sales", "SALES", "sales", "sales.", "Sales-1a2b3c4d", "sales-1a2b3c4d",
+		"con", "CON", "Con.db", "nul.txt", "aux", "prn", "com1", "LPT9", "com0.x", "a b", "A B"}
+	// A plain name that spells another name's hashed form, in lower case.
+	names = append(names, strings.ToLower(SafeName("Sales")))
+	seen := map[string]string{}
+	for _, n := range names {
+		got := SafeName(n)
+		low := strings.ToLower(got)
+		if other, ok := seen[low]; ok {
+			t.Errorf("%q and %q share the directory %q on a case-insensitive file system", n, other, got)
+		}
+		seen[low] = n
+		stem, _, _ := strings.Cut(low, ".")
+		if regexp.MustCompile(`^(con|prn|aux|nul|com[0-9]|lpt[0-9])$`).MatchString(stem) {
+			t.Errorf("%q gives %q, a Windows device name", n, got)
+		}
+		if strings.HasSuffix(got, ".") {
+			t.Errorf("%q gives %q, which Windows shortens", n, got)
+		}
+	}
+	for _, n := range []string{"sales", "pachadata_formation", "db-1.2"} {
+		if got := SafeName(n); got != n {
+			t.Errorf("plain name %q changed to %q", n, got)
+		}
+	}
+}
+
 func TestDBDirStaysUnderRoot(t *testing.T) {
 	ws, err := Open(t.TempDir())
 	if err != nil {
