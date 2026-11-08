@@ -84,10 +84,11 @@ func baseArgs(t *testing.T, profiles, profile string) []string {
 		"--profile", profile, "--env", filepath.Join(dir, "absent.env")}
 }
 
-// writeCommands are the two write phases of part 1, with their flags.
+// writeCommands are the write phases on the source, with their flags.
 var writeCommands = [][]string{
 	{"evaluate", "--target", "server"},
 	{"cleanup"},
+	{"clone", "--host-dir", "/nonexistent"},
 }
 
 func TestWriteRefusedOnReadonly(t *testing.T) {
@@ -341,4 +342,57 @@ func (r *fakeRows) Next(dest []driver.Value) error {
 	copy(dest, r.rows[r.n])
 	r.n++
 	return nil
+}
+
+// TestLabRefusedBeforeConnection: evaluate --target lab with a lab profile
+// that is not a lab (readonly, no environment), or without --allow-write,
+// is refused with code 3 before any connection.
+func TestLabRefusedBeforeConnection(t *testing.T) {
+	t.Setenv(testPasswordEnv, "pw")
+	profiles := writeProfiles(t)
+	lab := []string{"evaluate", "--target", "lab", "--host-dir", t.TempDir(), "--container-dir", "/var/opt/mssql/godta"}
+	for _, c := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"not a lab", []string{"--lab-profile", "ro", "--allow-write"}, "environment"},
+		{"no --allow-write", []string{"--lab-profile", "rw"}, "--allow-write"},
+	} {
+		args := append(append(append([]string{}, lab...), baseArgs(t, profiles, "rw")...), c.args...)
+		code, out := invoke(t, noOpen(t), args...)
+		if code != exitRefused || out.OK || out.Error == nil || !strings.Contains(out.Error.Message, c.want) {
+			t.Errorf("%s: code %d, output %+v; want code 3, refused on %q", c.name, code, out, c.want)
+		}
+	}
+}
+
+// TestCloneSizeEstimate: the side effect of the clone plan that gives the
+// size from msdb.dbo.backupset says it is an estimate, with the sizes and
+// the date of the backup, and says when there is no estimate at all.
+func TestCloneSizeEstimate(t *testing.T) {
+	at := time.Date(2026, 11, 8, 10, 30, 0, 0, time.UTC)
+	found := backupEstimate{Found: true, Finished: at, Bytes: 3039232, CompressedBytes: 1024000}.text("Sales", 2<<30)
+	for _, want := range []string{"estimate only", "[Sales]", "3039232 bytes", "1024000 compressed", "2026-11-08T10:30:00Z", "max_bytes (2147483648)"} {
+		if !strings.Contains(found, want) {
+			t.Errorf("estimate %q does not contain %q", found, want)
+		}
+	}
+	none := backupEstimate{}.text("Sales", 1000)
+	if !strings.Contains(none, "no full backup of [Sales]") || !strings.Contains(none, "no estimate") {
+		t.Errorf("no backup: %q", none)
+	}
+	for _, c := range []struct {
+		in   string
+		want int64
+	}{{"2GiB", 2 << 30}, {"256MiB", 256 << 20}, {"64KiB", 64 << 10}, {"1000", 1000}, {"10B", 10}} {
+		if got, err := parseBytes(c.in); err != nil || got != c.want {
+			t.Errorf("parseBytes(%q) = %d, %v; want %d", c.in, got, err, c.want)
+		}
+	}
+	for _, bad := range []string{"", "0", "-1MiB", "2GB", "x"} {
+		if _, err := parseBytes(bad); err == nil {
+			t.Errorf("parseBytes(%q) accepted", bad)
+		}
+	}
 }

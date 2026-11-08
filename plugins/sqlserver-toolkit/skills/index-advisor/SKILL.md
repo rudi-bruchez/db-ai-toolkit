@@ -34,7 +34,7 @@ godta collect    --project <dir> --profile <name> --include <db> [--window 24h] 
 godta candidates --project <dir> [--suggestions <file>] [--sqlferret <sqlferret project>]
 godta evaluate   --project <dir> --profile <name> --target server --dry-run [--suggestions <file>] [--max-combined 4] [--lock-timeout 2s]
 godta evaluate   --project <dir> --profile <name> --target server --allow-write --plan <plan-evaluate.json> [--compile-timeout 60s]
-godta report     --project <dir>
+godta report     --project <dir> [--target server|lab]
 godta cleanup    --project <dir> --profile <name> --dry-run
 godta cleanup    --project <dir> --profile <name> --allow-write --plan <plan-cleanup.json>
 ```
@@ -56,12 +56,55 @@ godta cleanup    --project <dir> --profile <name> --allow-write --plan <plan-cle
    interrupted run left (journal first, then the name pattern of a run). Run it after any
    `evaluate` that did not end with `ok: true`.
 
-`evaluate --target lab` and `clone` are not available yet.
+## The lab mode
+
+The lab mode measures on another instance, so that no hypothetical index is ever created on
+the source. `clone` makes a `DBCC CLONEDATABASE` copy of each database (schema and statistics,
+no data), backs it up and brings the file back through the SQL connection; `evaluate --target
+lab` restores it on the lab and measures the candidates there. The source still sees the
+writes of `clone`, so `clone` follows the same confirmation as any write phase.
+
+```bash
+godta clone    --project <dir> --profile <name> --dry-run [--backup-dir <dir>] [--max-bytes 2GiB] [--chunk 256MiB]
+godta clone    --project <dir> --profile <name> --allow-write --plan <plan-clone.json> --host-dir <dir>
+godta evaluate --project <dir> --target lab --lab-profile <name> --host-dir <dir> --container-dir <dir> [--data-dir <dir>] [--suggestions <file>] --allow-write
+godta report   --project <dir> --target lab
+```
+
+1. Run `collect` and `candidates` first: `clone` creates on the source, for each candidate,
+   the statistics of its keys, so that the clone carries them, then drops them.
+2. `clone --dry-run` writes `plan-clone.json` per database. Its `side_effects` list the
+   statistics created and dropped (the drop makes the cached plans of the table recompile),
+   the clone database, the backup file, the number of reads of the file, and a size estimate
+   from `msdb.dbo.backupset`: an estimate only, the real size is checked against
+   `max_bytes` before anything is written on the host. `--backup-dir`, `--max-bytes` and
+   `--chunk` go into the plan; they are refused at the execution.
+3. `clone --allow-write --plan <file> --host-dir <dir>` executes the plan and writes the
+   backup file into the host directory, the one the lab container mounts. The clone and
+   the file are removed from the source at the end.
+4. `evaluate --target lab` needs a lab profile that declares `"environment": "lab"` and is
+   `readwrite`, and `--allow-write`; otherwise exit code `3`, before any connection. It
+   refuses a lab that is the source instance (`@@SERVERNAME` or `MachineName` equal) or of
+   another major version (a different build is a warning). The first run restores the file
+   (`--container-dir` is the host directory as the container sees it) and prepares the
+   clone; the next runs find it prepared and check that it is still a clone. The result is
+   `evaluate-lab.json`; there is no execution plan, since nothing is written on the source.
+5. `report --target lab` scores the lab evaluation. Without `--target`, `report` takes the
+   server's when `evaluate-server.json` exists, else the lab's.
+
+goDTA neither starts nor stops the lab container, and leaves the restored clone on the lab
+for the next runs: dropping it is the DBA's call.
+
+A suggestion passed to `evaluate --target lab --suggestions <file>` after the clone has no
+statistics on the lab. Its measures carry the note `unreliable estimate: statistics not
+transferred`, and the report never recommends it. Say so to the user, and offer the two ways
+out: `clone` again with the suggestion in `candidates` (`candidates --suggestions <file>`),
+or evaluate it on the server.
 
 ## The confirmation before a write
 
-`evaluate --target server` and `cleanup` write on the server. Before either, on every profile,
-`lab` included:
+`clone`, `evaluate --target server` and `cleanup` write on the server. Before any of them, on
+every profile, `lab` included:
 
 1. Run the `--dry-run`.
 2. Show the user the plan file it wrote (the `plan` field of the output, or the files of each

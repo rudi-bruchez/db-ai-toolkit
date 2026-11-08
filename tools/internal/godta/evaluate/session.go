@@ -51,12 +51,15 @@ type execer interface {
 // Session is an AUTOPILOT session on one pinned connection of the pool of
 // the evaluated database.
 type Session struct {
-	db             *sql.DB
-	c              *sql.Conn
-	ex             execer
-	reopen         func(ctx context.Context) (execer, error)
-	abandon        func()
-	dbID           int
+	db      *sql.DB
+	c       *sql.Conn
+	ex      execer
+	reopen  func(ctx context.Context) (execer, error)
+	abandon func()
+	dbID    int
+	// dbName is DB_NAME() of the evaluated database: on the lab, the
+	// restored clone's name, which its plans give instead of the source's.
+	dbName         string
 	enterprise     bool
 	compileTimeout time.Duration
 	// lockTimeout is the session's current SET LOCK_TIMEOUT, replayed on a
@@ -148,17 +151,18 @@ func NewSession(ctx context.Context, db *sql.DB, inst conn.Instance, compileTime
 		return nil, fmt.Errorf("evaluate: pinning a connection: %w", err)
 	}
 	s.ex = ex
-	rows, err := s.ex.Query(ctx, "SELECT DB_ID()")
+	rows, err := s.ex.Query(ctx, "SELECT DB_ID(), DB_NAME()")
 	if err != nil {
 		s.Close()
 		return nil, fmt.Errorf("evaluate: DB_ID(): %w", err)
 	}
 	id, ok := intOf(rows)
-	if !ok {
+	if !ok || len(rows[0]) < 2 {
 		s.Close()
-		return nil, fmt.Errorf("evaluate: DB_ID() returned %v", rows)
+		return nil, fmt.Errorf("evaluate: DB_ID(), DB_NAME() returned %v", rows)
 	}
 	s.dbID = id
+	s.dbName, _ = rows[0][1].(string)
 	if err := s.start(ctx); err != nil {
 		s.Close()
 		return nil, err

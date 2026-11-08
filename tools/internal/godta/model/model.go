@@ -236,11 +236,16 @@ const (
 // Candidate.ID.
 // Status is "measured" or one of the "not evaluated: ..." statuses.
 type Measure struct {
-	QueryID          int64    `json:"query_id"`
-	Candidate        string   `json:"candidate"`
-	Combined         []string `json:"combined,omitempty"`
-	Before           float64  `json:"before"`
-	After            float64  `json:"after"`
+	QueryID   int64    `json:"query_id"`
+	Candidate string   `json:"candidate"`
+	Combined  []string `json:"combined,omitempty"`
+	Before    float64  `json:"before"`
+	After     float64  `json:"after"`
+	// BeforeRows and AfterRows are the estimated rows of the root operator
+	// of the reference plan and of the plan with the candidate: what the
+	// comparison of the lab with the source reads next to the costs.
+	BeforeRows       float64  `json:"before_rows,omitempty"`
+	AfterRows        float64  `json:"after_rows,omitempty"`
 	Shape            string   `json:"shape"`
 	UsedHypothetical []string `json:"used_hypothetical,omitempty"`
 	Status           string   `json:"status"`
