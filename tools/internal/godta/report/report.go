@@ -137,8 +137,14 @@ type ResultExisting struct {
 // ResultQuery is one query a candidate serves. Before and After are nil when
 // the measure has no numbers.
 type ResultQuery struct {
-	// Text is the full query text; rapport.md shows an excerpt.
-	QueryID    int64    `json:"query_id"`
+	// Text is the full query text; rapport.md shows an excerpt. From the
+	// plan cache a query is a query_hash, not a query_id: QueryID is then
+	// left out, QueryHash gives the hash and QueryIDs the Query Store
+	// query_ids of the same hash, when the Query Store has any (spec section
+	// 8.2).
+	QueryID    int64    `json:"query_id,omitempty"`
+	QueryHash  string   `json:"query_hash,omitempty"`
+	QueryIDs   []int64  `json:"query_ids,omitempty"`
 	Text       string   `json:"text"`
 	Executions int64    `json:"executions"`
 	IsWrite    bool     `json:"is_write"`
@@ -589,6 +595,28 @@ func excerpt(s string) string {
 	return s
 }
 
+// queryLabel names query q (id when the workload does not have it). From the
+// plan cache, id is the query_hash as a bigint, which the Query Store does
+// not know: the query is named by its hash, with the query_ids it covers.
+func queryLabel(w *model.Workload, q model.Query, id int64) string {
+	if w.Source != model.SourcePlanCache {
+		return fmt.Sprintf("query_id %d", id)
+	}
+	hash := q.Hash
+	if hash == "" {
+		hash = fmt.Sprintf("0x%016X", uint64(id))
+	}
+	s := "query_hash " + hash
+	if len(q.QueryIDs) > 0 {
+		ids := make([]string, len(q.QueryIDs))
+		for i, n := range q.QueryIDs {
+			ids[i] = fmt.Sprint(n)
+		}
+		s += " (Query Store query_id " + strings.Join(ids, ", ") + ")"
+	}
+	return s
+}
+
 // lookup returns the query of the workload with id, read or write.
 func lookup(w *model.Workload, id int64) (model.Query, bool) {
 	for _, list := range [][]model.Query{w.Queries, w.Writes} {
@@ -767,15 +795,15 @@ func block(b *strings.Builder, w *model.Workload, it *item, n int) {
 				kind = "write"
 			}
 			if it.section == "not_evaluated" || m.Status != statusMeasured {
-				p("  - query_id %d (%s), %d executions, %s: `%s`\n", m.QueryID, kind, q.Executions, m.Status, excerpt(q.Text))
+				p("  - %s (%s), %d executions, %s: `%s`\n", queryLabel(w, q, m.QueryID), kind, q.Executions, m.Status, excerpt(q.Text))
 				continue
 			}
 			maint := ""
 			if q.IsWrite || m.Maintenance != 0 {
 				maint = ", index maintenance " + num(m.Maintenance) + " per execution"
 			}
-			p("  - query_id %d (%s), %d executions, cost %s before, %s after%s: `%s`\n",
-				m.QueryID, kind, q.Executions, num(m.Before), num(m.After), maint, excerpt(q.Text))
+			p("  - %s (%s), %d executions, cost %s before, %s after%s: `%s`\n",
+				queryLabel(w, q, m.QueryID), kind, q.Executions, num(m.Before), num(m.After), maint, excerpt(q.Text))
 		}
 	}
 	for _, note := range r.Notes {
@@ -889,6 +917,9 @@ func result(w *model.Workload, items []*item, autoStats, warnings, redund []stri
 			q, _ := lookup(w, m.QueryID)
 			rq := ResultQuery{QueryID: m.QueryID, Text: q.Text, Executions: q.Executions,
 				IsWrite: q.IsWrite, Status: m.Status, Notes: m.Notes}
+			if w.Source == model.SourcePlanCache {
+				rq.QueryID, rq.QueryHash, rq.QueryIDs = 0, q.Hash, q.QueryIDs
+			}
 			if it.section != "not_evaluated" && m.Status == statusMeasured {
 				rq.Before, rq.After, rq.Maintenance = ptr(m.Before), ptr(m.After), ptr(m.Maintenance)
 			}
