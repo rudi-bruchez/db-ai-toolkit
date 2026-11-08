@@ -30,11 +30,14 @@ const ServerDatabase = "master"
 // the journal does not list; Unknown, one line each, what looks like a
 // leftover but is not goDTA's (another tool's hypothetical index, a name
 // LIKE matches only through the collation) and journal entries of another
-// server. Unknown is never removed.
+// server. Unknown is never removed. Warnings says what Find left out and
+// why: a database it could not read, an object it cannot tie to a selected
+// database.
 type Found struct {
 	Journal   []workspace.Entry `json:"journal"`
 	ByPattern []workspace.Entry `json:"by_pattern"`
 	Unknown   []string          `json:"unknown"`
+	Warnings  []string          `json:"warnings"`
 }
 
 // Entries returns Journal then ByPattern, the input of runplan.ForCleanup.
@@ -47,7 +50,14 @@ func (f Found) Entries() []workspace.Entry {
 // Find lists what cleanup would remove. server is a connection on master,
 // for sys.databases; open opens a pool on one database, which Find closes:
 // each database is read through a pool opened on it, never through USE.
-func Find(ctx context.Context, server conn.Querier, open func(db string) (*sql.DB, error), ws workspace.WS) (Found, error) {
+//
+// selected, when not nil, limits Find to the databases it accepts (cleanup
+// --include, --exclude): the others are never opened, and their journal
+// entries are left out. A database that cannot be opened or read, or that
+// disappears meanwhile, is a warning for that database, not a failure.
+func Find(ctx context.Context, server conn.Querier, open func(db string) (*sql.DB, error), ws workspace.WS, selected func(db string) bool) (Found, error) {
+	all := selected == nil
+	in := func(db string) bool { return all || selected(db) }
 	var f Found
 	inst, err := conn.Identify(ctx, server)
 	if err != nil {
@@ -64,8 +74,10 @@ func Find(ctx context.Context, server conn.Querier, open func(db string) (*sql.D
 				e.Kind, describe(e), e.Server, inst.ServerName))
 			continue
 		}
-		f.Journal = append(f.Journal, e)
 		journaled[identity(e)] = true
+		if in(e.Database) {
+			f.Journal = append(f.Journal, e)
+		}
 	}
 	add := func(e workspace.Entry) {
 		if journaled[identity(e)] {
@@ -82,9 +94,13 @@ func Find(ctx context.Context, server conn.Querier, open func(db string) (*sql.D
 		return Found{}, err
 	}
 	for _, db := range dbs {
+		if !in(db) {
+			continue
+		}
 		entries, unknown, err := scanDatabase(ctx, server, open, db)
 		if err != nil {
-			return Found{}, err
+			f.Warnings = append(f.Warnings, fmt.Sprintf("database %s not read, its leftovers are not listed: %v", tsql.QuoteName(db), err))
+			continue
 		}
 		for _, e := range entries {
 			add(e)
@@ -94,6 +110,9 @@ func Find(ctx context.Context, server conn.Querier, open func(db string) (*sql.D
 	for _, name := range clones {
 		if !tsql.IsRunName(name) {
 			f.Unknown = append(f.Unknown, fmt.Sprintf("database %s: a clone whose name matches the pattern only through the collation, not goDTA's", tsql.QuoteName(name)))
+			continue
+		}
+		if !in(ServerDatabase) {
 			continue
 		}
 		add(workspace.Entry{Database: ServerDatabase, Kind: workspace.KindCloneDatabase, Name: name})

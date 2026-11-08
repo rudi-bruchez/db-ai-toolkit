@@ -3,6 +3,8 @@ package cleanup_test
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -96,17 +98,23 @@ func (e *env) record(entries ...workspace.Entry) {
 	}
 }
 
-func (e *env) find() cleanup.Found {
+// find runs Find limited to dbs, the test's own databases, as cleanup
+// --include does: it never reads the other databases of the instance,
+// which other tests create and drop meanwhile.
+func (e *env) find(dbs ...string) cleanup.Found {
 	e.t.Helper()
-	f, err := cleanup.Find(e.ctx, e.server, e.open, e.ws)
+	f, err := cleanup.Find(e.ctx, e.server, e.open, e.ws, only(dbs...))
 	if err != nil {
 		e.t.Fatalf("Find: %v", err)
 	}
 	return f
 }
 
-// run builds, seals and runs the cleanup plan of entries, which the caller
-// restricts to its own database: the pattern scan sees the whole server.
+func only(dbs ...string) func(string) bool {
+	return func(db string) bool { return slices.Contains(dbs, db) }
+}
+
+// run builds, seals and runs the cleanup plan of entries.
 func (e *env) run(entries []workspace.Entry) []workspace.Entry {
 	e.t.Helper()
 	p := runplan.ForCleanup(entries)
@@ -177,7 +185,7 @@ func TestCleanupFromJournal(t *testing.T) {
 	e.hypothetical(db, name)
 	e.record(e.entry(dbName, workspace.KindHypotheticalIndex, name, workspace.StateCreated))
 
-	f := e.find()
+	f := e.find(dbName)
 	if !has(f.Journal, workspace.KindHypotheticalIndex, name) {
 		t.Fatalf("Journal %+v lacks %s", f.Journal, name)
 	}
@@ -205,7 +213,7 @@ func TestCleanupByPattern(t *testing.T) {
 	e.hypothetical(db, "godta_ab12cd34_1")
 	e.exec(db, tsql.CreateStatistics(godtaH, "godta_ab12cd34_2", []string{"y"}))
 
-	f := e.find()
+	f := e.find(dbName)
 	mine := inDB(f.ByPattern, dbName)
 	if len(mine) != 2 || !has(mine, workspace.KindHypotheticalIndex, "godta_ab12cd34_1") || !has(mine, workspace.KindStatistics, "godta_ab12cd34_2") {
 		t.Fatalf("ByPattern in %s: %+v, want the index _1 and the statistics _2 only", dbName, mine)
@@ -235,7 +243,7 @@ func TestCleanupLeavesForeign(t *testing.T) {
 	ours := runplan.IndexName(workspace.NewRunID(), 1)
 	e.hypothetical(db, ours)
 
-	f := e.find()
+	f := e.find(dbName)
 	if has(f.Entries(), workspace.KindHypotheticalIndex, "_dta_index_x") {
 		t.Fatalf("_dta_index_x is in a list Run takes: %+v", f.Entries())
 	}
@@ -265,7 +273,7 @@ func TestCleanupIgnoresDataset(t *testing.T) {
 	dbName := ittest.NewDatabase(t, e.server, "")
 	ittest.LoadDataset(t, e.opened(dbName))
 
-	f := e.find()
+	f := e.find(dbName)
 	for _, en := range f.Entries() {
 		if en.Database == dbName || en.Name == dbName {
 			t.Errorf("found in the data set: %+v", en)
@@ -305,7 +313,7 @@ func TestCleanupAfterKilledSession(t *testing.T) {
 		t.Fatalf("%s: %d after the kill, want 1 (left behind)", name, n)
 	}
 
-	f := e.find()
+	f := e.find(dbName)
 	if !has(f.Journal, workspace.KindHypotheticalIndex, name) {
 		t.Fatalf("Journal %+v lacks %s", f.Journal, name)
 	}
@@ -357,7 +365,7 @@ func TestCleanupAfterBlockedDrop(t *testing.T) {
 		t.Fatalf("%s: %d after the blocked drop, want 1", name, n)
 	}
 
-	f := e.find()
+	f := e.find(dbName)
 	if !has(f.Journal, workspace.KindHypotheticalIndex, name) {
 		t.Fatalf("Journal %+v lacks %s", f.Journal, name)
 	}
@@ -391,7 +399,7 @@ func TestCleanupMissingBackupFile(t *testing.T) {
 		Name: "godta_" + run + "_missing.bak", Path: path, At: time.Now().UTC(), State: workspace.StateCreated}
 	e.record(en)
 
-	f := e.find()
+	f := e.find("master")
 	var mine []workspace.Entry
 	for _, j := range f.Journal {
 		if j.Kind == workspace.KindBackupFile && j.Path == path {
@@ -417,7 +425,7 @@ func TestLikeUnderscoreEscaped(t *testing.T) {
 	dbName, db := e.smallDB()
 	e.exec(db, tsql.CreateStatistics(godtaH, "godtaXab12cd34_1", []string{"y"}))
 
-	f := e.find()
+	f := e.find(dbName)
 	if mine := inDB(f.Entries(), dbName); len(mine) != 0 {
 		t.Errorf("found %+v, want nothing", mine)
 	}
@@ -425,5 +433,55 @@ func TestLikeUnderscoreEscaped(t *testing.T) {
 		if strings.Contains(u, "godtaXab12cd34_1") {
 			t.Errorf("Unknown lists it: %s", u)
 		}
+	}
+}
+
+// TestFindOpensSelectedOnly: Find limited to one database opens that
+// database alone, and finds nothing in the others.
+func TestFindOpensSelectedOnly(t *testing.T) {
+	e := newEnv(t)
+	a, _ := e.smallDB()
+	b, dbB := e.smallDB()
+	e.hypothetical(dbB, runplan.IndexName(workspace.NewRunID(), 1))
+	var opened []string
+	open := func(db string) (*sql.DB, error) {
+		opened = append(opened, db)
+		return e.open(db)
+	}
+	f, err := cleanup.Find(e.ctx, e.server, open, e.ws, only(a))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(opened, []string{a}) {
+		t.Errorf("opened %q, want %s alone", opened, a)
+	}
+	if mine := inDB(f.Entries(), b); len(mine) > 0 {
+		t.Errorf("found in %s, which is not selected: %+v", b, mine)
+	}
+}
+
+// TestFindUnreadableIsWarning: a selected database that cannot be opened is
+// a warning naming it; Find still lists what the others hold.
+func TestFindUnreadableIsWarning(t *testing.T) {
+	e := newEnv(t)
+	a, dbA := e.smallDB()
+	b, _ := e.smallDB()
+	ours := runplan.IndexName(workspace.NewRunID(), 1)
+	e.hypothetical(dbA, ours)
+	open := func(db string) (*sql.DB, error) {
+		if db == b {
+			return nil, errors.New("simulated: the database cannot be opened")
+		}
+		return e.open(db)
+	}
+	f, err := cleanup.Find(e.ctx, e.server, open, e.ws, only(a, b))
+	if err != nil {
+		t.Fatalf("Find failed on one unreadable database: %v", err)
+	}
+	if !slices.ContainsFunc(f.Warnings, func(w string) bool { return strings.Contains(w, b) && strings.Contains(w, "simulated") }) {
+		t.Errorf("warnings %q do not name %s", f.Warnings, b)
+	}
+	if !has(inDB(f.Entries(), a), workspace.KindHypotheticalIndex, ours) {
+		t.Errorf("%s of %s not found: %+v", ours, a, f.Entries())
 	}
 }
