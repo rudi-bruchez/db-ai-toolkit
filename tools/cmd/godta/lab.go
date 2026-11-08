@@ -174,6 +174,9 @@ func (a *app) clonePlanOne(p sqlq.Profile, server *sql.DB, inst conn.Instance, l
 	if err != nil {
 		return "", nil, err
 	}
+	if err := a.catalogCurrent(db, w); err != nil {
+		return "", nil, err
+	}
 	fp, err := runplan.ReadFingerprints(a.ctx, db, runplan.Tables(w))
 	if err != nil {
 		return "", nil, err
@@ -485,6 +488,7 @@ func (a *app) labOne(lp sqlq.Profile, labServer *sql.DB, labi conn.Instance, l l
 	addWarning(res.Warnings...)
 	ev := evaluateFile{
 		RunID:            runIDOf(state.Prepared.Database),
+		CollectID:        w.CollectID,
 		Measures:         res.Measures,
 		AutoCreatedStats: res.AutoCreatedStats,
 		Warnings:         warnings,
