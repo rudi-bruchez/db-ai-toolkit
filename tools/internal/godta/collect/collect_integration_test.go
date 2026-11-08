@@ -3,6 +3,7 @@ package collect
 import (
 	"context"
 	"database/sql"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/conn"
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/ittest"
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/model"
+	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/runplan"
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/tsql"
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/workspace"
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/sqlq"
@@ -235,6 +237,21 @@ func TestCollectQueryStoreOffFallsBack(t *testing.T) {
 	}
 	if !sawH {
 		t.Errorf("no cached query on godta_h among %d", len(w.Queries))
+	}
+	// The cache now holds collect's own queries, and those of the drift
+	// check and the fingerprints of a dry-run: a second collect reads back
+	// none of them.
+	if _, err := CatalogDrift(ctxT(t), f.db, w); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runplan.ReadFingerprints(ctxT(t), f.db, slices.Sorted(maps.Keys(w.Tables))); err != nil {
+		t.Fatal(err)
+	}
+	again := f.collect(t)
+	for _, q := range append(again.Queries, again.Writes...) {
+		if tsql.IsInternal(q.Text) || !strings.Contains(q.Text, "godta_") {
+			t.Errorf("second collect: query %d is not of the workload: %.300q", q.QueryID, q.Text)
+		}
 	}
 }
 

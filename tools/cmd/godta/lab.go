@@ -207,7 +207,7 @@ type backupEstimate struct {
 	Bytes, CompressedBytes int64
 }
 
-const backupEstimateQuery = `SELECT TOP (1) CAST(backup_size AS bigint), CAST(ISNULL(compressed_backup_size, backup_size) AS bigint), backup_finish_date
+const backupEstimateQuery = `SELECT /* godta:internal */ TOP (1) CAST(backup_size AS bigint), CAST(ISNULL(compressed_backup_size, backup_size) AS bigint), backup_finish_date
 FROM msdb.dbo.backupset
 WHERE database_name = @p1 AND type = 'D' AND backup_finish_date IS NOT NULL
 ORDER BY backup_finish_date DESC;`

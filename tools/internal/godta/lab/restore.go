@@ -109,7 +109,7 @@ func Restore(ctx context.Context, ws workspace.WS, dir string, server *sql.DB, o
 		return Prepared{}, fmt.Errorf("restore: %w", err)
 	}
 	var exists int
-	if err := server.QueryRowContext(ctx, "SELECT COUNT(*) FROM sys.databases WHERE name = @p1", db).Scan(&exists); err != nil {
+	if err := server.QueryRowContext(ctx, "SELECT /* godta:internal */ COUNT(*) FROM sys.databases WHERE name = @p1", db).Scan(&exists); err != nil {
 		return Prepared{}, fmt.Errorf("restore: %w", err)
 	}
 	if exists != 0 {
@@ -123,7 +123,7 @@ func Restore(ctx context.Context, ws workspace.WS, dir string, server *sql.DB, o
 		return Prepared{}, fmt.Errorf("restore: %s: %w", tsql.RestoreFileList(path), err)
 	}
 	if dataDir == "" {
-		if err := server.QueryRowContext(ctx, "SELECT CAST(SERVERPROPERTY('InstanceDefaultDataPath') AS nvarchar(4000))").Scan(&dataDir); err != nil {
+		if err := server.QueryRowContext(ctx, "SELECT /* godta:internal */ CAST(SERVERPROPERTY('InstanceDefaultDataPath') AS nvarchar(4000))").Scan(&dataDir); err != nil {
 			return Prepared{}, fmt.Errorf("restore: reading the lab's data directory: %w", err)
 		}
 	}
@@ -364,7 +364,7 @@ func dropIfThere(server *sql.DB, db string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	var state sql.NullString
-	err := server.QueryRowContext(ctx, "SELECT state_desc FROM sys.databases WHERE name = @p1", db).Scan(&state)
+	err := server.QueryRowContext(ctx, "SELECT /* godta:internal */ state_desc FROM sys.databases WHERE name = @p1", db).Scan(&state)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
@@ -392,7 +392,7 @@ type labStat struct {
 // multiStatsQuery lists the user-created statistics of goDTA's run form with
 // more than one column, their columns in order. An index's statistics is
 // never user-created, so a hypothetical index the clone copied is left out.
-const multiStatsQuery = `SELECT OBJECT_SCHEMA_NAME(s.object_id), OBJECT_NAME(s.object_id), s.name, c.name
+const multiStatsQuery = `SELECT /* godta:internal */ OBJECT_SCHEMA_NAME(s.object_id), OBJECT_NAME(s.object_id), s.name, c.name
 FROM sys.stats AS s
 JOIN sys.stats_columns AS sc ON sc.object_id = s.object_id AND sc.stats_id = s.stats_id
 JOIN sys.columns AS c ON c.object_id = sc.object_id AND c.column_id = sc.column_id

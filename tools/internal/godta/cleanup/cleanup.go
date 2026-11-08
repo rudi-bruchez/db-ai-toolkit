@@ -175,7 +175,7 @@ func runIDOf(name string) string {
 // run pattern. A clone of goDTA is not scanned: it is dropped whole, and the
 // statistics it copied from its source would be found there too.
 func databases(ctx context.Context, server conn.Querier) (scan, clones []string, err error) {
-	rows, err := server.QueryContext(ctx, `SELECT d.name,
+	rows, err := server.QueryContext(ctx, `SELECT /* godta:internal */ d.name,
   CASE WHEN d.name LIKE @p1 AND CAST(DATABASEPROPERTYEX(d.name, 'IsClone') AS int) = 1 THEN 1 ELSE 0 END
 FROM sys.databases AS d
 WHERE d.database_id > 4
@@ -210,7 +210,7 @@ ORDER BY d.name`, tsql.RunPattern())
 // SINGLE_USER, cannot be opened and holds nothing goDTA can remove now.
 func readable(ctx context.Context, server conn.Querier, db string) (bool, error) {
 	var ok int
-	err := server.QueryRowContext(ctx, `SELECT COUNT(*) FROM sys.databases
+	err := server.QueryRowContext(ctx, `SELECT /* godta:internal */ COUNT(*) FROM sys.databases
 WHERE name = @p1 AND state = 0 AND user_access = 0 AND HAS_DBACCESS(name) = 1`, db).Scan(&ok)
 	if err != nil {
 		return false, fmt.Errorf("cleanup: database %s: %w", tsql.QuoteName(db), err)
@@ -220,7 +220,7 @@ WHERE name = @p1 AND state = 0 AND user_access = 0 AND HAS_DBACCESS(name) = 1`, 
 
 // hypotheticalQuery lists every hypothetical index of the database: those of
 // goDTA go to ByPattern, the others (the DTA's _dta_index_...) to Unknown.
-const hypotheticalQuery = `SELECT SCHEMA_NAME(o.schema_id), o.name, i.name
+const hypotheticalQuery = `SELECT /* godta:internal */ SCHEMA_NAME(o.schema_id), o.name, i.name
 FROM sys.indexes AS i
 JOIN sys.objects AS o ON o.object_id = i.object_id
 WHERE i.is_hypothetical = 1
@@ -229,7 +229,7 @@ ORDER BY SCHEMA_NAME(o.schema_id), o.name, i.name`
 // statsQuery lists the statistics of the run pattern that are not an index's
 // own: every index has statistics of its name, which DROP STATISTICS refuses
 // (error 3739, measured).
-const statsQuery = `SELECT SCHEMA_NAME(o.schema_id), o.name, s.name
+const statsQuery = `SELECT /* godta:internal */ SCHEMA_NAME(o.schema_id), o.name, s.name
 FROM sys.stats AS s
 JOIN sys.objects AS o ON o.object_id = s.object_id
 WHERE s.name LIKE @p1
@@ -402,7 +402,7 @@ func exists(ctx context.Context, q conn.Querier, e workspace.Entry) (bool, error
 	switch e.Kind {
 	case workspace.KindHypotheticalIndex:
 		var n, hypo int
-		err := q.QueryRowContext(ctx, `SELECT COUNT(*), ISNULL(SUM(CASE WHEN is_hypothetical = 1 THEN 1 ELSE 0 END), 0)
+		err := q.QueryRowContext(ctx, `SELECT /* godta:internal */ COUNT(*), ISNULL(SUM(CASE WHEN is_hypothetical = 1 THEN 1 ELSE 0 END), 0)
 FROM sys.indexes WHERE object_id = OBJECT_ID(@p1) AND name = @p2`, table, e.Name).Scan(&n, &hypo)
 		if err != nil {
 			return false, err
@@ -413,7 +413,7 @@ FROM sys.indexes WHERE object_id = OBJECT_ID(@p1) AND name = @p2`, table, e.Name
 		return n > 0, nil
 	case workspace.KindStatistics:
 		var n, own int
-		err := q.QueryRowContext(ctx, `SELECT COUNT(*), ISNULL(SUM(CASE WHEN i.index_id IS NULL THEN 1 ELSE 0 END), 0)
+		err := q.QueryRowContext(ctx, `SELECT /* godta:internal */ COUNT(*), ISNULL(SUM(CASE WHEN i.index_id IS NULL THEN 1 ELSE 0 END), 0)
 FROM sys.stats AS s
 LEFT JOIN sys.indexes AS i ON i.object_id = s.object_id AND i.index_id = s.stats_id
 WHERE s.object_id = OBJECT_ID(@p1) AND s.name = @p2`, table, e.Name).Scan(&n, &own)
@@ -426,7 +426,7 @@ WHERE s.object_id = OBJECT_ID(@p1) AND s.name = @p2`, table, e.Name).Scan(&n, &o
 		return n > 0, nil
 	case workspace.KindCloneDatabase:
 		var id, clone sql.NullInt64
-		err := q.QueryRowContext(ctx, `SELECT DB_ID(@p1), CAST(DATABASEPROPERTYEX(@p1, 'IsClone') AS int)`, e.Name).Scan(&id, &clone)
+		err := q.QueryRowContext(ctx, `SELECT /* godta:internal */ DB_ID(@p1), CAST(DATABASEPROPERTYEX(@p1, 'IsClone') AS int)`, e.Name).Scan(&id, &clone)
 		if err != nil {
 			return false, err
 		}

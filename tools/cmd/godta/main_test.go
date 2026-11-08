@@ -370,9 +370,9 @@ func (c *fakeConn) QueryContext(ctx context.Context, q string, _ []driver.NamedV
 	case strings.Contains(q, "FROM sys.indexes WHERE object_id = OBJECT_ID(@p1)"):
 		// cleanup's check that a journaled hypothetical index is there.
 		return &fakeRows{cols: 2, rows: [][]driver.Value{{int64(1), int64(1)}}}, nil
-	case q == "SELECT DB_NAME()":
+	case q == "SELECT /* godta:internal */ DB_NAME()":
 		return &fakeRows{cols: 1, rows: [][]driver.Value{{c.f.dbName}}}, nil
-	case q == "SELECT DB_ID(), DB_NAME()":
+	case q == "SELECT /* godta:internal */ DB_ID(), DB_NAME()":
 		return &fakeRows{cols: 2, rows: [][]driver.Value{{int64(5), c.f.dbName}}}, nil
 	default:
 		return &fakeRows{cols: 1}, nil

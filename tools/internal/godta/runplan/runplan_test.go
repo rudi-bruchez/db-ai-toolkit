@@ -174,7 +174,7 @@ func TestEvaluatePlanOrder(t *testing.T) {
 	if firstDrop < lastCreate {
 		t.Errorf("a DROP (step %d) comes before the last creation (step %d)", firstDrop+1, lastCreate+1)
 	}
-	if want := "SELECT index_id FROM sys.indexes WHERE object_id = 100 AND name = N'godta_ab12cd34_1'"; p.Steps[1].Resolve != want {
+	if want := "SELECT /* godta:internal */ index_id FROM sys.indexes WHERE object_id = 100 AND name = N'godta_ab12cd34_1'"; p.Steps[1].Resolve != want {
 		t.Errorf("resolve %q, want %q", p.Steps[1].Resolve, want)
 	}
 	if p.MaxCombined != 4 || p.LockTimeoutMS != 2000 {
@@ -322,7 +322,7 @@ func TestForCloneSteps(t *testing.T) {
 		{"DROP STATISTICS [dbo].[godta_h].[godta_ab12cd34_s3]", workspace.KindStatistics, workspace.StateRemoved},
 		{"SET LOCK_TIMEOUT -1", "", ""},
 		{"BACKUP DATABASE [" + clone + "] TO DISK = N'" + path + "' WITH INIT, COPY_ONLY, COMPRESSION", workspace.KindBackupFile, workspace.StatePlanned},
-		{"SELECT BulkColumn FROM OPENROWSET(BULK N'" + path + "', SINGLE_BLOB) AS x", "", ""},
+		{"SELECT /* godta:internal */ BulkColumn FROM OPENROWSET(BULK N'" + path + "', SINGLE_BLOB) AS x", "", ""},
 		{"DROP DATABASE [" + clone + "]", workspace.KindCloneDatabase, workspace.StateRemoved},
 		{"EXEC master.dbo.xp_delete_file 0, N'" + path + "'", workspace.KindBackupFile, workspace.StateRemoved},
 	}

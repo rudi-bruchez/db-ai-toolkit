@@ -82,7 +82,7 @@ type dbRow struct {
 // when the local replica of its availability group is secondary and does
 // not allow connections; the HADR views are empty without availability
 // groups. DATABASEPROPERTYEX returns NULL for an offline database.
-const databasesQuery = `SELECT /* godta:collect */ d.database_id, d.name, ISNULL(d.collation_name, N''), d.compatibility_level,
+const databasesQuery = `SELECT /* godta:internal */ d.database_id, d.name, ISNULL(d.collation_name, N''), d.compatibility_level,
   d.state_desc, d.is_read_only, d.user_access_desc,
   ISNULL(CAST(DATABASEPROPERTYEX(d.name, 'IsClone') AS int), 0),
   CASE WHEN d.database_id <= 4 OR d.is_distributor = 1 THEN 1 ELSE 0 END,

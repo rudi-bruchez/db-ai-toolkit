@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -135,6 +136,28 @@ func TestEndToEndServer(t *testing.T) {
 		t.Errorf("cleanup --dry-run found leftovers: steps %+v, databases %+v", cplan.Steps, out.Databases)
 	}
 
+	// Every phase above sent goDTA's own queries to the database (the
+	// catalog reads of collect, the drift check and the fingerprints of the
+	// dry-run, the reads of evaluate and cleanup), and its Query Store, in
+	// capture mode ALL, captured them. A second collect reads back the
+	// workload alone: every query names a table of the data set.
+	if _, err := db.ExecContext(ctx, "EXEC sys.sp_query_store_flush_db;"); err != nil {
+		t.Fatal(err)
+	}
+	step("collect")
+	var again model.Workload
+	if err := ws.ReadJSON(ws.DBDir(serverName, name), workspace.CollectFile, &again); err != nil {
+		t.Fatal(err)
+	}
+	if len(again.Queries) == 0 {
+		t.Fatal("second collect: no query")
+	}
+	for _, q := range append(again.Queries, again.Writes...) {
+		if tsql.IsInternal(q.Text) || !datasetTable.MatchString(q.Text) {
+			t.Errorf("second collect: query %d is not of the workload: %.300q", q.QueryID, q.Text)
+		}
+	}
+
 	var left int
 	if err := db.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM sys.indexes WHERE name LIKE @p1)
   + (SELECT COUNT(*) FROM sys.stats WHERE name LIKE @p1)
@@ -146,6 +169,9 @@ func TestEndToEndServer(t *testing.T) {
 		t.Errorf("%d objects named LIKE %s left behind", left, tsql.RunPattern())
 	}
 }
+
+// datasetTable is a reference to a table or view of the data set.
+var datasetTable = regexp.MustCompile(`(?i)\[?dbo\]?\.\[?godta_(t|h|cs|v)\b`)
 
 // realDepsTo is realDeps writing to w.
 func realDepsTo(w *bytes.Buffer) deps {

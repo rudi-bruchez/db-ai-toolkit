@@ -163,7 +163,7 @@ func Definition(t *model.Table, c model.Candidate, name string) (tsql.IndexDef, 
 // ResolveIndexID is the catalog query that gives the index_id of index name
 // on object objectID.
 func ResolveIndexID(objectID int, name string) string {
-	return fmt.Sprintf("SELECT index_id FROM sys.indexes WHERE object_id = %d AND name = %s",
+	return fmt.Sprintf("SELECT /* godta:internal */ index_id FROM sys.indexes WHERE object_id = %d AND name = %s",
 		objectID, tsql.QuoteString(name))
 }
 
@@ -424,7 +424,7 @@ func ReadFingerprints(ctx context.Context, q conn.Querier, tables []int) ([]Tabl
 	in := strings.Join(ids, ", ")
 
 	var out []*TableFingerprint
-	rows, err := q.QueryContext(ctx, `SELECT o.object_id, SCHEMA_NAME(o.schema_id), o.name, o.modify_date
+	rows, err := q.QueryContext(ctx, `SELECT /* godta:internal */ o.object_id, SCHEMA_NAME(o.schema_id), o.name, o.modify_date
 FROM sys.objects AS o WHERE o.object_id IN (`+in+`) ORDER BY o.object_id`)
 	if err != nil {
 		return nil, fmt.Errorf("fingerprints: %w", err)
@@ -461,7 +461,7 @@ FROM sys.objects AS o WHERE o.object_id IN (`+in+`) ORDER BY o.object_id`)
 		Columns          []column `json:"columns"`
 	}
 	defs := map[int][]*index{}
-	rows, err = q.QueryContext(ctx, `SELECT i.object_id, i.index_id, ISNULL(i.name, N''), i.type,
+	rows, err = q.QueryContext(ctx, `SELECT /* godta:internal */ i.object_id, i.index_id, ISNULL(i.name, N''), i.type,
   i.is_unique, i.is_primary_key, i.is_unique_constraint, i.is_disabled, ISNULL(i.filter_definition, N''),
   ic.column_id, ic.is_descending_key, ic.is_included_column
 FROM sys.indexes AS i

@@ -212,7 +212,7 @@ type Instance struct {
 // sql_variant and ProductMajorVersion an nvarchar, value_in_use a sql_variant:
 // every value is CAST to the type it is scanned into. A property the version
 // does not know comes back NULL, hence the ISNULL.
-const identifyQuery = `SELECT
+const identifyQuery = `SELECT /* godta:internal */
   ISNULL(CAST(@@SERVERNAME AS nvarchar(256)), N''),
   ISNULL(CAST(SERVERPROPERTY('MachineName') AS nvarchar(256)), N''),
   ISNULL(CAST(SERVERPROPERTY('Edition') AS nvarchar(256)), N''),
@@ -240,7 +240,7 @@ func RegistryBackupDir(ctx context.Context, q Querier) (string, error) {
 const backupDirQuery = `DECLARE @d nvarchar(4000);
 EXEC master.dbo.xp_instance_regread N'HKEY_LOCAL_MACHINE',
   N'Software\Microsoft\MSSQLServer\MSSQLServer', N'BackupDirectory', @d OUTPUT;
-SELECT @d;`
+SELECT /* godta:internal */ @d;`
 
 // Identify reads the instance identity.
 func Identify(ctx context.Context, q Querier) (Instance, error) {

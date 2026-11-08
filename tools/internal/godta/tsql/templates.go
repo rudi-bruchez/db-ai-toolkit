@@ -153,7 +153,7 @@ func DropStatistics(t Obj, name string) string {
 // statistics object of t) from a stream DBCC SHOW_STATISTICS ... WITH
 // STATS_STREAM returned, written as an upper-case 0x literal.
 func UpdateStatisticsStream(t Obj, target string, stream []byte) string {
-	return fmt.Sprintf("UPDATE STATISTICS %s(%s) WITH STATS_STREAM = 0x%X", t.Quoted(), QuoteName(target), stream)
+	return fmt.Sprintf("UPDATE /* godta:internal */ STATISTICS %s(%s) WITH STATS_STREAM = 0x%X", t.Quoted(), QuoteName(target), stream)
 }
 
 // ShowStatisticsStream reads the stream of statistics name of t. The table
@@ -204,7 +204,7 @@ func BackupDatabase(db, path string, compress bool) string {
 // ReadFile reads a file the server can see as one varbinary(max) column,
 // BulkColumn.
 func ReadFile(path string) string {
-	return fmt.Sprintf("SELECT BulkColumn FROM OPENROWSET(BULK %s, SINGLE_BLOB) AS x", QuoteString(path))
+	return fmt.Sprintf("SELECT /* godta:internal */ BulkColumn FROM OPENROWSET(BULK %s, SINGLE_BLOB) AS x", QuoteString(path))
 }
 
 // DeleteBackupFile deletes one backup file through the server (spec section

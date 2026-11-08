@@ -73,7 +73,7 @@ func CheckSameVersion(src, labi conn.Instance) (warning string, err error) {
 var ErrCloneDBMissing = errors.New("does not exist")
 
 // isCloneQuery reads IsClone, NULL when the database does not exist (measured).
-const isCloneQuery = `SELECT CAST(DATABASEPROPERTYEX(@p1, 'IsClone') AS int);`
+const isCloneQuery = `SELECT /* godta:internal */ CAST(DATABASEPROPERTYEX(@p1, 'IsClone') AS int);`
 
 // CheckCloneDB refuses a database whose name is not of goDTA's run form or
 // that is not a DBCC CLONEDATABASE clone (IsClone = 1; the property survives
