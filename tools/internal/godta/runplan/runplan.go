@@ -170,11 +170,12 @@ func ResolveIndexID(objectID int, name string) string {
 // Side effects of evaluate on the server, from spec sections 7.1 and 8.5.
 var evaluateSideEffects = []string{
 	"Creating a hypothetical index takes a shared (S) lock on the table, and Sch-S: a writer in progress blocks it, a reader does not; it reads the table by sampling.",
-	"The creation holds this S lock during the sampled read: it blocks writers for that time.",
+	"The creation holds this S lock during the sampled read: it blocks writers for that time. While it still waits for the lock behind a writer, it already blocks new writers on the table, up to the plan's lock timeout (lock_timeout_ms): its request is queued ahead of theirs, and with lock partitioning (16 CPUs or more) it already holds S on the partitions acquired before the one it waits on (measured on SQL Server 2022 with 22 CPUs: 7 of 10 new writers waited behind it).",
 	"Dropping takes Sch-M: a long reader blocks it, and while it waits every new query on the table waits behind it. A drop that fails on the lock timeout would leave the index behind: goDTA retries it with a short, fixed lock timeout and a pause between attempts (never a growing timeout, which would lengthen the queue as much), then, after the last attempt, journals it for cleanup.",
-	"Cached plans of the tables touched are not invalidated by the hypothetical index (measured: same plan_handle, plan_generation_num unchanged); CREATE STATISTICS does not invalidate them either, DROP STATISTICS makes them recompile.",
+	"Cached plans of the tables touched: measured on SQL Server 2022 on one cached plan of a query on the indexed column, neither the hypothetical index nor CREATE STATISTICS made it recompile (same plan_handle and creation_time, plan_generation_num unchanged), and DROP STATISTICS did (plan_generation_num from 1 to 2). Other versions and plan shapes were not measured.",
 	"The table's missing index suggestions are cleared by the creation: collect must therefore run first, which the order of the phases guarantees.",
 	"Compilation may auto-create _WA_Sys_* statistics on columns without statistics. They are the ones the engine would have created on the first query on these columns; goDTA lists them in the report but does not drop them (their name lacks goDTA's prefix and they may serve other queries).",
+	"Compiling a replayed statement may trigger a synchronous AUTO_UPDATE_STATISTICS of a stale statistic of the tables it reads, unless the database has AUTO_UPDATE_STATISTICS_ASYNC ON: the compilation then reads the table to rebuild the statistic, and the cached plans that depend on it recompile at their next execution.",
 	"The replay creates temporary procedures (#godta_...) in tempdb, under the query's SET options; they disappear with the session.",
 }
 
@@ -690,7 +691,7 @@ func BackupPath(dir, runID string) string {
 // cloneSideEffects are the side effects of clone on the source, from spec
 // sections 7.1 and 8.4.
 var cloneSideEffects = []string{
-	"CREATE STATISTICS reads each table by sampling (the engine's default sample) and writes metadata under a Sch-S lock; it does not make cached plans recompile (measured).",
+	"CREATE STATISTICS reads each table by sampling (the engine's default sample) and writes metadata under a Sch-S lock; measured on SQL Server 2022 on one cached plan of a query on the column, it did not make that plan recompile (same plan_handle and creation_time, plan_generation_num unchanged). Other versions and plan shapes were not measured.",
 	"DBCC CLONEDATABASE creates the database %s, schema and statistics only, without the Query Store; it needs sysadmin and takes an internal snapshot of the source database.",
 	"DROP STATISTICS of the godta_ statistics takes Sch-M on the table, and while it waits every new query on the table waits behind it; it makes the cached plans of the table recompile at their next execution (measured: plan_generation_num goes from 1 to 2). goDTA drops with a short, fixed lock timeout (%d ms), three attempts 2 s apart, then leaves the statistics in the journal for cleanup.",
 	"BACKUP DATABASE writes %s, COPY_ONLY (the backup chain of the source is not touched)%s, and adds its history to msdb.",

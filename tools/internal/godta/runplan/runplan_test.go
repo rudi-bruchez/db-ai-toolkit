@@ -444,3 +444,24 @@ func TestWithChunk(t *testing.T) {
 		t.Errorf("WithChunk changed the number of side effects: %d", n)
 	}
 }
+
+// TestEvaluateSideEffectsText: the texts the DBA approves say that a
+// creation waiting for its S lock already blocks new writers, that
+// compiling the replay may update a stale statistic synchronously, and that
+// the plan cache claim is a measurement on one version, not a rule.
+func TestEvaluateSideEffectsText(t *testing.T) {
+	ev := strings.Join(runplan.ForEvaluate(workload(), twoCandidates(), runID, fingerprints(), 4, 2000).SideEffects, "\n")
+	for _, s := range []string{"blocks new writers", "lock_timeout_ms", "lock partitioning",
+		"AUTO_UPDATE_STATISTICS", "AUTO_UPDATE_STATISTICS_ASYNC", "measured on SQL Server 2022"} {
+		if !strings.Contains(ev, s) {
+			t.Errorf("evaluate side effects lack %q:\n%s", s, ev)
+		}
+	}
+	if strings.Contains(ev, "CREATE STATISTICS does not invalidate them either") {
+		t.Errorf("evaluate side effects state the plan cache claim as a rule:\n%s", ev)
+	}
+	cl := strings.Join(runplan.ForClone(workload(), nil, runID, fingerprints(), `/x`, true, 0).SideEffects, "\n")
+	if strings.Contains(cl, "does not make cached plans recompile") || !strings.Contains(cl, "measured on SQL Server 2022") {
+		t.Errorf("clone side effects state the plan cache claim as a rule:\n%s", cl)
+	}
+}
