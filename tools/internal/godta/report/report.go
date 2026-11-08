@@ -40,6 +40,13 @@ const (
 // statusMeasured is the Status of a measure that has numbers.
 const statusMeasured = "measured"
 
+// Statuses of a candidate without measures: before evaluate ran, and after it
+// ran without measuring any of its queries.
+const (
+	StatusNotRun  = "not evaluated: evaluate has not run"
+	statusNoQuery = "not evaluated: no query"
+)
+
 // invisibleCode is written next to every DROP of the script.
 const invisibleCode = "-- Code that did not run during the collection window (month-end jobs, reports, ad hoc\n" +
 	"-- queries) is invisible to goDTA: check that nothing else needs %s before dropping it."
@@ -105,6 +112,9 @@ type ResultRec struct {
 	Existing    *ResultExisting `json:"existing,omitempty"`
 	Gain        *float64        `json:"gain"`
 	Maintenance *float64        `json:"maintenance"`
+	// Status says why a candidate of section "not_evaluated" has no
+	// numbers: the statuses of its measures, or StatusNotRun.
+	Status string `json:"status,omitempty"`
 	// RowsWritten is in rows, not cost units; see model.Recommendation.
 	RowsWritten float64       `json:"rows_written,omitempty"`
 	SizeMB      *float64      `json:"size_mb"`
@@ -156,6 +166,8 @@ type item struct {
 	drop     string
 	kept     string
 	skip     string
+	// status is what a not evaluated candidate says instead of numbers.
+	status string
 }
 
 // sections in their order in the report.
@@ -183,9 +195,10 @@ func sectionOf(r model.Recommendation) string {
 }
 
 // Write writes rapport.md, indexes.sql and result.json for the database of
-// w into dir. autoStats and warnings come from the evaluation.
-func Write(ws workspace.WS, dir string, w *model.Workload, recs []model.Recommendation, autoStats []string, warnings []string) error {
-	items, err := build(w, recs)
+// w into dir. evaluated says whether an evaluation was read; autoStats and
+// warnings come from it.
+func Write(ws workspace.WS, dir string, w *model.Workload, recs []model.Recommendation, evaluated bool, autoStats []string, warnings []string) error {
+	items, err := build(w, recs, evaluated)
 	if err != nil {
 		return err
 	}
@@ -243,7 +256,7 @@ func tableIDs(w *model.Workload) []int {
 
 // build resolves every recommendation against the workload, in report order:
 // by section, then gain descending for the measured ones, then ID.
-func build(w *model.Workload, recs []model.Recommendation) ([]*item, error) {
+func build(w *model.Workload, recs []model.Recommendation, evaluated bool) ([]*item, error) {
 	var items []*item
 	for _, r := range recs {
 		t := w.Tables[r.Candidate.Table]
@@ -251,6 +264,9 @@ func build(w *model.Workload, recs []model.Recommendation) ([]*item, error) {
 			return nil, fmt.Errorf("report: candidate %s: table %d is not in the workload", r.Candidate.ID, r.Candidate.Table)
 		}
 		it := &item{rec: r, table: t, section: sectionOf(r)}
+		if it.section == "not_evaluated" {
+			it.status = notEvaluatedStatus(r, evaluated)
+		}
 		def, err := describe(t, r.Candidate.Keys, r.Candidate.Include, "")
 		if err != nil {
 			return nil, fmt.Errorf("report: candidate %s: %w", r.Candidate.ID, err)
@@ -275,6 +291,24 @@ func build(w *model.Workload, recs []model.Recommendation) ([]*item, error) {
 			cmp.Compare(a.rec.Candidate.ID, b.rec.Candidate.ID))
 	})
 	return items, nil
+}
+
+// notEvaluatedStatus is the statuses of the measures of r, or, without
+// measures, StatusNotRun before evaluate and statusNoQuery after it.
+func notEvaluatedStatus(r model.Recommendation, evaluated bool) string {
+	var st []string
+	for _, m := range r.Queries {
+		if !slices.Contains(st, m.Status) {
+			st = append(st, m.Status)
+		}
+	}
+	switch {
+	case len(st) > 0:
+		return strings.Join(st, "; ")
+	case !evaluated:
+		return StatusNotRun
+	}
+	return statusNoQuery
 }
 
 // plan writes the script of a recommended candidate: CREATE for a new one,
@@ -712,16 +746,7 @@ func block(b *strings.Builder, w *model.Workload, it *item, n int) {
 		p("- Rules: %s\n", strings.Join(c.Rules, ", "))
 	}
 	if it.section == "not_evaluated" {
-		var st []string
-		for _, m := range r.Queries {
-			if !slices.Contains(st, m.Status) {
-				st = append(st, m.Status)
-			}
-		}
-		if len(st) == 0 {
-			st = []string{"not evaluated: no query"}
-		}
-		p("- Status: %s\n", strings.Join(st, "; "))
+		p("- Status: %s\n", it.status)
 	} else {
 		p("- Gain: %s, maintenance: %s, estimated size: %s MB\n", num(r.Gain), num(r.Maintenance), num(r.SizeMB))
 		if r.RowsWritten != 0 {
@@ -842,7 +867,7 @@ func result(w *model.Workload, items []*item, autoStats, warnings, redund []stri
 			ID: c.ID, Section: it.section, Decision: r.Decision, Action: string(c.Decision),
 			Table: obj(it.table).Quoted(), Definition: it.def, IndexName: it.name,
 			Origin: c.Origin, Reason: c.Reason, Rules: c.Rules, Formula: r.Formula, Notes: r.Notes,
-			Queries: []ResultQuery{},
+			Status: it.status, Queries: []ResultQuery{},
 		}
 		if len(it.stmts) > 0 {
 			rr.Statements = slices.Clone(it.stmts)

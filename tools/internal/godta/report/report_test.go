@@ -133,15 +133,21 @@ func recs() []model.Recommendation {
 var autoStats = []string{"[dbo].[godta_t].[_WA_Sys_00000003_0123ABCD]"}
 var evalWarnings = []string{"query 99 failed to compile: error 8180"}
 
-// write runs Write in a temporary workspace and returns the three files.
+// write runs Write in a temporary workspace, after an evaluation, and
+// returns the three files.
 func write(t *testing.T, w *model.Workload, rs []model.Recommendation) (rep, script, res string) {
+	t.Helper()
+	return writeEval(t, w, rs, true)
+}
+
+func writeEval(t *testing.T, w *model.Workload, rs []model.Recommendation, evaluated bool) (rep, script, res string) {
 	t.Helper()
 	ws, err := workspace.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	dir := ws.DBDir(w.Server.ServerName, w.Database.Name)
-	if err := Write(ws, dir, w, rs, autoStats, evalWarnings); err != nil {
+	if err := Write(ws, dir, w, rs, evaluated, autoStats, evalWarnings); err != nil {
 		t.Fatal(err)
 	}
 	read := func(name string) string {
@@ -268,6 +274,39 @@ func TestConfrontDiscussSection(t *testing.T) {
 	}
 	if !strings.Contains(script, "-- No recommended index.") {
 		t.Errorf("the script has a block for it:\n%s", script)
+	}
+}
+
+// TestNotRunStatus: before evaluate, a candidate says evaluate has not run,
+// not that it has no query; after an evaluation that measured none of its
+// queries, it says it has no query.
+func TestNotRunStatus(t *testing.T) {
+	r := model.Recommendation{Candidate: recs()[0].Candidate, Decision: Rejected}
+	rep, _, res := writeEval(t, fixture("godta_it_golden"), []model.Recommendation{r}, false)
+	s := section(rep, "Not evaluated")
+	if !strings.Contains(s, "- Status: "+StatusNotRun+"\n") || strings.Contains(s, "no query") {
+		t.Errorf("before evaluate, the status is not %q:\n%s", StatusNotRun, s)
+	}
+	if !strings.Contains(res, `"status": "`+StatusNotRun+`"`) {
+		t.Errorf("result.json lacks the status %q:\n%s", StatusNotRun, res)
+	}
+	rep, _, _ = write(t, fixture("godta_it_golden"), []model.Recommendation{r})
+	if s := section(rep, "Not evaluated"); !strings.Contains(s, "- Status: not evaluated: no query\n") {
+		t.Errorf("after an evaluation, the status is not no query:\n%s", s)
+	}
+}
+
+// TestRowsWrittenLine: the rows of the unmeasured writes are shown, in rows,
+// next to the cost figures, and in result.json.
+func TestRowsWrittenLine(t *testing.T) {
+	r := recs()[3]
+	r.RowsWritten = 50
+	rep, _, res := write(t, fixture("godta_it_golden"), []model.Recommendation{r})
+	if s := section(rep, "To discuss"); !strings.Contains(s, "- Rows written by the unmeasured writes: 50.00\n") {
+		t.Errorf("the rows written line is missing:\n%s", s)
+	}
+	if !strings.Contains(res, `"rows_written": 50`) {
+		t.Errorf("result.json lacks rows_written:\n%s", res)
 	}
 }
 
