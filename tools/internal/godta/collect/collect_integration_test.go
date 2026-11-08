@@ -410,3 +410,44 @@ func TestCollectLowerCaseHintCaseSensitive(t *testing.T) {
 		t.Errorf("NamedIn %v, want sql_module:dbo.godta_lc_p", ix.NamedIn)
 	}
 }
+
+// TestUnreadableSecondaryPredicate runs the predicate on the engine over
+// rows that stand for sys.dm_hadr_database_replica_states and
+// sys.availability_replicas, with their types: the lab has no availability
+// group, so this checks the predicate's logic, not a real replica.
+func TestUnreadableSecondaryPredicate(t *testing.T) {
+	p, r := ittest.Profile(t, "GODTA_TEST_PROFILE")
+	server := ittest.OpenDB(t, p, r, "")
+	rows, err := server.QueryContext(ctxT(t), `SELECT x.n, CASE WHEN `+unreadableSecondaryPredicate+` THEN 1 ELSE 0 END
+FROM (VALUES
+  (N'primary', CAST(1 AS bit), CAST(1 AS bit), CAST(0 AS tinyint)),
+  (N'secondary NO', 1, 0, 0),
+  (N'secondary READ_ONLY', 1, 0, 1),
+  (N'secondary ALL', 1, 0, 2),
+  (N'resolving READ_ONLY', 1, NULL, 1),
+  (N'resolving ALL', 1, NULL, 2),
+  (N'remote secondary NO', 0, 0, 0)) AS x(n, is_local, is_primary_replica, allow)
+CROSS APPLY (SELECT x.is_local AS is_local, x.is_primary_replica AS is_primary_replica) AS rs
+CROSS APPLY (SELECT x.allow AS secondary_role_allow_connections) AS ar;`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	want := map[string]int{"primary": 0, "secondary NO": 1, "secondary READ_ONLY": 1, "secondary ALL": 0,
+		"resolving READ_ONLY": 1, "resolving ALL": 0, "remote secondary NO": 0}
+	got := map[string]int{}
+	for rows.Next() {
+		var n string
+		var v int
+		if err := rows.Scan(&n, &v); err != nil {
+			t.Fatal(err)
+		}
+		got[n] = v
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !maps.Equal(got, want) {
+		t.Errorf("unreadable %v, want %v", got, want)
+	}
+}

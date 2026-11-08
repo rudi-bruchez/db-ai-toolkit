@@ -78,18 +78,39 @@ type dbRow struct {
 	userAccess          string // user_access_desc
 }
 
+// unreadableSecondaryPredicate tells, on a row of
+// sys.dm_hadr_database_replica_states (rs) joined to sys.availability_replicas
+// (ar), that goDTA cannot read the local replica with an ordinary connection:
+// it is not primary and does not allow all connections. is_primary_replica is
+// NULL while the role is resolving, counted as not primary. A READ_ONLY
+// secondary (secondary_role_allow_connections = 1) only accepts connections
+// with ApplicationIntent=ReadOnly and refuses goDTA's (error 978).
+// Not measured on a real availability group: the lab has none.
+const unreadableSecondaryPredicate = `rs.is_local = 1 AND ISNULL(rs.is_primary_replica, 0) = 0
+           AND ar.secondary_role_allow_connections < 2`
+
+// readOnlyExpr is 1 when the database cannot be written. A readable
+// secondary (secondary_role_allow_connections = 2) is not written either;
+// Microsoft documents that readable secondary databases "are not set to
+// read-only" and points to DATABASEPROPERTYEX(name, 'Updateability') =
+// N'READ_ONLY' to detect them (not measured: the lab has no availability
+// group). Both agree on a database SET READ_ONLY and on one
+// restored WITH STANDBY (measured on 2022). Updateability is NULL for an
+// offline database, where is_read_only still answers.
+const readOnlyExpr = `CASE WHEN d.is_read_only = 1
+    OR CAST(DATABASEPROPERTYEX(d.name, 'Updateability') AS nvarchar(128)) = N'READ_ONLY' THEN 1 ELSE 0 END`
+
 // databasesQuery lists the databases. A database is an unreadable secondary
-// when the local replica of its availability group is secondary and does
-// not allow connections; the HADR views are empty without availability
-// groups. DATABASEPROPERTYEX returns NULL for an offline database.
+// when unreadableSecondaryPredicate holds on its local replica; the HADR views
+// are empty without availability groups. DATABASEPROPERTYEX returns NULL for
+// an offline database.
 const databasesQuery = `SELECT /* godta:internal */ d.database_id, d.name, ISNULL(d.collation_name, N''), d.compatibility_level,
-  d.state_desc, d.is_read_only, d.user_access_desc,
+  d.state_desc, ` + readOnlyExpr + `, d.user_access_desc,
   ISNULL(CAST(DATABASEPROPERTYEX(d.name, 'IsClone') AS int), 0),
   CASE WHEN d.database_id <= 4 OR d.is_distributor = 1 THEN 1 ELSE 0 END,
   CASE WHEN EXISTS (SELECT 1 FROM sys.dm_hadr_database_replica_states rs
          JOIN sys.availability_replicas ar ON ar.replica_id = rs.replica_id
-         WHERE rs.database_id = d.database_id AND rs.is_local = 1
-           AND rs.is_primary_replica = 0 AND ar.secondary_role_allow_connections = 0)
+         WHERE rs.database_id = d.database_id AND ` + unreadableSecondaryPredicate + `)
        THEN 1 ELSE 0 END
 FROM sys.databases d
 ORDER BY d.name;`
