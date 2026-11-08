@@ -1350,16 +1350,15 @@ func (a *app) cleanupResults(server string, plan runplan.Plan, removed []workspa
 }
 
 func (a *app) cleanupDryRun(server *sql.DB, inst conn.Instance, open func(string) (*sql.DB, error)) error {
-	found, err := cleanup.Find(a.ctx, server, open, a.ws)
+	var selected func(string) bool
+	if len(a.c.include) > 0 || len(a.c.exclude) > 0 {
+		selected = a.selected
+	}
+	found, err := cleanup.Find(a.ctx, server, open, a.ws, selected)
 	if err != nil {
 		return failedf(err)
 	}
-	var entries []workspace.Entry
-	for _, e := range found.Entries() {
-		if a.selected(e.Database) {
-			entries = append(entries, e)
-		}
-	}
+	entries := found.Entries()
 	plan := runplan.ForCleanup(entries)
 	// The journal does not record the machine name, so ForCleanup leaves it
 	// empty: it comes from the instance the plan was made on, which Verify
@@ -1378,7 +1377,7 @@ func (a *app) cleanupDryRun(server *sql.DB, inst conn.Instance, open func(string
 		a.out.Databases = append(a.out.Databases, dbResult{Server: inst.ServerName, Name: db,
 			Status: fmt.Sprintf("%d to remove", len(byDB[db])), Warnings: byDB[db]})
 	}
-	a.out.Warnings = append(found.Unknown, plan.Skipped...)
+	a.out.Warnings = slices.Concat(found.Unknown, found.Warnings, plan.Skipped)
 	return nil
 }
 
