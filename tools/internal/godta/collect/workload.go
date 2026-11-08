@@ -14,6 +14,7 @@ import (
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/conn"
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/model"
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/showplan"
+	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/godta/tsql"
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/sqlq"
 )
 
@@ -81,11 +82,6 @@ func planNames(w *model.Workload) []string {
 	return other
 }
 
-// marker is in the text of every query collect sends to a user database:
-// the Query Store captures them too, and the workload leaves them out. The
-// queries that filter on it carry it in a string literal, which matches.
-const marker = "godta:collect"
-
 // Database collects one database. db is a pool opened on that database
 // (conn.Open with info.Name): every catalog query is in one- or two-part
 // names and reads the connection's database.
@@ -149,7 +145,7 @@ func warnNoTable(w *model.Workload) {
 func readDBInfo(ctx context.Context, db *sql.DB, info model.DBInfo, w *model.Workload) error {
 	var d model.DBInfo
 	var clone int
-	err := db.QueryRowContext(ctx, `SELECT /* godta:collect */ DB_ID(), DB_NAME(),
+	err := db.QueryRowContext(ctx, `SELECT /* godta:internal */ DB_ID(), DB_NAME(),
   ISNULL(CAST(DATABASEPROPERTYEX(DB_NAME(), 'Collation') AS nvarchar(128)), N''),
   (SELECT compatibility_level FROM sys.databases WHERE database_id = DB_ID()),
   ISNULL(CAST(DATABASEPROPERTYEX(DB_NAME(), 'IsClone') AS int), 0);`).
@@ -162,7 +158,7 @@ func readDBInfo(ctx context.Context, db *sql.DB, info model.DBInfo, w *model.Wor
 	}
 	d.IsClone = clone == 1
 	var state, mode sql.NullString
-	err = db.QueryRowContext(ctx, `SELECT /* godta:collect */ actual_state_desc, query_capture_mode_desc
+	err = db.QueryRowContext(ctx, `SELECT /* godta:internal */ actual_state_desc, query_capture_mode_desc
 FROM sys.database_query_store_options;`).Scan(&state, &mode)
 	if err != nil && err != sql.ErrNoRows {
 		return fmt.Errorf("reading the query store options: %w", err)
@@ -179,8 +175,9 @@ FROM sys.database_query_store_options;`).Scan(&state, &mode)
 // intervals that overlap the window. Only columns present since 2016 are
 // read. set_options is varbinary(8), converted to bigint here. The text is
 // cut to 4000 characters, enough to tell a write from a read; the full text
-// comes with the detail of the queries kept.
-const queryStoreAggregate = `WITH /* godta:collect */ a AS (
+// comes with the detail of the queries kept. goDTA's own queries, which carry
+// tsql.Marker (or tsql.LegacyMarker, from an earlier build), are left out.
+const queryStoreAggregate = `WITH /* godta:internal */ a AS (
   SELECT p.query_id,
     SUM(rs.count_executions) AS execs,
     SUM(rs.avg_cpu_time * rs.count_executions) / 1000.0 AS cpu_ms,
@@ -200,7 +197,7 @@ FROM a
 JOIN sys.query_store_query q ON q.query_id = a.query_id
 JOIN sys.query_store_query_text qt ON qt.query_text_id = q.query_text_id
 JOIN sys.query_context_settings cs ON cs.context_settings_id = q.context_settings_id
-WHERE qt.query_sql_text NOT LIKE N'%godta:collect%'
+WHERE qt.query_sql_text NOT LIKE N'%` + tsql.Marker + `%' AND qt.query_sql_text NOT LIKE N'%` + tsql.LegacyMarker + `%'
 ORDER BY q.query_id;`
 
 func queryStoreQueries(ctx context.Context, db *sql.DB, opt Options) ([]model.Query, error) {
@@ -308,7 +305,7 @@ func queryStoreDetail(ctx context.Context, db *sql.DB, qs []*model.Query) error 
 		byID[q.QueryID] = q
 		ids = append(ids, q.QueryID)
 	}
-	rows, err := db.QueryContext(ctx, `SELECT /* godta:collect */ q.query_id, qt.query_sql_text, ISNULL(lp.query_plan, N'')
+	rows, err := db.QueryContext(ctx, `SELECT /* godta:internal */ q.query_id, qt.query_sql_text, ISNULL(lp.query_plan, N'')
 FROM sys.query_store_query q
 JOIN sys.query_store_query_text qt ON qt.query_text_id = q.query_text_id
 OUTER APPLY (SELECT TOP (1) p.query_plan FROM sys.query_store_plan p
@@ -335,7 +332,7 @@ WHERE q.query_id IN (`+idList(ids)+`);`)
 // database by query_hash. The database of a plan is its dbid attribute:
 // sys.dm_exec_sql_text gives NULL for an ad hoc batch. One statement per
 // hash, the last executed, gives the text and the plan.
-const planCacheAggregate = `WITH /* godta:collect */ s AS (
+const planCacheAggregate = `WITH /* godta:internal */ s AS (
   SELECT qs.query_hash, qs.sql_handle, qs.plan_handle, qs.statement_start_offset, qs.statement_end_offset,
     qs.execution_count, qs.total_worker_time, qs.total_logical_reads, qs.total_elapsed_time, qs.total_rows,
     pa.set_options, pa.date_first, pa.date_format,
@@ -401,12 +398,12 @@ func planCacheQueries(ctx context.Context, db *sql.DB) ([]model.Query, map[int64
 	keep := out[:0]
 	for i := range out {
 		var batch sql.NullString
-		if err := db.QueryRowContext(ctx, `SELECT /* godta:collect */ (SELECT text FROM sys.dm_exec_sql_text(@p1));`,
+		if err := db.QueryRowContext(ctx, `SELECT /* godta:internal */ (SELECT text FROM sys.dm_exec_sql_text(@p1));`,
 			handles[i].sqlHandle).Scan(&batch); err != nil {
 			return nil, nil, fmt.Errorf("reading a cached statement: %w", err)
 		}
 		out[i].Text = statementText(batch.String, handles[i].start, handles[i].end)
-		if statementKind(out[i].Text) == "" || strings.Contains(batch.String, marker) {
+		if statementKind(out[i].Text) == "" || tsql.IsInternal(batch.String) {
 			continue
 		}
 		out[i].IsWrite = isWriteText(out[i].Text)
@@ -423,7 +420,7 @@ func planCacheDetail(ctx context.Context, db *sql.DB, qs []*model.Query, handles
 	for _, q := range qs {
 		c := handles[q.QueryID]
 		var plan sql.NullString
-		if err := db.QueryRowContext(ctx, `SELECT /* godta:collect */ (SELECT query_plan FROM sys.dm_exec_text_query_plan(@p1, @p2, @p3));`,
+		if err := db.QueryRowContext(ctx, `SELECT /* godta:internal */ (SELECT query_plan FROM sys.dm_exec_text_query_plan(@p1, @p2, @p3));`,
 			c.planHandle, c.start, c.end).Scan(&plan); err != nil {
 			return fmt.Errorf("reading a cached plan: %w", err)
 		}
@@ -438,7 +435,7 @@ func planCacheDetail(ctx context.Context, db *sql.DB, qs []*model.Query, handles
 func queryIDsOfHash(ctx context.Context, db *sql.DB, hash int64) []int64 {
 	b := make([]byte, 8)
 	binary.BigEndian.PutUint64(b, uint64(hash))
-	rows, err := db.QueryContext(ctx, `SELECT /* godta:collect */ query_id FROM sys.query_store_query
+	rows, err := db.QueryContext(ctx, `SELECT /* godta:internal */ query_id FROM sys.query_store_query
 WHERE query_hash = CONVERT(binary(8), @p1) ORDER BY query_id;`, b)
 	if err != nil {
 		return nil

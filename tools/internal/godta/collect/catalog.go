@@ -16,7 +16,7 @@ import (
 )
 
 // The optimizer-related scoped configurations (spec section 8.2).
-const scopedConfigsQuery = `SELECT /* godta:collect */ name, ISNULL(CAST(value AS nvarchar(4000)), N''),
+const scopedConfigsQuery = `SELECT /* godta:internal */ name, ISNULL(CAST(value AS nvarchar(4000)), N''),
   ISNULL(CAST(SQL_VARIANT_PROPERTY(value, 'BaseType') AS nvarchar(128)), N'')
 FROM sys.database_scoped_configurations
 WHERE name IN (N'MAXDOP', N'LEGACY_CARDINALITY_ESTIMATION', N'PARAMETER_SNIFFING', N'QUERY_OPTIMIZER_HOTFIXES')
@@ -133,7 +133,7 @@ func readScopedConfigs(ctx context.Context, db *sql.DB, w *model.Workload) error
 }
 
 func readMissingIndexes(ctx context.Context, db *sql.DB, w *model.Workload) error {
-	rows, err := db.QueryContext(ctx, `SELECT /* godta:collect */ d.index_handle, d.object_id, gs.avg_user_impact, gs.user_seeks,
+	rows, err := db.QueryContext(ctx, `SELECT /* godta:internal */ d.index_handle, d.object_id, gs.avg_user_impact, gs.user_seeks,
   c.column_id, c.column_usage
 FROM sys.dm_db_missing_index_details d
 JOIN sys.dm_db_missing_index_groups g ON g.index_handle = d.index_handle
@@ -183,7 +183,7 @@ func touchedTables(ctx context.Context, db *sql.DB, w *model.Workload) ([]int, e
 		set[m.Table] = true
 	}
 	if len(wanted) > 0 {
-		rows, err := db.QueryContext(ctx, `SELECT /* godta:collect */ o.object_id, s.name, o.name FROM sys.objects o
+		rows, err := db.QueryContext(ctx, `SELECT /* godta:internal */ o.object_id, s.name, o.name FROM sys.objects o
 JOIN sys.schemas s ON s.schema_id = o.schema_id
 WHERE o.type IN ('U', 'V');`)
 		if err != nil {
@@ -254,7 +254,7 @@ func indexedViews(ctx context.Context, db *sql.DB, ids []int) (map[int][]int, er
 	if len(ids) == 0 {
 		return out, nil
 	}
-	rows, err := db.QueryContext(ctx, `SELECT /* godta:collect */ DISTINCT d.referenced_id, d.referencing_id
+	rows, err := db.QueryContext(ctx, `SELECT /* godta:internal */ DISTINCT d.referenced_id, d.referencing_id
 FROM sys.sql_expression_dependencies d
 JOIN sys.views v ON v.object_id = d.referencing_id
 JOIN sys.indexes i ON i.object_id = v.object_id AND i.index_id = 1
@@ -281,7 +281,7 @@ func readTables(ctx context.Context, db *sql.DB, w *model.Workload, ids []int) e
 		return nil
 	}
 	in := idList(ids)
-	rows, err := db.QueryContext(ctx, `SELECT /* godta:collect */ o.object_id, s.name, o.name, o.modify_date,
+	rows, err := db.QueryContext(ctx, `SELECT /* godta:internal */ o.object_id, s.name, o.name, o.modify_date,
   ISNULL((SELECT SUM(ps.row_count) FROM sys.dm_db_partition_stats ps
           WHERE ps.object_id = o.object_id AND ps.index_id IN (0, 1)), 0),
   ISNULL((SELECT SUM(ps.in_row_data_page_count) FROM sys.dm_db_partition_stats ps
@@ -305,7 +305,7 @@ WHERE o.object_id IN (`+in+`);`)
 	}
 	rows.Close()
 
-	rows, err = db.QueryContext(ctx, `SELECT /* godta:collect */ c.object_id, c.column_id, c.name, ISNULL(TYPE_NAME(c.user_type_id), N''),
+	rows, err = db.QueryContext(ctx, `SELECT /* godta:internal */ c.object_id, c.column_id, c.name, ISNULL(TYPE_NAME(c.user_type_id), N''),
   c.max_length, c.is_nullable, c.is_computed
 FROM sys.columns c WHERE c.object_id IN (`+in+`)
 ORDER BY c.object_id, c.column_id;`)
@@ -357,7 +357,7 @@ func indexKind(typ int) string {
 // readIndexes reads the indexes cond selects (a condition on sys.indexes i,
 // built from integers only), with their keys and included columns.
 func readIndexes(ctx context.Context, db *sql.DB, cond string) ([]model.Index, error) {
-	rows, err := db.QueryContext(ctx, `SELECT /* godta:collect */ i.object_id, i.index_id, ISNULL(i.name, N''), i.type,
+	rows, err := db.QueryContext(ctx, `SELECT /* godta:internal */ i.object_id, i.index_id, ISNULL(i.name, N''), i.type,
   i.is_unique, i.is_primary_key, i.is_unique_constraint, i.is_disabled, i.is_hypothetical,
   ISNULL(i.filter_definition, N''), i.fill_factor, ISNULL(ds.name, N''),
   ISNULL((SELECT SUM(ps.in_row_data_page_count) FROM sys.dm_db_partition_stats ps
@@ -395,7 +395,7 @@ ORDER BY i.object_id, i.index_id;`)
 		return nil, nil
 	}
 
-	rows, err = db.QueryContext(ctx, `SELECT /* godta:collect */ ic.object_id, ic.index_id, ic.column_id, ic.key_ordinal,
+	rows, err = db.QueryContext(ctx, `SELECT /* godta:internal */ ic.object_id, ic.index_id, ic.column_id, ic.key_ordinal,
   ic.is_descending_key, ic.is_included_column
 FROM sys.index_columns ic JOIN sys.indexes i ON i.object_id = ic.object_id AND i.index_id = ic.index_id
 WHERE `+cond+`
@@ -426,7 +426,7 @@ ORDER BY ic.object_id, ic.index_id, ic.key_ordinal, ic.index_column_id;`)
 
 // readUsage reads the usage and operational counters of the indexes.
 func readUsage(ctx context.Context, db *sql.DB, w *model.Workload, ids []int) error {
-	rows, err := db.QueryContext(ctx, `SELECT /* godta:collect */ i.object_id, i.index_id,
+	rows, err := db.QueryContext(ctx, `SELECT /* godta:internal */ i.object_id, i.index_id,
   ISNULL(u.user_seeks, 0), ISNULL(u.user_scans, 0), ISNULL(u.user_lookups, 0), ISNULL(u.user_updates, 0),
   ISNULL(op.ins, 0), ISNULL(op.upd, 0), ISNULL(op.del, 0)
 FROM sys.indexes i
@@ -462,7 +462,7 @@ WHERE i.object_id IN (`+idList(ids)+`) AND i.is_hypothetical = 0;`)
 // unfiltered statistics object, from its density vector.
 func readStats(ctx context.Context, db *sql.DB, w *model.Workload, ids []int) error {
 	in := idList(ids)
-	rows, err := db.QueryContext(ctx, `SELECT /* godta:collect */ s.object_id, s.stats_id, s.name, s.auto_created, s.user_created,
+	rows, err := db.QueryContext(ctx, `SELECT /* godta:internal */ s.object_id, s.stats_id, s.name, s.auto_created, s.user_created,
   ISNULL(sp.rows, 0), ISNULL(sp.rows_sampled, 0), ISNULL(sp.modification_counter, 0), s.has_filter
 FROM sys.stats s
 OUTER APPLY sys.dm_db_stats_properties(s.object_id, s.stats_id) sp
@@ -506,7 +506,7 @@ ORDER BY s.object_id, s.stats_id;`)
 		}
 	}
 
-	rows, err = db.QueryContext(ctx, `SELECT /* godta:collect */ sc.object_id, sc.stats_id, sc.column_id
+	rows, err = db.QueryContext(ctx, `SELECT /* godta:internal */ sc.object_id, sc.stats_id, sc.column_id
 FROM sys.stats_columns sc WHERE sc.object_id IN (`+in+`)
 ORDER BY sc.object_id, sc.stats_id, sc.stats_column_id;`)
 	if err != nil {
@@ -614,8 +614,9 @@ func readNamedRefs(ctx context.Context, db *sql.DB, w *model.Workload) error {
 		return rows.Err()
 	}
 	if w.Database.QueryStoreState != "OFF" {
-		if err := texts(`SELECT /* godta:collect */ query_sql_text FROM sys.query_store_query_text
-WHERE query_sql_text LIKE N'%INDEX%';`, "the query store texts",
+		if err := texts(`SELECT /* godta:internal */ query_sql_text FROM sys.query_store_query_text
+WHERE query_sql_text LIKE N'%INDEX%'
+  AND query_sql_text NOT LIKE N'%`+tsql.Marker+`%' AND query_sql_text NOT LIKE N'%`+tsql.LegacyMarker+`%';`, "the query store texts",
 			func(r *sql.Rows) (string, string, error) {
 				var s string
 				return s, "query_store_text", r.Scan(&s)
@@ -623,7 +624,7 @@ WHERE query_sql_text LIKE N'%INDEX%';`, "the query store texts",
 			return err
 		}
 	}
-	if err := texts(`SELECT /* godta:collect */ s.name, o.name, m.definition FROM sys.sql_modules m
+	if err := texts(`SELECT /* godta:internal */ s.name, o.name, m.definition FROM sys.sql_modules m
 JOIN sys.objects o ON o.object_id = m.object_id JOIN sys.schemas s ON s.schema_id = o.schema_id
 WHERE m.definition LIKE N'%INDEX%';`, "the modules",
 		func(r *sql.Rows) (string, string, error) {
@@ -634,7 +635,7 @@ WHERE m.definition LIKE N'%INDEX%';`, "the modules",
 		}); err != nil {
 		return err
 	}
-	if err := texts(`SELECT /* godta:collect */ name, ISNULL(query_text, N'') + N' ' + ISNULL(hints, N'')
+	if err := texts(`SELECT /* godta:internal */ name, ISNULL(query_text, N'') + N' ' + ISNULL(hints, N'')
 FROM sys.plan_guides;`, "the plan guides",
 		func(r *sql.Rows) (string, string, error) {
 			var name, text string
@@ -646,7 +647,7 @@ FROM sys.plan_guides;`, "the plan guides",
 	if w.Database.QueryStoreState == "OFF" {
 		return nil
 	}
-	rows, err := db.QueryContext(ctx, `SELECT /* godta:collect */ query_id, query_plan FROM sys.query_store_plan
+	rows, err := db.QueryContext(ctx, `SELECT /* godta:internal */ query_id, query_plan FROM sys.query_store_plan
 WHERE is_forced_plan = 1;`)
 	if err != nil {
 		return fmt.Errorf("reading the forced plans: %w", err)

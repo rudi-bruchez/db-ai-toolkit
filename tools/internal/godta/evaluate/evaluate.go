@@ -273,7 +273,7 @@ func (r *run) autoStats(ctx context.Context, ids []int) ([]string, error) {
 	for i, id := range ids {
 		list[i] = strconv.Itoa(id)
 	}
-	rows, err := r.s.query(ctx, `SELECT OBJECT_SCHEMA_NAME(s.object_id), OBJECT_NAME(s.object_id), s.name
+	rows, err := r.s.query(ctx, `SELECT /* godta:internal */ OBJECT_SCHEMA_NAME(s.object_id), OBJECT_NAME(s.object_id), s.name
 FROM sys.stats AS s WHERE s.auto_created = 1 AND s.object_id IN (`+strings.Join(list, ", ")+`)
 ORDER BY s.object_id, s.stats_id`)
 	if err != nil {

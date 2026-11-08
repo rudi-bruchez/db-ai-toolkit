@@ -29,7 +29,7 @@ CREATE STATISTICS [godta_ab12cd34_s'1] ON [dbo].[Ord]]er s] ([a], [x y])
 DROP STATISTICS [dbo].[Ord]]er s].[godta_ab12cd34_s'1]
 
 -- UpdateStatisticsStream
-UPDATE STATISTICS [dbo].[Ord]]er s]([godta_ab12cd34_1]) WITH STATS_STREAM = 0x01AB00FF
+UPDATE /* godta:internal */ STATISTICS [dbo].[Ord]]er s]([godta_ab12cd34_1]) WITH STATS_STREAM = 0x01AB00FF
 
 -- ShowStatisticsStream
 DBCC SHOW_STATISTICS(N'[dbo].[Ord]]er s]', [godta_ab12cd34_s'1]) WITH STATS_STREAM
@@ -56,7 +56,7 @@ BACKUP DATABASE [godta_ab12cd34_Café]]db] TO DISK = N'/var/opt/mssql/backup/god
 BACKUP DATABASE [godta_ab12cd34_Café]]db] TO DISK = N'/var/opt/mssql/backup/godta_ab12cd34_O''Brien.bak' WITH INIT, COPY_ONLY
 
 -- ReadFile
-SELECT BulkColumn FROM OPENROWSET(BULK N'/var/opt/mssql/backup/godta_ab12cd34_O''Brien.bak', SINGLE_BLOB) AS x
+SELECT /* godta:internal */ BulkColumn FROM OPENROWSET(BULK N'/var/opt/mssql/backup/godta_ab12cd34_O''Brien.bak', SINGLE_BLOB) AS x
 
 -- DeleteBackupFile
 EXEC master.dbo.xp_delete_file 0, N'/var/opt/mssql/backup/godta_ab12cd34_O''Brien.bak'

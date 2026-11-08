@@ -151,7 +151,7 @@ func NewSession(ctx context.Context, db *sql.DB, inst conn.Instance, compileTime
 		return nil, fmt.Errorf("evaluate: pinning a connection: %w", err)
 	}
 	s.ex = ex
-	rows, err := s.ex.Query(ctx, "SELECT DB_ID(), DB_NAME()")
+	rows, err := s.ex.Query(ctx, "SELECT /* godta:internal */ DB_ID(), DB_NAME()")
 	if err != nil {
 		s.Close()
 		return nil, fmt.Errorf("evaluate: DB_ID(): %w", err)

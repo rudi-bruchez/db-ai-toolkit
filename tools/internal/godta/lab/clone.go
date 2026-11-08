@@ -171,7 +171,7 @@ func Clone(ctx context.Context, q conn.Querier, ws workspace.WS, p runplan.Plan,
 		return File{}, fmt.Errorf("clone: %w", err)
 	}
 	var db string
-	if err := q.QueryRowContext(ctx, "SELECT DB_NAME()").Scan(&db); err != nil {
+	if err := q.QueryRowContext(ctx, "SELECT /* godta:internal */ DB_NAME()").Scan(&db); err != nil {
 		return File{}, fmt.Errorf("clone: %w", err)
 	}
 	ids := make([]int, len(p.Schema))
@@ -342,7 +342,7 @@ func (r *cloneRun) transfer(ctx context.Context) (err error) {
 	src := "OPENROWSET(BULK " + tsql.QuoteString(r.backupPath) + ", SINGLE_BLOB) AS x"
 	var size int64
 	var data []byte
-	if err := r.q.QueryRowContext(ctx, "SELECT DATALENGTH(BulkColumn), SUBSTRING(BulkColumn, 1, @p1) FROM "+src,
+	if err := r.q.QueryRowContext(ctx, "SELECT /* godta:internal */ DATALENGTH(BulkColumn), SUBSTRING(BulkColumn, 1, @p1) FROM "+src,
 		r.chunk).Scan(&size, &data); err != nil {
 		return fmt.Errorf("reading %s: %w", r.backupPath, err)
 	}
@@ -382,7 +382,7 @@ func (r *cloneRun) transfer(ctx context.Context) (err error) {
 			break
 		}
 		data = nil
-		if err := r.q.QueryRowContext(ctx, "SELECT SUBSTRING(BulkColumn, @p1, @p2) FROM "+src,
+		if err := r.q.QueryRowContext(ctx, "SELECT /* godta:internal */ SUBSTRING(BulkColumn, @p1, @p2) FROM "+src,
 			written+1, r.chunk).Scan(&data); err != nil {
 			return fmt.Errorf("reading %s at offset %d: %w", r.backupPath, written, err)
 		}
@@ -397,7 +397,7 @@ func (r *cloneRun) transfer(ctx context.Context) (err error) {
 		return err
 	}
 	var server []byte
-	if err := r.q.QueryRowContext(ctx, "SELECT HASHBYTES('SHA2_256', BulkColumn) FROM "+src).Scan(&server); err != nil {
+	if err := r.q.QueryRowContext(ctx, "SELECT /* godta:internal */ HASHBYTES('SHA2_256', BulkColumn) FROM "+src).Scan(&server); err != nil {
 		return fmt.Errorf("hashing %s on the server: %w", r.backupPath, err)
 	}
 	sum := h.Sum(nil)
@@ -481,11 +481,11 @@ func (r *cloneRun) exists(ctx context.Context, e workspace.Entry) (bool, error) 
 	var n int
 	switch e.Kind {
 	case workspace.KindStatistics:
-		err := r.q.QueryRowContext(ctx, "SELECT COUNT(*) FROM sys.stats WHERE object_id = OBJECT_ID(@p1) AND name = @p2",
+		err := r.q.QueryRowContext(ctx, "SELECT /* godta:internal */ COUNT(*) FROM sys.stats WHERE object_id = OBJECT_ID(@p1) AND name = @p2",
 			tsql.Obj{Schema: e.Schema, Name: e.Table}.Quoted(), e.Name).Scan(&n)
 		return n > 0, err
 	case workspace.KindCloneDatabase:
-		err := r.q.QueryRowContext(ctx, "SELECT COUNT(*) FROM sys.databases WHERE name = @p1", e.Name).Scan(&n)
+		err := r.q.QueryRowContext(ctx, "SELECT /* godta:internal */ COUNT(*) FROM sys.databases WHERE name = @p1", e.Name).Scan(&n)
 		return n > 0, err
 	case workspace.KindBackupFile:
 		var file, dir, parent int

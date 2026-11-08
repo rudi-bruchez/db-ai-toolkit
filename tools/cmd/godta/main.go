@@ -982,7 +982,7 @@ func (a *app) evaluateOne(p sqlq.Profile, inst conn.Instance, file string, plan 
 		return "", err
 	}
 	var current string
-	if err := db.QueryRowContext(a.ctx, "SELECT DB_NAME()").Scan(&current); err != nil {
+	if err := db.QueryRowContext(a.ctx, "SELECT /* godta:internal */ DB_NAME()").Scan(&current); err != nil {
 		return "", err
 	}
 	ids := make([]int, len(plan.Schema))
