@@ -765,7 +765,7 @@ func ForClone(w *model.Workload, cands []model.Candidate, runID string, fp []Tab
 		add(Step{SQL: tsql.CreateStatistics(obj, name, cols), Journal: journalAs(e, workspace.StatePlanned)})
 	}
 	cloneEntry := workspace.Entry{RunID: runID, Server: p.Server, Database: serverDatabase,
-		Kind: workspace.KindCloneDatabase, Name: clone}
+		Kind: workspace.KindCloneDatabase, Name: clone, Source: p.Database}
 	add(Step{SQL: tsql.CloneDatabase(p.Database, clone), Journal: journalAs(cloneEntry, workspace.StatePlanned)})
 	if len(stats) > 0 {
 		add(Step{SQL: tsql.SetLockTimeout(DropLockTimeoutMS)})
@@ -775,7 +775,7 @@ func ForClone(w *model.Workload, cands []model.Candidate, runID string, fp []Tab
 		add(Step{SQL: tsql.SetLockTimeout(-1)})
 	}
 	fileEntry := workspace.Entry{RunID: runID, Server: p.Server, Database: serverDatabase,
-		Kind: workspace.KindBackupFile, Name: clone + ".bak", Path: path}
+		Kind: workspace.KindBackupFile, Name: clone + ".bak", Path: path, Source: p.Database}
 	add(Step{SQL: tsql.BackupDatabase(clone, path, compress), Journal: journalAs(fileEntry, workspace.StatePlanned)})
 	add(Step{SQL: tsql.ReadFile(path)})
 	add(Step{SQL: tsql.DropDatabase(clone), Journal: journalAs(cloneEntry, workspace.StateRemoved)})

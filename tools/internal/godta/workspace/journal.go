@@ -29,16 +29,20 @@ const (
 // Entry is one line of the journal: the identity of an object goDTA is about
 // to create, has created or has removed. It is written before the creation.
 type Entry struct {
-	RunID    string    `json:"run_id"`
-	Server   string    `json:"server"`
-	Database string    `json:"database"`
-	Kind     string    `json:"kind"`
-	Schema   string    `json:"schema"`
-	Table    string    `json:"table"`
-	Name     string    `json:"name"`
-	Path     string    `json:"path"`
-	At       time.Time `json:"at"`
-	State    string    `json:"state"`
+	RunID    string `json:"run_id"`
+	Server   string `json:"server"`
+	Database string `json:"database"`
+	Kind     string `json:"kind"`
+	Schema   string `json:"schema"`
+	Table    string `json:"table"`
+	Name     string `json:"name"`
+	Path     string `json:"path"`
+	// Source is, for an object of the server (a clone database, a backup
+	// file, whose Database is master), the database it was made from:
+	// cleanup --include keeps it with that database.
+	Source string    `json:"source,omitempty"`
+	At     time.Time `json:"at"`
+	State  string    `json:"state"`
 }
 
 // key identifies an object across its entries. RunID is left out: the name

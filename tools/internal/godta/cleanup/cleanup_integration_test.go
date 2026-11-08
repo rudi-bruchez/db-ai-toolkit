@@ -395,11 +395,13 @@ func TestCleanupMissingBackupFile(t *testing.T) {
 	if n := count(t, e.ctx, e.server, "DECLARE @r TABLE (f int, d int, p int); INSERT @r EXEC master.dbo.xp_fileexist "+tsql.QuoteString(path)+"; SELECT f FROM @r"); n != 0 {
 		t.Fatalf("%s exists", path)
 	}
+	// The source database need not exist: Find keeps the file for it.
+	source := "godta_it_" + run
 	en := workspace.Entry{RunID: run, Server: e.inst.ServerName, Database: "master", Kind: workspace.KindBackupFile,
-		Name: "godta_" + run + "_missing.bak", Path: path, At: time.Now().UTC(), State: workspace.StateCreated}
+		Name: "godta_" + run + "_missing.bak", Path: path, Source: source, At: time.Now().UTC(), State: workspace.StateCreated}
 	e.record(en)
 
-	f := e.find("master")
+	f := e.find(source)
 	var mine []workspace.Entry
 	for _, j := range f.Journal {
 		if j.Kind == workspace.KindBackupFile && j.Path == path {
@@ -483,5 +485,47 @@ func TestFindUnreadableIsWarning(t *testing.T) {
 	}
 	if !has(inDB(f.Entries(), a), workspace.KindHypotheticalIndex, ours) {
 		t.Errorf("%s of %s not found: %+v", ours, a, f.Entries())
+	}
+}
+
+// TestCleanupIncludeKeepsClone: limited to a database, Find keeps the clone
+// database and the backup file journaled from it (Source), and lists with a
+// warning, never silently, those whose source it cannot tell: a journal
+// entry without Source, a clone found by its name only.
+func TestCleanupIncludeKeepsClone(t *testing.T) {
+	e := newEnv(t)
+	dbName, _ := e.smallDB()
+	run, old := workspace.NewRunID(), workspace.NewRunID()
+	clone := runplan.CloneDatabaseName(run)
+	server := func(kind, name, path, source string, r string) workspace.Entry {
+		return workspace.Entry{RunID: r, Server: e.inst.ServerName, Database: cleanup.ServerDatabase, Kind: kind,
+			Name: name, Path: path, Source: source, At: time.Now().UTC(), State: workspace.StateCreated}
+	}
+	e.record(
+		server(workspace.KindCloneDatabase, clone, "", dbName, run),
+		server(workspace.KindBackupFile, clone+".bak", "/nonexistent/"+clone+".bak", dbName, run),
+		server(workspace.KindCloneDatabase, runplan.CloneDatabaseName(old), "", "", old),
+	)
+	found := runplan.CloneDatabaseName(workspace.NewRunID())
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		if _, err := e.server.ExecContext(ctx, "IF DB_ID("+tsql.QuoteString(found)+") IS NOT NULL "+tsql.DropDatabase(found)+";"); err != nil {
+			t.Errorf("dropping %s: %v", found, err)
+		}
+	})
+	e.exec(e.server, tsql.CloneDatabase(dbName, found))
+
+	f := e.find(dbName)
+	if !has(f.Journal, workspace.KindCloneDatabase, clone) || !has(f.Journal, workspace.KindBackupFile, clone+".bak") {
+		t.Errorf("Journal %+v lacks the clone database and the backup file of %s", f.Journal, dbName)
+	}
+	for _, name := range []string{runplan.CloneDatabaseName(old), found} {
+		if has(f.Entries(), workspace.KindCloneDatabase, name) {
+			t.Errorf("%s, of unknown source, is in the plan of %s", name, dbName)
+		}
+		if !slices.ContainsFunc(f.Warnings, func(w string) bool { return strings.Contains(w, name) && strings.Contains(w, "without them") }) {
+			t.Errorf("warnings %q do not list %s", f.Warnings, name)
+		}
 	}
 }

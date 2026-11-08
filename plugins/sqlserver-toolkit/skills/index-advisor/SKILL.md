@@ -68,7 +68,10 @@ godta cleanup    --project <dir> --profile <name> --allow-write --plan <plan-cle
    database reports objects left: its status contains `left for cleanup`, and a warning
    names each object. `clone`, `evaluate` and `cleanup` itself report them this way, with
    `ok: false` and exit code `2`, even when the measures were taken. Run it as well after
-   any write phase that did not end with `ok: true`, and after one that was killed.
+   any write phase that did not end with `ok: true`, and after one that was killed. With
+   `--include` or `--exclude`, `cleanup` opens only the selected databases, and keeps the
+   clone database and the backup file made from them; a clone whose source database it
+   cannot tell is listed in the warnings, to remove with a `cleanup` without them.
 
 An execution plan runs once. Running the same `--plan` again, after a crash or after a run
 that ended, is refused with exit code `3` before any statement: run `cleanup`, then a new

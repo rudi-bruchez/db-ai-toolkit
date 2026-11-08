@@ -357,12 +357,12 @@ func TestForCloneSteps(t *testing.T) {
 				t.Errorf("step %d: statistics entry %+v", i+1, e)
 			}
 		case workspace.KindBackupFile:
-			if e.Path != path {
-				t.Errorf("step %d: backup path %q, want %q", i+1, e.Path, path)
+			if e.Path != path || e.Source != "Sales" {
+				t.Errorf("step %d: backup path %q, source %q, want %q and Sales", i+1, e.Path, e.Source, path)
 			}
 		case workspace.KindCloneDatabase:
-			if e.Name != clone {
-				t.Errorf("step %d: clone name %q, want %q", i+1, e.Name, clone)
+			if e.Name != clone || e.Source != "Sales" {
+				t.Errorf("step %d: clone name %q, source %q, want %q and Sales", i+1, e.Name, e.Source, clone)
 			}
 		}
 	}
