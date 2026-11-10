@@ -6,6 +6,17 @@ Go tools. The other plugins have their own version in their `plugin.json`.
 
 ## [Unreleased]
 
+### Added: `index-usage.sql` in the `live-query` catalogue
+
+How each index of a table is used and what it costs to maintain, one row per
+index: definition, size, compression, the counters of
+`sys.dm_db_index_usage_stats`, and the rows inserted and deleted, page
+allocations and latch and I/O waits of `sys.dm_db_index_operational_stats`.
+`-param name=dbo.Orders` for a table, `name=*` for the 200 largest indexes of
+the database. A name that does not resolve raises an error instead of an empty
+result. The header records two traps met on production: `user_updates` counts
+statements, not rows, and `leaf_inserts` includes the build of a new index.
+
 ## [0.6.0] - 2026-10-25
 
 Reading what the server says, and seeing the plan. `sqlq` now returns every
