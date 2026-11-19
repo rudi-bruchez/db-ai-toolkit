@@ -1,7 +1,8 @@
+<!-- task-status: partial; date: 2026-11-19 -->
 # sqlq : ce qu'il reste à faire
 
-Relevé le 19/11/2026, sur l'usage de `sqlq` lors d'une mission chez un client du 10 au 19/11 (31 profils,
-tous `readonly`, instances joignables par Zscaler Private Access). Chaque point cite le moment
+Relevé le 19/11/2026, sur l'usage de `sqlq` lors d'une mission chez un client du 10 au 19/11
+(31 profils, tous `readonly`, instances joignables par Zscaler Private Access). Chaque point cite le moment
 où le besoin est apparu.
 
 ## Maintenance
@@ -17,13 +18,37 @@ où le besoin est apparu.
 - Supprimer `plugins/sqlserver-toolkit/bin/sqlq-2026.10.02.exe.old` une fois le binaire du
   19/11 validé à l'usage.
 
-## Catalogue de requêtes
+## Traitement
+
+Le 19/11/2026, la partie maintenance :
+
+- `internal/sqlq/catalog_test.go` : `lockForTest` saute le test sous Windows, et le nouveau
+  `symlinkForTest` saute quand Windows refuse de créer le lien. Les quatre tests cités sont
+  couverts.
+- `cmd/godta/safety_test.go` : `TestSignalsCancel` appelait `syscall.Kill`, absent sous
+  Windows, si bien que le paquet de tests ne compilait pas et que `go vet` échouait. Le test
+  passe dans `cmd/godta/signals_unix_test.go`, réservé à Unix. `GOOS=windows go vet ./...`
+  passe désormais.
+- `scripts/build-tools.ps1` et `build-tools.sh` : un test en échec n'empêche plus la
+  compilation ; le script compile, avertit et sort avec le code 1. `go vet` et `go build`
+  restent bloquants, et le script PowerShell contrôle enfin `$LASTEXITCODE` après chaque
+  commande `go`. `build-tools.sh` est rendu exécutable. Vérifié sous Linux (bash et `pwsh`)
+  avec un test volontairement en échec.
+
+Reste à faire :
+
+- lancer `go test ./...` sous Windows : la machine Windows n'était pas joignable, donc la
+  liste des tests de `godta` qui échouent à l'exécution n'est pas établie. Le défaut de
+  compilation trouvé en explique peut-être une partie ;
+- supprimer `sqlq-2026.10.02.exe.old`, qui n'existe que sur le poste Windows, après usage du
+  nouveau binaire.
+
 
 Requêtes réécrites à la main plusieurs fois dans la semaine, à faire entrer au catalogue :
 
 - historique `msdb.dbo.backupset` d'une base sur N jours (type, début, durée, `is_snapshot`) ;
 - travaux de l'Agent avec leur dernier résultat, sans `syscategories` (refusé à `dba_ro` sur
-  SRVSQL-PRD, 10/11) ;
+  une instance de production, 10/11) ;
 - bases non conformes : `target_recovery_time_in_seconds = 0` ou fichier en croissance par
   pourcentage (relevé de parc du 18/11) ;
 - requêtes de sauvegarde ou d'`ALTER` en cours, avec bloqueur, attente et `percent_complete`
@@ -34,14 +59,14 @@ Requêtes réécrites à la main plusieurs fois dans la semaine, à faire entrer
 
 ## Fonctionnalités, par ordre d'utilité
 
-1. Plusieurs profils d'une commande : `-profiles-match 'grp-prd/*'` ou `-all`, parallélisme
+1. Plusieurs profils d'une commande : `-profiles-match 'prd/*'` ou `-all`, parallélisme
    borné, une colonne `profile` sur chaque ligne, un JSON agrégé. Le 18/11, la boucle shell sur
    31 profils a rencontré trois pièges : CRLF de Python dans les noms de profils, avertissement
    mêlé au JSON par `2>&1`, `EOF` sur 4 profils à 31 connexions simultanées (deux répondaient
    relancés un par un). Besoin rencontré au moins quatre fois dans la semaine : éditions, vCPU,
    checkpoint et autogrowth, purge Ola sur 19 instances.
 2. Réessai et classement des erreurs de connexion. Un `EOF` vient souvent de ZPA, pas de
-   l'instance : le 10/11, SRVSQL-PRD répondait 20 s plus tard. Réessayer les erreurs
+   l'instance : le 10/11, une instance répondait 20 s plus tard. Réessayer les erreurs
    passagères avec un délai, et rendre une catégorie (`connect_transient`, `connect_timeout`,
    `login_failed`, `sql_error`). Ne jamais réessayer un échec de login.
 3. Avertissements dans le JSON. L'avertissement « `RegSrvr17.xml` a changé depuis l'import »

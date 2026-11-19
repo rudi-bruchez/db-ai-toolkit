@@ -409,7 +409,7 @@ le modèle de `-plan`, pour éviter au skill de le répéter. Le gain en tokens 
 ⚠️ **Mais la sortie de `STATISTICS IO`/`TIME` est du texte produit par le serveur, et ce texte
 suit la langue de la session.** Sur une instance en français, « Table 'X'. Scan count 3792,
 logical reads 0 » n'a pas cette forme. Un parseur calé sur les mots anglais rendrait
-silencieusement zéro compteur — et ce parc-ci compte des instances de plusieurs pays.
+silencieusement zéro compteur — et ce parc-ci compte des instances françaises et anglophones.
 *Non vérifié sur ce parc : aucune connexion n'a été ouverte pour le confirmer. À mesurer avant
 d'écrire la moindre expression régulière.*
 
@@ -492,7 +492,7 @@ littérales comprises. Moins de droits suffisent plus souvent qu'on ne le dit.
   à chaque ligne, ~80 caractères contre ~30 en délimité. Défendable pour les dumps larges, à
   mettre en regard du coût d'un second format de sortie à maintenir — l'argument qui a fait
   écarter un second wrapper au § 8 de `registered-servers` vaut ici aussi.
-- **`-env-file`** : la convention du dépôt client est un `.env` par répertoire de chantier.
+- **`-env-file`** : la convention du dépôt de mission est un `.env` par répertoire de chantier.
   Documenter le geste (charger le `.env`, puis appeler `sqlq`) coûte une ligne ; un drapeau
   coûte un chemin de lecture de secret supplémentaire, qu'il faudra tester. Commencer par la
   ligne de documentation.
@@ -633,5 +633,5 @@ correction reste cohérente avec elle-même et fausse avec le reste — sauf qu'
 ## 10. Source
 
 Tâche Todoist « sqlq : capturer les messages serveur (STATISTICS IO/TIME, PRINT) et rendre les
-jeux de résultats multiples », créée le 2026-09-17. Livrables de la session : dépôt client,
-`client/2026.09.17.monitoring/`, commit `2ea4759`.
+jeux de résultats multiples », créée le 2026-09-17. Livrables de la session : dépôt de mission
+(dépôt client, hors de ce dépôt).

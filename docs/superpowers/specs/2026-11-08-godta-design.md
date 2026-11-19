@@ -9,8 +9,8 @@ Prochaine étape : le plan d'implémentation.
 
 ## 1. Le besoin
 
-Chez un client qui exploite des dizaines de bases (cas d'origine : une mission chez un client, toutes
-ses bases), trouver les index qui manquent ou qui sont mal conçus se fait aujourd'hui à la
+Chez un client qui exploite des dizaines de bases (cas d'origine : toutes les bases d'un même
+pays), trouver les index qui manquent ou qui sont mal conçus se fait aujourd'hui à la
 main, base par base. Le Database Engine Tuning Advisor de Microsoft ne convient pas : interface
 graphique ou `dta.exe` sous Windows, une charge à fournir à la main, et des index hypothétiques
 qu'il oublie souvent derrière lui en production.
