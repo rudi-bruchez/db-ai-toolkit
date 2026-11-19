@@ -88,6 +88,12 @@ result, and `-maxrows` stays the safety net.
 |---|---|
 | Why is this query slow | Run it with `-plan`, then hand the `plan` field to the `sqlserver-query-plans` plugin. Do not analyse showplan XML by hand here. With several statements, `plan` is the first statement's plan and the others are in `more_plans`; run the slow one alone when you want its plan at the root. When the user wants to see the plan, pipe the same run into `sqlplan`, which draws the `plan` field (the first plan) in the browser. |
 | Is this index used, what do the indexes of this table cost | `-saved index-usage -param name=<schema.table>` (or `name=*` for the 200 largest indexes of the database), with `-database` and `-maxrows 200`. Read its header first: `user_updates` counts statements, not rows, and the counters cover an unknown window. Never conclude from it alone that an index can be dropped. |
+| What backups a database had, and how long they took | `-saved backup-history -param name=<db> -param days=<n> -maxrows 500`. `is_snapshot` marks a VSS or snapshot backup; each availability group replica keeps its own history. |
+| Which Agent jobs fail, when they last ran | `-saved agent-jobs -maxrows 300`. It reads no `syscategories`, which some read-only logins are refused. |
+| Which databases have indirect checkpoint off or percentage file growth | `-saved databases-nonconforming -maxrows 500`. An empty result means no finding; master and msdb rows (`is_system`) are expected. |
+| What a running backup, restore, `ALTER` or `DBCC` waits on, how far it is | `-saved maintenance-in-progress -maxrows 100`. One read: run it twice, some seconds apart, to see progress. |
+| How many CPUs, sockets, cores, schedulers offline, MAXDOP | `-saved cpu-topology -maxrows 1`. Read `schedulers_offline` next to `edition`. |
+| Which version of Ola Hallengren's solution is installed | `-saved ola-hallengren-version -database <db> -maxrows 20`, on master and on each database where it may live. |
 | Anything no catalogue entry answers | Write the query yourself, but keep the output discipline below. |
 
 After an ad-hoc query that succeeded and proved useful, offer in one line to

@@ -43,6 +43,16 @@ Reste à faire :
 - supprimer `sqlq-2026.10.02.exe.old`, qui n'existe que sur le poste Windows, après usage du
   nouveau binaire.
 
+Le 19/11/2026, le catalogue : six entrées dans `plugins/sqlserver-toolkit/skills/live-query/queries/`,
+`backup-history`, `agent-jobs`, `databases-nonconforming`, `maintenance-in-progress`,
+`cpu-topology` et `ola-hallengren-version`, routées dans le `SKILL.md` du skill. Exécutées par
+`sqlq` sur le labo SQL Server 2022, avec `sa` puis avec un login réduit à `db_datareader` :
+chaque requête dont le résultat serait incomplet faute de droit lève une erreur au lieu de rendre
+un résultat vide. `maintenance-in-progress` a été vérifiée sur un `ALTER DATABASE` réellement
+bloqué. Différence avec la demande : la version d'Ola se lit base par base (`-database`), car
+une requête du catalogue ne peut pas parcourir les bases sans SQL dynamique, refusé par le garde.
+Non testé : SQL Server 2016 à 2019, une sauvegarde VSS réelle, un Agent démarré.
+
 
 Requêtes réécrites à la main plusieurs fois dans la semaine, à faire entrer au catalogue :
 

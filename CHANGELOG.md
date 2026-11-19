@@ -6,6 +6,28 @@ Go tools. The other plugins have their own version in their `plugin.json`.
 
 ## [Unreleased]
 
+### Added: six administration queries in the `live-query` catalogue
+
+Queries rewritten by hand several times during a week of fleet work, now run
+by name:
+
+- `backup-history`: backups of one database over N days, with type,
+  duration, size, `is_snapshot`, `is_copy_only` and device.
+- `agent-jobs`: Agent jobs with the outcome and message of their last run,
+  without `msdb.dbo.syscategories`, which some read-only logins are refused.
+- `databases-nonconforming`: databases with `target_recovery_time_in_seconds
+  = 0` or a file growing by a percentage.
+- `maintenance-in-progress`: running backups, restores, `ALTER` and `DBCC`
+  with their wait, their blocker and `percent_complete`.
+- `cpu-topology`: logical CPUs, sockets, cores, NUMA nodes, schedulers
+  offline, MAXDOP and cost threshold.
+- `ola-hallengren-version`: the version of each object of Ola Hallengren's
+  maintenance solution in the current database.
+
+Each one raises an error rather than return an empty result when the login
+lacks the permission that would make the result complete. Tested on SQL
+Server 2022, with a sysadmin login and with a login that only reads.
+
 ### Added: `index-usage.sql` in the `live-query` catalogue
 
 How each index of a table is used and what it costs to maintain, one row per
