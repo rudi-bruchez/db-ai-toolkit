@@ -38,6 +38,10 @@ const (
 // A variable so that tests can shorten it.
 var retryDelay = 20 * time.Second
 
+// abandonGrace is how long a batch cancelled by the fleet deadline has to
+// stop after the attention, before its socket is closed.
+var abandonGrace = 5 * time.Second
+
 // tlsCutPrefix starts the message go-mssqldb returns when the connection is
 // cut during the TLS handshake. The driver formats the cause with %v, so
 // neither errors.Is(io.EOF) nor ECONNRESET can see it (measured on v1.11.0).
@@ -138,12 +142,12 @@ func openOnce(parent context.Context, db *sql.DB, d *watchDialer, bound time.Dur
 // classify gives the category of an error. opening says it happened while
 // the connection was being opened; watchdog that the attempt's bound was
 // hit; batch is the batch context, nil while opening. The order is the one of
-// the spec: watchdog, a server error, the batch context, then transport and
-// timeout errors by type, then the two driver messages that carry no type.
+// the spec: a server error, the watchdog, the batch context, then transport
+// and timeout errors by type, then the driver message that carries no type.
 func classify(err error, opening, watchdog bool, batch context.Context) string {
-	if opening && watchdog {
-		return catConnectTimeout
-	}
+	// A server error comes first: it proves the socket was not the failure,
+	// even if the watchdog fired while the driver was returning it. A failed
+	// login read as a timeout would be retried.
 	var me mssql.Error
 	if errors.As(err, &me) {
 		if _, ok := unavailableCause(me); ok {
@@ -156,6 +160,9 @@ func classify(err error, opening, watchdog bool, batch context.Context) string {
 			return catConnectFailed
 		}
 		return catSQLError
+	}
+	if opening && watchdog {
+		return catConnectTimeout
 	}
 	if !opening {
 		if batch != nil && batch.Err() != nil {

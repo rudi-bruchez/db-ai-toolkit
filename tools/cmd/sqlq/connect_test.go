@@ -14,6 +14,8 @@ import (
 	"time"
 	"unicode/utf16"
 
+	mssql "github.com/microsoft/go-mssqldb"
+
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/sqlq"
 )
 
@@ -308,6 +310,18 @@ func TestFailedLoginIsNeverRetried(t *testing.T) {
 	}
 	if got := f.accepts.Load(); got != 1 || res.ConnectAttempts != 1 {
 		t.Errorf("accepts %d, attempts %d; want 1 and 1", got, res.ConnectAttempts)
+	}
+}
+
+// A server error wins over the watchdog: a failed login that arrived as the
+// attempt timed out must not be read as a timeout, which would be retried.
+func TestServerErrorBeatsTheWatchdog(t *testing.T) {
+	login := mssql.Error{Number: errLoginFailed, Message: "Login failed for user 'u'."}
+	if got := classify(login, true, true, nil); got != catLoginFailed {
+		t.Errorf("18456 with the watchdog fired: %q; want login_failed", got)
+	}
+	if got := classify(io.EOF, true, true, nil); got != catConnectTimeout {
+		t.Errorf("EOF with the watchdog fired: %q; want connect_timeout", got)
 	}
 }
 

@@ -712,12 +712,29 @@ func execute(parent context.Context, profile sqlq.Profile, sqlText string, args 
 	defer conn.Close()
 
 	// The batch has its own timeout, which starts once the connection is open.
-	// A parent cancelled during the batch (the fleet deadline) closes the
-	// socket: the context alone does not interrupt every read of the driver.
+	// A parent cancelled during the batch (the fleet deadline) cancels the
+	// batch context first, so that the driver sends an attention and the
+	// server stops the statement; the socket is closed only after
+	// abandonGrace, for a driver read that the context does not interrupt.
+	// Closing it at once would leave a heavy statement running on the server.
 	ctx, cancel := context.WithTimeout(parent, time.Duration(o.timeoutSec)*time.Second)
 	defer cancel()
-	stopParent := context.AfterFunc(parent, dialer.abandon)
-	defer stopParent()
+	var graceMu sync.Mutex
+	var grace *time.Timer
+	stopParent := context.AfterFunc(parent, func() {
+		graceMu.Lock()
+		grace = time.AfterFunc(abandonGrace, dialer.abandon)
+		graceMu.Unlock()
+	})
+	defer func() {
+		if !stopParent() {
+			graceMu.Lock()
+			if grace != nil {
+				grace.Stop()
+			}
+			graceMu.Unlock()
+		}
+	}()
 
 	started := time.Now()
 
