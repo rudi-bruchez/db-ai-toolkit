@@ -53,6 +53,14 @@ bloqué. Différence avec la demande : la version d'Ola se lit base par base (`-
 une requête du catalogue ne peut pas parcourir les bases sans SQL dynamique, refusé par le garde.
 Non testé : SQL Server 2016 à 2019, une sauvegarde VSS réelle, un Agent démarré.
 
+Le 19/11/2026, les fonctionnalités 1 à 3, sur la branche `feat/sqlq-fleet` : spec
+`docs/superpowers/specs/2026-11-19-sqlq-fleet-design.md`, relue à cinq lecteurs puis par une relecture
+adverse de la révision (`docs/reviews/2026-11-19-sqlq-fleet-design-panel/`). Avertissements dans
+`warnings`, catégorie de chaque erreur, ouverture de connexion bornée par un chien de garde
+(`-connect-timeout`), un réessai après une coupure (`-connect-retries`), mode multi-profils
+(`-profiles-match`, `-all`, `-parallel`, `-deadline`, `-selection-fingerprint`). Vérifié sur de
+faux serveurs et sur le labo SQL Server 2022. Restent les fonctionnalités 4 à 6.
+
 
 Requêtes réécrites à la main plusieurs fois dans la semaine, à faire entrer au catalogue :
 
