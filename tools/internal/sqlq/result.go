@@ -18,6 +18,10 @@ type SQLError struct {
 	Line      int32  `json:"line"`
 	Procedure string `json:"procedure"`
 	Message   string `json:"message"`
+	// Category says what kind of failure this is (usage, refused,
+	// connect_transient, connect_timeout, connect_failed, login_failed,
+	// database_unavailable, query_timeout, transport, sql_error, deadline).
+	Category string `json:"category"`
 }
 
 // Result is the single JSON object sqlq writes to stdout, on success and on
@@ -41,7 +45,14 @@ type Result struct {
 	Messages             []string `json:"messages"`
 	// MessagesTruncated means -maxmessages was reached: later notices and
 	// later errors were read and dropped. Error always keeps the first error.
-	MessagesTruncated bool    `json:"messages_truncated"`
+	MessagesTruncated bool `json:"messages_truncated"`
+	// Warnings is what sqlq itself has to say about its local environment
+	// (a stale credential store, a connection attempt retried), never server
+	// text. Always an array.
+	Warnings []string `json:"warnings"`
+	// ConnectAttempts counts the attempts to open the connection: 0 when none
+	// was made, 1 without a retry.
+	ConnectAttempts int `json:"connect_attempts"`
 	Plan              *string `json:"plan"`
 	// MorePlans holds every plan after the first, in arrival order, always an array.
 	MorePlans []string `json:"more_plans"`
@@ -75,6 +86,9 @@ func (r Result) MarshalJSON() ([]byte, error) {
 	}
 	if out.MorePlans == nil {
 		out.MorePlans = []string{}
+	}
+	if out.Warnings == nil {
+		out.Warnings = []string{}
 	}
 	return json.Marshal(out)
 }

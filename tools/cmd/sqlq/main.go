@@ -256,11 +256,17 @@ func run(o options) int {
 		}
 	}
 
+	// Warnings go into the JSON, never to stderr: a caller that merges the two
+	// streams (2>&1) would otherwise get a first line that is not JSON.
+	var warnings []string
 	resolver := sqlq.NewResolver(os.Getenv, resolveCredentialsPath(), func(msg string) {
-		fmt.Fprintln(os.Stderr, "sqlq:", msg)
+		warnings = append(warnings, msg)
 	})
 
 	result, code := execute(profile, sqlText, named, o, resolver.Resolve)
+	// The resolver's warnings come first: they were emitted before any
+	// connection attempt execute may have reported.
+	result.Warnings = append(warnings, result.Warnings...)
 	result.Saved = saved
 	// What the catalogue said about its sources (a missing clone, a disabled
 	// personal layer) bears on which file ran: the agent must see it here too.
