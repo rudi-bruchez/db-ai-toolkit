@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -268,6 +269,9 @@ func writeTestFile(t *testing.T, path, content string) {
 // own cleanup, which could not remove it otherwise.
 func lockForTest(t *testing.T, path string) {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod cannot make a path unreadable on Windows")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("root reads a mode 000 file: this test cannot run as root")
 	}
@@ -279,6 +283,18 @@ func lockForTest(t *testing.T, path string) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.Chmod(path, st.Mode().Perm()) })
+}
+
+// symlinkForTest skips on Windows when creating the link is refused: it needs
+// a privilege (or developer mode) an ordinary account does not have.
+func symlinkForTest(t *testing.T, target, link string) {
+	t.Helper()
+	if err := os.Symlink(target, link); err != nil {
+		if runtime.GOOS == "windows" {
+			t.Skipf("cannot create a symbolic link here: %v", err)
+		}
+		t.Fatal(err)
+	}
 }
 
 func catalogJSON(t *testing.T, c Catalog) string {
@@ -460,12 +476,8 @@ func TestSymlinkIsRejectedNotFollowed(t *testing.T) {
 	writeTestFile(t, filepath.Join(root, "outside-block.sql"), validBlockSQL)
 	os.MkdirAll(filepath.Join(root, "tsql"), 0o700)
 	os.MkdirAll(filepath.Join(root, "b"), 0o700)
-	if err := os.Symlink(outside, filepath.Join(root, "tsql", "linked.sql")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(filepath.Join(root, "outside-block.sql"), filepath.Join(root, "b", "linked-canon.sql")); err != nil {
-		t.Fatal(err)
-	}
+	symlinkForTest(t, outside, filepath.Join(root, "tsql", "linked.sql"))
+	symlinkForTest(t, filepath.Join(root, "outside-block.sql"), filepath.Join(root, "b", "linked-canon.sql"))
 	c := LoadCatalog(CatalogConfig{TsqlScriptsDir: filepath.Join(root, "tsql"), BundledDir: filepath.Join(root, "b")})
 	for _, want := range []struct {
 		src  Source

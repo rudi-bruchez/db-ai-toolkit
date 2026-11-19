@@ -41,7 +41,9 @@ command -v go >/dev/null 2>&1 || {
 
 cd "$tools_dir"
 go vet ./...
-go test ./...
+# A failing test is reported, not fatal: binaries are still built.
+tests_ok=true
+go test ./... || tests_ok=false
 
 for tool in "${TOOLS[@]}"; do
     pkg="./cmd/$tool"
@@ -70,4 +72,8 @@ for tool in "${TOOLS[@]}"; do
     fi
 done
 
+if [ "$tests_ok" = false ]; then
+    echo "warning: binaries built, but go test FAILED: read its output above before using them." >&2
+    exit 1
+fi
 echo "Done."

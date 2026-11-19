@@ -52,8 +52,12 @@ function Get-BinaryName([string]$cmd, [string]$goos) {
 
 Push-Location $toolsDir
 try {
+    # A failing test is reported, not fatal: platform-dependent tests used to
+    # stop every build on Windows, leaving an old binary in service.
     go vet ./...
+    if ($LASTEXITCODE -ne 0) { throw 'go vet failed: nothing built.' }
     go test ./...
+    $testsFailed = $LASTEXITCODE -ne 0
 
     foreach ($cmd in $targets.Keys) {
         $pkg = "./cmd/$cmd"
@@ -72,6 +76,7 @@ try {
                 $env:GOOS = $t.os; $env:GOARCH = $t.arch
                 Write-Host "Building $cmd for $($t.os)/$($t.arch) -> $bin"
                 go build -o $bin $pkg
+                if ($LASTEXITCODE -ne 0) { throw "go build failed for $cmd ($($t.os)/$($t.arch))." }
             }
             Remove-Item Env:GOOS, Env:GOARCH -ErrorAction SilentlyContinue
         }
@@ -83,8 +88,13 @@ try {
                 $out = Join-Path $dir $bin
                 Write-Host "Building $cmd -> $out"
                 go build -o $out $pkg
+                if ($LASTEXITCODE -ne 0) { throw "go build failed for $cmd." }
             }
         }
+    }
+    if ($testsFailed) {
+        Write-Warning 'Binaries built, but go test FAILED: read its output above before using them.'
+        exit 1
     }
     Write-Host 'Done.' -ForegroundColor Green
 }
