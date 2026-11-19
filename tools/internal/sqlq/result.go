@@ -52,8 +52,8 @@ type Result struct {
 	Warnings []string `json:"warnings"`
 	// ConnectAttempts counts the attempts to open the connection: 0 when none
 	// was made, 1 without a retry.
-	ConnectAttempts int `json:"connect_attempts"`
-	Plan              *string `json:"plan"`
+	ConnectAttempts int     `json:"connect_attempts"`
+	Plan            *string `json:"plan"`
 	// MorePlans holds every plan after the first, in arrival order, always an array.
 	MorePlans []string `json:"more_plans"`
 	// MorePlansTruncated means -maxresultsets was reached for plans: later

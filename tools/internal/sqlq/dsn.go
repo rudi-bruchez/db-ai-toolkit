@@ -71,9 +71,16 @@ func (p Profile) DSN(secret string) (Driver, string, error) {
 	q.Set("encrypt", encrypt)
 	q.Set("trustservercertificate", strconv.FormatBool(p.TrustServerCertificate))
 	q.Set("app name", AppName)
+	// connection timeout is the driver's idle deadline, re-armed before every
+	// read and write for the whole session: it does not bound the opening of
+	// the connection, which sqlq bounds itself (-connect-timeout).
 	if p.ConnectTimeoutSec > 0 {
 		q.Set("connection timeout", strconv.Itoa(p.ConnectTimeoutSec))
 	}
+	// Without it, a failed send of the batch comes back as a RetryableError,
+	// which is driver.ErrBadConn, and database/sql replays a DB-level query up
+	// to three times. sqlq never replays a batch that may have reached the server.
+	q.Set("disableretry", "true")
 
 	u := &url.URL{Scheme: "sqlserver", Host: host}
 	if port != "" {

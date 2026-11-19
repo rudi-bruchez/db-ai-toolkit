@@ -141,7 +141,8 @@ sqlq -profile <name> -file <path> -param name=dbo.Orders -maxrows 100
 sqlq -profile <name> -query "<sql>" -plan          # capture the actual execution plan
 sqlq -profile <name> -query "<sql>" -statistics    # SET STATISTICS IO and TIME ON, text in messages
 sqlq -profile <name> -query "<sql>" -database Other # override the profile's database
-sqlq -profile <name> -query "<sql>" -timeout 120   # default is 30 seconds
+sqlq -profile <name> -query "<sql>" -timeout 120   # default is 30 seconds, once connected
+sqlq -profile <name> -query "<sql>" -connect-timeout 30 -connect-retries 0   # defaults 15 s and 1 retry
 sqlq -list-queries -profile <name>                 # the catalogue for this profile
 sqlq -profile <name> -saved tables-largest -maxrows 20
 sqlq -profile <name> -saved sessions-by-host -param hostname=SRV-APP01 -maxrows 50

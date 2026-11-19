@@ -81,7 +81,9 @@ func defineFlags(fs *flag.FlagSet) *options {
 	fs.IntVar(&o.maxRows, "maxrows", 50, "maximum rows to return; 0 means unlimited")
 	fs.IntVar(&o.maxMessages, "maxmessages", 200, "maximum server messages to keep; 0 means unlimited")
 	fs.IntVar(&o.maxResultSets, "maxresultsets", 20, "maximum data result sets, and plans, to keep; 0 means unlimited")
-	fs.IntVar(&o.timeoutSec, "timeout", 30, "query timeout in seconds")
+	fs.IntVar(&o.timeoutSec, "timeout", 30, "query timeout in seconds, counted once the connection is open")
+	fs.IntVar(&o.connectTimeoutSec, "connect-timeout", 15, "bound of each connection attempt in seconds, from the dial to the end of the login (1 to 120)")
+	fs.IntVar(&o.connectRetries, "connect-retries", 1, "new attempts after a connection cut or timed out while opening, 20 s apart (0 to 3); never after a server error")
 	fs.BoolVar(&o.wantPlan, "plan", false, "capture the actual execution plan (SET STATISTICS XML ON)")
 	fs.BoolVar(&o.wantStatistics, "statistics", false, "run SET STATISTICS IO and TIME ON; their output arrives in messages as the server wrote it, in the session language")
 	fs.BoolVar(&o.listProfiles, "list-profiles", false, "list the configured profiles and exit")
@@ -145,24 +147,33 @@ func (o options) validate() error {
 		// says nothing about why.
 		return fmt.Errorf("-timeout must be a positive number of seconds, got %d", o.timeoutSec)
 	}
+	if o.connectTimeoutSec < 1 || o.connectTimeoutSec > 120 {
+		return fmt.Errorf("-connect-timeout must be from 1 to 120 seconds, got %d", o.connectTimeoutSec)
+	}
+	if o.connectRetries < 0 || o.connectRetries > 3 {
+		return fmt.Errorf("-connect-retries must be from 0 to 3, got %d", o.connectRetries)
+	}
 	return nil
 }
 
 // options is what one invocation was asked to do.
 type options struct {
-	profileName    string
-	profilesPath   string
-	query          string
-	file           string
-	database       string
-	maxRows        int
-	timeoutSec     int
-	wantPlan       bool
-	wantStatistics bool
-	listProfiles   bool
-	allowWrite     bool
-	dirtyReads     bool
-	params         paramList
+	profileName  string
+	profilesPath string
+	query        string
+	file         string
+	database     string
+	maxRows      int
+	timeoutSec   int
+	wantPlan     bool
+
+	connectTimeoutSec int
+	connectRetries    int
+	wantStatistics    bool
+	listProfiles      bool
+	allowWrite        bool
+	dirtyReads        bool
+	params            paramList
 
 	// maxMessages and maxResultSets cap what collect stores, never what it
 	// reads: past a cap the loop keeps draining the server and only flags.
@@ -263,7 +274,7 @@ func run(o options) int {
 		warnings = append(warnings, msg)
 	})
 
-	result, code := execute(profile, sqlText, named, o, resolver.Resolve)
+	result, code := execute(context.Background(), profile, sqlText, named, o, resolver.Resolve)
 	// The resolver's warnings come first: they were emitted before any
 	// connection attempt execute may have reported.
 	result.Warnings = append(warnings, result.Warnings...)
@@ -626,7 +637,7 @@ func guard(sqlText string, profile sqlq.Profile, allowWrite bool) (int, error) {
 	return exitOK, nil
 }
 
-func execute(profile sqlq.Profile, sqlText string, args []any, o options,
+func execute(parent context.Context, profile sqlq.Profile, sqlText string, args []any, o options,
 	resolve sqlq.SecretResolver) (sqlq.Result, int) {
 
 	result := sqlq.Result{
@@ -642,7 +653,7 @@ func execute(profile sqlq.Profile, sqlText string, args []any, o options,
 	// protection stays in the code while ceasing to protect.
 	secret, err := resolve(profile)
 	if err != nil {
-		result.Error = &sqlq.SQLError{Message: err.Error()}
+		result.Error = &sqlq.SQLError{Message: err.Error(), Category: catUsage}
 		return result, exitUsage
 	}
 
@@ -650,29 +661,63 @@ func execute(profile sqlq.Profile, sqlText string, args []any, o options,
 	// before it reaches stdout, because stdout ends up in an agent transcript.
 	driver, dsn, err := profile.DSN(secret)
 	if err != nil {
-		result.Error = &sqlq.SQLError{Message: redact(err.Error(), secret)}
+		result.Error = &sqlq.SQLError{Message: redact(err.Error(), secret), Category: catUsage}
 		return result, exitUsage
 	}
 
-	db, err := sql.Open(string(driver), dsn)
+	db, dialer, err := openDB(driver, dsn)
 	if err != nil {
-		result.Error = &sqlq.SQLError{Message: redact(err.Error(), secret)}
+		result.Error = &sqlq.SQLError{Message: redact(err.Error(), secret), Category: catConnectFailed}
 		return result, exitConnected
 	}
 	defer db.Close()
 	db.SetMaxOpenConns(1)
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(o.timeoutSec)*time.Second)
-	defer cancel()
-
 	// One connection for the whole run: the preamble sets session state, and
-	// session state does not survive a trip back to the pool.
-	conn, err := db.Conn(ctx)
-	if err != nil {
+	// session state does not survive a trip back to the pool. Each attempt is
+	// bounded by -connect-timeout, from the dial to the end of the login; only
+	// a cut or a timeout while opening is retried, never a server error.
+	bound := time.Duration(o.connectTimeoutSec) * time.Second
+	if bound <= 0 {
+		bound = 15 * time.Second // options built without defineFlags, as in tests
+	}
+	var conn *sql.Conn
+	for {
+		result.ConnectAttempts++
+		c, watchdog, err := openOnce(parent, db, dialer, bound)
+		if err == nil {
+			conn = c
+			break
+		}
+		category := classify(err, true, watchdog, nil)
+		if parent.Err() != nil {
+			category = catDeadline
+		}
+		if result.ConnectAttempts <= o.connectRetries && retryable(category) {
+			result.Warnings = append(result.Warnings, fmt.Sprintf(
+				"connect attempt %d of %d failed (%s): %s; retrying in %g s",
+				result.ConnectAttempts, o.connectRetries+1, category,
+				redact(err.Error(), secret), retryDelay.Seconds()))
+			select {
+			case <-time.After(retryDelay):
+				continue
+			case <-parent.Done():
+				category = catDeadline
+			}
+		}
 		result.Error = sqlError(err, secret)
+		result.Error.Category = category
 		return result, exitConnected
 	}
 	defer conn.Close()
+
+	// The batch has its own timeout, which starts once the connection is open.
+	// A parent cancelled during the batch (the fleet deadline) closes the
+	// socket: the context alone does not interrupt every read of the driver.
+	ctx, cancel := context.WithTimeout(parent, time.Duration(o.timeoutSec)*time.Second)
+	defer cancel()
+	stopParent := context.AfterFunc(parent, dialer.abandon)
+	defer stopParent()
 
 	started := time.Now()
 
@@ -689,6 +734,7 @@ func execute(profile sqlq.Profile, sqlText string, args []any, o options,
 	if _, err := conn.ExecContext(ctx, setup); err != nil {
 		result.ElapsedMS = time.Since(started).Milliseconds()
 		result.Error = sqlError(err, secret)
+		result.Error.Category = batchCategory(err, ctx, parent)
 		return result, exitSQL
 	}
 
@@ -697,6 +743,7 @@ func execute(profile sqlq.Profile, sqlText string, args []any, o options,
 	if err != nil {
 		result.ElapsedMS = time.Since(started).Milliseconds()
 		result.Error = sqlError(err, secret)
+		result.Error.Category = batchCategory(err, ctx, parent)
 		return result, exitSQL
 	}
 	defer rows.Close()
@@ -734,12 +781,23 @@ func execute(profile sqlq.Profile, sqlText string, args []any, o options,
 	switch {
 	case len(sqlErrs) > 0:
 		result.Error = sqlError(sqlErrs[0], secret)
+		result.Error.Category = batchCategory(sqlErrs[0], ctx, parent)
 		return result, exitSQL
 	case err != nil:
 		result.Error = sqlError(err, secret)
+		result.Error.Category = batchCategory(err, ctx, parent)
 		return result, exitSQL
 	}
 	return result, exitOK
+}
+
+// batchCategory classifies an error met after the connection opened. A
+// parent that expired first means the fleet deadline, not this batch.
+func batchCategory(err error, batch, parent context.Context) string {
+	if parent.Err() != nil {
+		return catDeadline
+	}
+	return classify(err, false, false, batch)
 }
 
 // collect reads every result set and every informational message, in the order
@@ -1157,7 +1215,7 @@ func emit(v any) int {
 // fail reports an error in the same JSON shape as a success, so the caller
 // never has to parse two formats.
 func fail(code int, err error) int {
-	_ = emit(sqlq.Result{Error: &sqlq.SQLError{Message: err.Error()}})
+	_ = emit(sqlq.Result{Error: &sqlq.SQLError{Message: err.Error(), Category: categoryForCode(code)}})
 	return code
 }
 

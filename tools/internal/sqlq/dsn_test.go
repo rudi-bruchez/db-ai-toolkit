@@ -161,6 +161,9 @@ func TestDSNAppName(t *testing.T) {
 	p := Profile{Name: "p", Server: "S", Auth: AuthIntegrated}
 	_, dsn, _ := p.DSN("")
 	u, _ := url.Parse(dsn)
+	if got := u.Query().Get("disableretry"); got != "true" {
+		t.Errorf("disableretry = %q; a failed send would be replayed by database/sql", got)
+	}
 	if got := u.Query().Get("app name"); got == "" {
 		t.Error(`the connection must identify itself via "app name" so DBAs can spot it in sys.dm_exec_sessions`)
 	}

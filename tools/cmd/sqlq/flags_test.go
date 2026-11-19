@@ -49,9 +49,13 @@ func TestOptionsRejectNonsenseValues(t *testing.T) {
 		o    options
 		want string
 	}{
-		{"negative maxrows", options{maxRows: -1, timeoutSec: 30}, "-maxrows"},
+		{"negative maxrows", options{maxRows: -1, timeoutSec: 30, connectTimeoutSec: 15}, "-maxrows"},
 		{"negative timeout", options{maxRows: 50, timeoutSec: -1}, "-timeout"},
 		{"zero timeout", options{maxRows: 50, timeoutSec: 0}, "-timeout"},
+		{"zero connect timeout", options{maxRows: 50, timeoutSec: 30}, "-connect-timeout"},
+		{"connect timeout too long", options{maxRows: 50, timeoutSec: 30, connectTimeoutSec: 121}, "-connect-timeout"},
+		{"negative retries", options{maxRows: 50, timeoutSec: 30, connectTimeoutSec: 15, connectRetries: -1}, "-connect-retries"},
+		{"too many retries", options{maxRows: 50, timeoutSec: 30, connectTimeoutSec: 15, connectRetries: 4}, "-connect-retries"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -65,7 +69,7 @@ func TestOptionsRejectNonsenseValues(t *testing.T) {
 		})
 	}
 	// 0 means unlimited for maxrows, and that is documented.
-	if err := (options{maxRows: 0, timeoutSec: 30}).validate(); err != nil {
+	if err := (options{maxRows: 0, timeoutSec: 30, connectTimeoutSec: 15}).validate(); err != nil {
 		t.Errorf("-maxrows 0 is the documented way to ask for unlimited: %v", err)
 	}
 }
@@ -73,7 +77,7 @@ func TestOptionsRejectNonsenseValues(t *testing.T) {
 // -maxmessages and -maxresultsets share -maxrows' meaning of 0, and so its
 // trap: a negative value would read as "no cap" downstream.
 func TestOptionsRejectNegativeCaps(t *testing.T) {
-	base := options{maxRows: 50, timeoutSec: 30}
+	base := options{maxRows: 50, timeoutSec: 30, connectTimeoutSec: 15}
 
 	o := base
 	o.maxMessages = -1

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"os"
@@ -42,7 +43,7 @@ func testProfile(t *testing.T) (sqlq.Profile, sqlq.SecretResolver) {
 
 func TestEveryResultSetIsReturned(t *testing.T) {
 	p, resolve := testProfile(t)
-	res, code := execute(p, "SELECT 1 AS a; SELECT 2 AS b UNION ALL SELECT 3;", nil,
+	res, code := execute(context.Background(), p, "SELECT 1 AS a; SELECT 2 AS b UNION ALL SELECT 3;", nil,
 		options{maxRows: 1, timeoutSec: 120}, resolve)
 	if code != exitOK || res.Error != nil {
 		t.Fatalf("code %d, error %+v", code, res.Error)
@@ -61,7 +62,7 @@ func TestEveryResultSetIsReturned(t *testing.T) {
 
 func TestMessagesAreCaptured(t *testing.T) {
 	p, resolve := testProfile(t)
-	res, code := execute(p, "PRINT 'hello from print'; RAISERROR('low severity', 10, 1); SELECT 1 AS a;", nil,
+	res, code := execute(context.Background(), p, "PRINT 'hello from print'; RAISERROR('low severity', 10, 1); SELECT 1 AS a;", nil,
 		options{maxRows: 50, timeoutSec: 120}, resolve)
 	if code != exitOK {
 		t.Fatalf("code %d, error %+v", code, res.Error)
@@ -74,7 +75,7 @@ func TestMessagesAreCaptured(t *testing.T) {
 
 func TestErrorAfterFirstSetKeepsRows(t *testing.T) {
 	p, resolve := testProfile(t)
-	res, code := execute(p, "SELECT 1 AS a; SELECT 1/0 AS b;", nil,
+	res, code := execute(context.Background(), p, "SELECT 1 AS a; SELECT 1/0 AS b;", nil,
 		options{maxRows: 50, timeoutSec: 120}, resolve)
 	if code != exitSQL || res.Error == nil || res.Error.Number != 8134 {
 		t.Fatalf("want exit 2 with error 8134, got %d %+v", code, res.Error)
@@ -86,7 +87,7 @@ func TestErrorAfterFirstSetKeepsRows(t *testing.T) {
 
 func TestTimeoutIsAnErrorNotPartialSuccess(t *testing.T) {
 	p, resolve := testProfile(t)
-	res, code := execute(p, "SELECT 1 AS a; WAITFOR DELAY '00:00:05'; SELECT 2 AS b;", nil,
+	res, code := execute(context.Background(), p, "SELECT 1 AS a; WAITFOR DELAY '00:00:05'; SELECT 2 AS b;", nil,
 		options{maxRows: 5, timeoutSec: 2}, resolve)
 	if code == exitOK || res.Error == nil {
 		t.Errorf("a timed-out batch must fail, got code %d", code)
@@ -96,7 +97,7 @@ func TestTimeoutIsAnErrorNotPartialSuccess(t *testing.T) {
 func TestManyMessagesDoNotHang(t *testing.T) {
 	p, resolve := testProfile(t)
 	batch := "SELECT 1 AS a;\n" + strings.Repeat("PRINT 'm';\n", 40) + "SELECT 2 AS b;"
-	res, code := execute(p, batch, nil, options{maxRows: 5, timeoutSec: 120}, resolve)
+	res, code := execute(context.Background(), p, batch, nil, options{maxRows: 5, timeoutSec: 120}, resolve)
 	if code != exitOK || len(res.Messages) != 40 || len(res.MoreResults) != 1 {
 		t.Errorf("code %d, %d messages, %d extra sets, error %+v", code, len(res.Messages), len(res.MoreResults), res.Error)
 	}
@@ -114,7 +115,7 @@ func TestManyNoticesInsideOneSetDoNotHang(t *testing.T) {
 		"(SELECT COUNT(*) FROM sys.database_permissions) + (SELECT COUNT(*) FROM sys.xml_schema_collections) + " +
 		"(SELECT COUNT(*) FROM sys.fulltext_catalogs) + (SELECT COUNT(*) FROM sys.assemblies) + (SELECT COUNT(*) FROM sys.certificates) + " +
 		"(SELECT COUNT(*) FROM sys.symmetric_keys) + (SELECT COUNT(*) FROM sys.asymmetric_keys) AS total;"
-	res, code := execute(p, batch, nil, options{maxRows: 5, timeoutSec: 10}, resolve)
+	res, code := execute(context.Background(), p, batch, nil, options{maxRows: 5, timeoutSec: 10}, resolve)
 	if code != exitOK || res.Error != nil {
 		t.Fatalf("code %d, error %+v", code, res.Error)
 	}
@@ -129,7 +130,7 @@ func TestManyNoticesInsideOneSetDoNotHang(t *testing.T) {
 func TestManyNoticesInAParameterizedBatchDoNotHang(t *testing.T) {
 	p, resolve := testProfile(t)
 	batch := "SELECT 1 AS a;\n" + strings.Repeat("PRINT 'm';\n", 20) + "SELECT @p AS b;"
-	res, code := execute(p, batch, []any{sql.Named("p", 1)}, options{maxRows: 5, timeoutSec: 10}, resolve)
+	res, code := execute(context.Background(), p, batch, []any{sql.Named("p", 1)}, options{maxRows: 5, timeoutSec: 10}, resolve)
 	if code != exitOK || res.Error != nil {
 		t.Fatalf("code %d, error %+v", code, res.Error)
 	}
@@ -140,7 +141,7 @@ func TestManyNoticesInAParameterizedBatchDoNotHang(t *testing.T) {
 
 func TestSetCutShortByErrorIsIncomplete(t *testing.T) {
 	p, resolve := testProfile(t)
-	res, code := execute(p, "SELECT 1 AS a; SELECT n, 10/(4-n) AS x FROM (VALUES(1),(2),(3),(4),(5)) v(n); "+
+	res, code := execute(context.Background(), p, "SELECT 1 AS a; SELECT n, 10/(4-n) AS x FROM (VALUES(1),(2),(3),(4),(5)) v(n); "+
 		"SELECT 3 AS c; RAISERROR('late', 16, 1); SELECT 1/0 AS d;", nil, options{maxRows: 50, timeoutSec: 120}, resolve)
 	if code != exitSQL || res.Error == nil || res.Error.Number != 8134 {
 		t.Fatalf("want exit 2 with error 8134, got %d %+v", code, res.Error)
@@ -170,7 +171,7 @@ func TestOverrideBindsTypedValuesOnServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, code := execute(p, text, args, options{maxRows: 5, timeoutSec: 120}, resolve)
+	res, code := execute(context.Background(), p, text, args, options{maxRows: 5, timeoutSec: 120}, resolve)
 	if code != exitOK || len(res.Rows) != 1 || res.Rows[0]["d"] != "2026-10-04" || res.Rows[0]["n"] != "ROW" {
 		t.Errorf("code %d rows %+v error %+v", code, res.Rows, res.Error)
 	}
@@ -230,7 +231,7 @@ func TestSaveWritesVerifiedEntry(t *testing.T) {
 
 func TestLaterErrorsKeepTheirPlaceInMessages(t *testing.T) {
 	p, resolve := testProfile(t)
-	res, _ := execute(p, "PRINT 'p1'; RAISERROR('e16', 16, 1); SELECT 1/0 AS x; PRINT 'p2';", nil,
+	res, _ := execute(context.Background(), p, "PRINT 'p1'; RAISERROR('e16', 16, 1); SELECT 1/0 AS x; PRINT 'p2';", nil,
 		options{maxRows: 50, timeoutSec: 120}, resolve)
 	got := strings.Join(res.Messages, "|")
 	if i, j := strings.Index(got, "error 8134"), strings.Index(got, "p2"); i < 0 || j < 0 || i > j {
@@ -261,7 +262,7 @@ func TestNoticesAreRedacted(t *testing.T) {
 	p, resolve := testProfile(t)
 	secret := labSecret(t, p, resolve)
 	batch := "PRINT '" + strings.ReplaceAll(secret, "'", "''") + "'; SELECT 1 AS a;"
-	res, code := execute(p, batch, nil, options{maxRows: 5, timeoutSec: 120}, resolve)
+	res, code := execute(context.Background(), p, batch, nil, options{maxRows: 5, timeoutSec: 120}, resolve)
 	if code != exitOK {
 		t.Fatalf("exit %d; want %d (error present: %v)", code, exitOK, res.Error != nil)
 	}
@@ -285,7 +286,7 @@ func TestPlanIsRedacted(t *testing.T) {
 	secret := labSecret(t, p, resolve)
 	batch := "SELECT COUNT(*) AS n FROM sys.objects WHERE name = '" +
 		strings.ReplaceAll(secret, "'", "''") + "';"
-	res, code := execute(p, batch, nil, options{maxRows: 5, timeoutSec: 120, wantPlan: true}, resolve)
+	res, code := execute(context.Background(), p, batch, nil, options{maxRows: 5, timeoutSec: 120, wantPlan: true}, resolve)
 	if code != exitOK {
 		t.Fatalf("exit %d; want %d (error present: %v)", code, exitOK, res.Error != nil)
 	}
@@ -306,7 +307,7 @@ func TestErrorTextIsRedacted(t *testing.T) {
 	p, resolve := testProfile(t)
 	secret := labSecret(t, p, resolve)
 	literal := strings.ReplaceAll(strings.ReplaceAll(secret, "'", "''"), "%", "%%")
-	res, code := execute(p, "RAISERROR('"+literal+"', 16, 1);", nil,
+	res, code := execute(context.Background(), p, "RAISERROR('"+literal+"', 16, 1);", nil,
 		options{maxRows: 5, timeoutSec: 120}, resolve)
 	if code != exitSQL {
 		t.Fatalf("exit %d; want %d", code, exitSQL)
@@ -325,7 +326,7 @@ func TestErrorTextIsRedacted(t *testing.T) {
 func TestFirstPlanStaysAtTheRoot(t *testing.T) {
 	p, resolve := testProfile(t)
 	batch := "SELECT COUNT(*) AS a FROM sys.objects; SELECT COUNT(*) AS b FROM sys.columns;"
-	res, code := execute(p, batch, nil, options{maxRows: 5, timeoutSec: 120, wantPlan: true}, resolve)
+	res, code := execute(context.Background(), p, batch, nil, options{maxRows: 5, timeoutSec: 120, wantPlan: true}, resolve)
 	if code != exitOK {
 		t.Fatalf("exit %d; want %d (error present: %v)", code, exitOK, res.Error != nil)
 	}
@@ -345,7 +346,7 @@ func TestFirstPlanStaysAtTheRoot(t *testing.T) {
 func TestShowplanNamedColumnIsDataWithoutPlan(t *testing.T) {
 	p, resolve := testProfile(t)
 	batch := "SELECT TOP (3) name AS showplan_note FROM sys.objects ORDER BY name; SELECT 1 AS a"
-	res, code := execute(p, batch, nil, options{maxRows: 5, timeoutSec: 120}, resolve)
+	res, code := execute(context.Background(), p, batch, nil, options{maxRows: 5, timeoutSec: 120}, resolve)
 	if code != exitOK {
 		t.Fatalf("exit %d; want %d (error %+v)", code, exitOK, res.Error)
 	}
@@ -367,7 +368,7 @@ func TestShowplanNamedColumnIsDataWithoutPlan(t *testing.T) {
 func TestMessageCapStopsStoringNotReading(t *testing.T) {
 	p, resolve := testProfile(t)
 	batch := "SELECT 1 AS a;\n" + strings.Repeat("PRINT 'm';\n", 40) + "SELECT 2 AS b;"
-	res, code := execute(p, batch, nil, options{maxRows: 5, timeoutSec: 120, maxMessages: 10}, resolve)
+	res, code := execute(context.Background(), p, batch, nil, options{maxRows: 5, timeoutSec: 120, maxMessages: 10}, resolve)
 	if code != exitOK {
 		t.Fatalf("exit %d; want %d (error %+v)", code, exitOK, res.Error)
 	}
@@ -382,7 +383,7 @@ func TestMessageCapStopsStoringNotReading(t *testing.T) {
 func TestResultSetCapStopsStoringNotReading(t *testing.T) {
 	p, resolve := testProfile(t)
 	batch := "SELECT 1 AS a; SELECT 2 AS b; SELECT 3 AS c; SELECT 4 AS d; RAISERROR('after the cap', 16, 1);"
-	res, code := execute(p, batch, nil, options{maxRows: 5, timeoutSec: 120, maxResultSets: 2}, resolve)
+	res, code := execute(context.Background(), p, batch, nil, options{maxRows: 5, timeoutSec: 120, maxResultSets: 2}, resolve)
 	if code != exitSQL || res.Error == nil || !strings.Contains(res.Error.Message, "after the cap") {
 		t.Fatalf("exit %d, error %+v; want %d and 'after the cap'", code, res.Error, exitSQL)
 	}
@@ -403,7 +404,7 @@ func TestResultSetCapStopsStoringNotReading(t *testing.T) {
 func TestLaterErrorBeyondMessageCapIsDropped(t *testing.T) {
 	p, resolve := testProfile(t)
 	batch := "RAISERROR('e1', 16, 1); RAISERROR('e2', 16, 1); RAISERROR('e3', 16, 1); SELECT 1 AS a;"
-	res, code := execute(p, batch, nil, options{maxRows: 5, timeoutSec: 120, maxMessages: 1}, resolve)
+	res, code := execute(context.Background(), p, batch, nil, options{maxRows: 5, timeoutSec: 120, maxMessages: 1}, resolve)
 	if code != exitSQL || res.Error == nil || res.Error.Message != "e1" {
 		t.Fatalf("exit %d, error %+v; want %d and e1", code, res.Error, exitSQL)
 	}
@@ -421,7 +422,7 @@ func TestLaterErrorBeyondMessageCapIsDropped(t *testing.T) {
 func TestPlanCapStopsStoringNotReading(t *testing.T) {
 	p, resolve := testProfile(t)
 	batch := "SELECT COUNT(*) AS a FROM sys.objects; SELECT COUNT(*) AS b FROM sys.columns; RAISERROR('after the plans', 16, 1);"
-	res, code := execute(p, batch, nil,
+	res, code := execute(context.Background(), p, batch, nil,
 		options{maxRows: 5, timeoutSec: 120, wantPlan: true, maxResultSets: 1}, resolve)
 	if code != exitSQL || res.Error == nil || !strings.Contains(res.Error.Message, "after the plans") {
 		t.Fatalf("exit %d, error present %v; want %d and 'after the plans'", code, res.Error != nil, exitSQL)
@@ -442,7 +443,7 @@ func TestPlanCapStopsStoringNotReading(t *testing.T) {
 
 func TestStatisticsArriveInMessages(t *testing.T) {
 	p, resolve := testProfile(t)
-	res, code := execute(p, "SELECT COUNT(*) AS n FROM sys.objects;", nil,
+	res, code := execute(context.Background(), p, "SELECT COUNT(*) AS n FROM sys.objects;", nil,
 		options{maxRows: 5, timeoutSec: 120, wantStatistics: true}, resolve)
 	if code != exitOK {
 		t.Fatalf("exit %d; want %d (error %+v)", code, exitOK, res.Error)
@@ -458,7 +459,7 @@ func TestStatisticsArriveInMessages(t *testing.T) {
 
 func TestStatisticsFollowTheSessionLanguage(t *testing.T) {
 	p, resolve := testProfile(t)
-	res, code := execute(p, "SET LANGUAGE French; SELECT COUNT(*) AS n FROM sys.objects;", nil,
+	res, code := execute(context.Background(), p, "SET LANGUAGE French; SELECT COUNT(*) AS n FROM sys.objects;", nil,
 		options{maxRows: 5, timeoutSec: 120, wantStatistics: true}, resolve)
 	if code != exitOK {
 		t.Fatalf("exit %d; want %d (error %+v)", code, exitOK, res.Error)
@@ -477,7 +478,7 @@ func TestStatisticsFollowTheSessionLanguage(t *testing.T) {
 // half on the lab, and with TOP it still outlasts the one-second timeout.
 func TestSetCutByTimeoutKeepsItsRows(t *testing.T) {
 	p, resolve := testProfile(t)
-	res, code := execute(p,
+	res, code := execute(context.Background(), p,
 		"SELECT TOP (20000000) a.object_id FROM sys.all_columns AS a CROSS JOIN sys.all_columns AS b;", nil,
 		options{maxRows: 5, timeoutSec: 1}, resolve)
 	if code == exitOK || res.Error == nil {
@@ -492,7 +493,7 @@ func TestSetCutByTimeoutKeepsItsRows(t *testing.T) {
 // received after ctx expired is the cut.
 func TestQueryEndingBeforeTheTimeoutSucceeds(t *testing.T) {
 	p, resolve := testProfile(t)
-	res, code := execute(p, "WAITFOR DELAY '00:00:01'; SELECT 1 AS a;", nil,
+	res, code := execute(context.Background(), p, "WAITFOR DELAY '00:00:01'; SELECT 1 AS a;", nil,
 		options{maxRows: 5, timeoutSec: 3}, resolve)
 	if code != exitOK || res.Error != nil || res.Incomplete || len(res.Rows) != 1 {
 		t.Errorf("code %d, error %+v, incomplete %v, %d rows", code, res.Error, res.Incomplete, len(res.Rows))
@@ -502,7 +503,7 @@ func TestQueryEndingBeforeTheTimeoutSucceeds(t *testing.T) {
 // The first SQL error explains the rest, the timeout included (spec § 4.2).
 func TestFirstErrorWinsOverTheTimeout(t *testing.T) {
 	p, resolve := testProfile(t)
-	res, code := execute(p,
+	res, code := execute(context.Background(), p,
 		"RAISERROR('first', 16, 1) WITH NOWAIT; RAISERROR('second', 16, 1) WITH NOWAIT; WAITFOR DELAY '00:00:05';", nil,
 		options{maxRows: 5, timeoutSec: 1}, resolve)
 	if code != exitSQL || res.Error == nil {
@@ -528,7 +529,7 @@ func TestFirstErrorWinsOverTheTimeout(t *testing.T) {
 // a never reaches the client before the timeout and the test checks nothing.
 func TestTimeoutAfterACompleteSetLeavesItComplete(t *testing.T) {
 	p, resolve := testProfile(t)
-	res, code := execute(p, "SELECT 1 AS a; RAISERROR('', 0, 1) WITH NOWAIT; WAITFOR DELAY '00:00:05'; SELECT 2 AS b;", nil,
+	res, code := execute(context.Background(), p, "SELECT 1 AS a; RAISERROR('', 0, 1) WITH NOWAIT; WAITFOR DELAY '00:00:05'; SELECT 2 AS b;", nil,
 		options{maxRows: 5, timeoutSec: 1}, resolve)
 	if code == exitOK || res.Error == nil {
 		t.Fatalf("a timed-out batch must fail, got code %d", code)
@@ -540,7 +541,7 @@ func TestTimeoutAfterACompleteSetLeavesItComplete(t *testing.T) {
 
 func TestInvalidObjectIsASQLError(t *testing.T) {
 	p, resolve := testProfile(t)
-	res, code := execute(p, "SELECT 1 AS a FROM dbo.sqlq_no_such_table;", nil,
+	res, code := execute(context.Background(), p, "SELECT 1 AS a FROM dbo.sqlq_no_such_table;", nil,
 		options{maxRows: 5, timeoutSec: 120}, resolve)
 	if code != exitSQL {
 		t.Fatalf("exit %d; want %d", code, exitSQL)
@@ -555,7 +556,7 @@ func TestInvalidObjectIsASQLError(t *testing.T) {
 
 func TestEmptySetThenPopulatedSet(t *testing.T) {
 	p, resolve := testProfile(t)
-	res, code := execute(p, "SELECT 1 AS a WHERE 1 = 0; SELECT 2 AS b;", nil,
+	res, code := execute(context.Background(), p, "SELECT 1 AS a WHERE 1 = 0; SELECT 2 AS b;", nil,
 		options{maxRows: 5, timeoutSec: 120}, resolve)
 	if code != exitOK {
 		t.Fatalf("exit %d; want %d", code, exitOK)
@@ -573,7 +574,7 @@ func TestEmptySetThenPopulatedSet(t *testing.T) {
 
 func TestNoticesAroundASetKeepTheirOrder(t *testing.T) {
 	p, resolve := testProfile(t)
-	res, code := execute(p, "PRINT 'before'; SELECT 1 AS a; PRINT 'after';", nil,
+	res, code := execute(context.Background(), p, "PRINT 'before'; SELECT 1 AS a; PRINT 'after';", nil,
 		options{maxRows: 5, timeoutSec: 120}, resolve)
 	if code != exitOK {
 		t.Fatalf("exit %d; want %d", code, exitOK)
@@ -592,7 +593,7 @@ func TestNoticesAroundASetKeepTheirOrder(t *testing.T) {
 func TestCombinedOutputShape(t *testing.T) {
 	p, resolve := testProfile(t)
 	batch := "PRINT 'n'; SELECT COUNT(*) AS a FROM sys.objects; SELECT COUNT(*) AS b FROM sys.columns; RAISERROR('boom', 16, 1);"
-	res, code := execute(p, batch, nil, options{maxRows: 5, timeoutSec: 120, wantPlan: true}, resolve)
+	res, code := execute(context.Background(), p, batch, nil, options{maxRows: 5, timeoutSec: 120, wantPlan: true}, resolve)
 	if code != exitSQL {
 		t.Fatalf("exit %d; want %d", code, exitSQL)
 	}

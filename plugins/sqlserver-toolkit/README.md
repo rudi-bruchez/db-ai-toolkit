@@ -138,8 +138,20 @@ sqlq -profile prod-erp -query "<sql>" -save-query orders-late -summary "Orders p
 ```
 
 `-database` overrides the profile's database for one run. `-timeout` (default 30
-seconds) is how long the query may take before it is cancelled; raise it for a
-deliberately long diagnostic, not to wait out a blocked session.
+seconds) is how long the query may take before it is cancelled, counted once the
+connection is open; raise it for a deliberately long diagnostic, not to wait out
+a blocked session.
+
+Opening the connection is bounded separately. `-connect-timeout` (default 15
+seconds, 1 to 120) bounds each attempt from the dial to the end of the login:
+sqlq closes the socket when it expires, because neither the query timeout nor a
+profile's `connectTimeoutSec` (the driver's idle timeout, re-armed on every
+read) stops a server or a tunnel that accepts and then says nothing.
+`-connect-retries` (default 1, 0 to 3) makes a new attempt, 20 seconds later,
+after a connection cut or timed out while opening; never after an error the
+server sent, so never after a failed login, and never once the batch has been
+sent. Each retried attempt adds a line to `warnings`, and `connect_attempts`
+counts the attempts made.
 
 Exit codes: `0` success, `1` usage or configuration, `2` any failure after the
 query started (SQL error, timeout or transport), `3` refused by the write guard,
