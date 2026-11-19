@@ -2,7 +2,8 @@
 
 Spec du 19/11/2026, issue de `docs/spec-drafts/TASKS03.md` (fonctionnalités 1 à 3). Statut :
 révisée le même jour après la relecture à cinq lecteurs
-(`docs/reviews/2026-11-19-sqlq-fleet-design-panel/`), à relire avant le plan d'implémentation.
+(`docs/reviews/2026-11-19-sqlq-fleet-design-panel/`), puis après une relecture adverse de cette
+révision (`claude-rev2.md` dans le même dossier).
 
 ## 1. Le besoin
 
@@ -112,7 +113,13 @@ Ce dialer garde la `net.Conn` TCP qu'il ouvre. Pendant `db.Conn`, un chien de ga
 délais que le pilote pose ensuite, ce que ni le contexte ni `connection timeout` ne font.
 
 - `-connect-timeout S`, défaut 15 s, de 1 à 120 : l'échéance de chaque tentative, de la
-  numérotation à la fin du login.
+  numérotation à la fin du login. `db.Conn` reçoit aussi un contexte de même échéance : c'est lui
+  qui borne les phases sans socket TCP ouverte, la numérotation elle-même, la requête UDP au
+  navigateur SQL (instance nommée sans port) et l'obtention d'un jeton Entra, que fermer une socket
+  ne bornerait pas. Le chien de garde ferme toutes les sockets que le dialer a ouvertes pendant la
+  tentative, UDP et redirection de login comprises. Deux limites : une numérotation ne dure pas plus
+  que le `dial timeout` du pilote (15 s) même si S est plus grand, et la résolution DNS
+  (`net.LookupIP`, sans contexte) n'est pas bornée.
 - Quand le chien de garde a fermé la connexion, l'erreur rendue par le pilote est quelconque
   (`use of closed network connection`, EOF) : `execute` sait que le chien de garde a tiré et
   classe `connect_timeout`, sans lire l'erreur.
@@ -140,13 +147,20 @@ délais que le pilote pose ensuite, ce que ni le contexte ni `connection timeout
 | `query_timeout` | après l'ouverture, le contexte du lot a expiré (`ctx.Err() != nil`), quelle que soit l'erreur rendue, préambule compris | 2 |
 | `transport` | après l'ouverture, une erreur de transport sans réponse du serveur | 2 |
 | `sql_error` | toute autre erreur renvoyée par le serveur pendant le préambule ou le lot | 2 |
+| `deadline` | mode multi-profils : l'échéance `-deadline` est passée (section 5.4) | 4 avant l'ouverture, 2 après, 5 pour un profil jamais lancé |
 
-Ordre d'évaluation, le premier qui s'applique l'emporte : le chien de garde a tiré ; une
-`mssql.Error` dans la chaîne (`database_unavailable` avant `login_failed`, comme
-`unavailableCause` aujourd'hui) ; le contexte du lot a expiré ; puis les erreurs de transport et
+Ordre d'évaluation, le premier qui s'applique l'emporte : une `mssql.Error` dans la chaîne
+(`database_unavailable` avant `login_failed`, comme `unavailableCause` aujourd'hui), qui prouve
+que la socket n'est pas en cause même si le chien de garde a tiré pendant que le pilote la rendait ;
+le chien de garde a tiré ; le contexte du lot a expiré ; puis les erreurs de transport et
 de délai par type ; puis les deux messages listés ; puis `connect_failed` ou `sql_error` selon la
 phase. Le texte n'est lu que pour les deux cas que le pilote ne type pas (préfixe TLS ci-dessus,
 réponse incohérente classée par défaut), et chacun est épinglé par un test avec le message exact.
+
+Le préfixe TLS couvre aussi deux cas qui ne sont pas des coupures : une instance trop ancienne qui
+refuse la poignée de main TLS 1.2 de Go, et le délai par lecture d'un `connectTimeoutSec` expiré
+pendant TLS. Le premier coûte un réessai inutile (20 s, aucune authentification en jeu), le second
+est un délai classé comme coupure ; les deux sont réessayés, ce qui est acceptable.
 
 `ECONNREFUSED` est `connect_failed` : une connexion refusée en direct est une instance arrêtée ou
 un port faux, qui ne change pas en 20 s ; à travers ZPA, une instance injoignable donne `EOF`.
@@ -167,7 +181,8 @@ serveur (`mssql.Error`), donc jamais 18456 ni 4060.
 Le risque qui reste, assumé et documenté : une coupure qui survient après l'envoi du paquet de
 login (`Read: EOF`) se classe `connect_transient`, alors que le serveur a pu traiter le login. Si
 le mot de passe est faux et que le tunnel perd la réponse 18456, l'appel fait deux tentatives
-d'authentification au lieu d'une. Le pilote ne dit pas si le login est parti, et le chiffrement
+d'authentification au lieu d'une ; avec la seule relance que la section 4.5 permet à l'agent, qui
+se fait avec `-connect-retries 0`, trois au plus. Le pilote ne dit pas si le login est parti, et le chiffrement
 TLS empêche de le lire sur la socket. C'est pourquoi le défaut est 1 réessai et le maximum 3, et
 non 2 et 5.
 
@@ -177,7 +192,7 @@ Pire durée d'un appel à un profil avec les défauts : 2 × 15 s + 20 s + `-tim
 
 Le skill `live-query` et `AGENTS.md` disent : sur `connect_transient` ou `connect_timeout`
 après les réessais de `sqlq`, ne pas relancer en boucle ; une relance unique quelques minutes
-plus tard est acceptable, puis rapporter. Sur `login_failed`, la règle actuelle (ne jamais
+plus tard, avec `-connect-retries 0`, est acceptable, puis rapporter. Sur `login_failed`, la règle actuelle (ne jamais
 réessayer) reste. Sur `connect_failed`, ne pas relancer : rapporter.
 
 ## 5. Plusieurs profils dans un appel
@@ -196,10 +211,13 @@ Deux options, exclusives entre elles et avec `-profile` :
 Aucun profil choisi : erreur d'usage, code 1, sans lister les noms (même raison que pour
 `-profile` absent : la liste des noms est la carte du parc).
 
-Un nom de profil qui contient un caractère de contrôle (CR, LF, tabulation) ou commence ou finit
-par une espace est marqué `unusable` au chargement, avec ce motif, dans `-list-profiles` comme
-dans une exécution. Le fichier reste chargé ; seul ce profil est écarté. C'est le piège du 18/11
-(noms terminés par CR), fermé à l'endroit où tous les chemins passent.
+Le piège du 18/11 (noms terminés par CR) venait de l'argument que la boucle shell construisait,
+pas du fichier : l'export de `registered-servers` normalise les noms. Une valeur de `-profile` ou
+de `-profiles-match` qui contient un caractère de contrôle est donc refusée (code 1) par un
+message qui le dit (`contains a control character (CR?): strip it`), au lieu d'un « unknown
+profile » ou d'une sélection vide. Dans le fichier, un nom écrit à la main qui contient un
+caractère de contrôle ou commence ou finit par une espace est marqué `unusable`, avec ce motif ;
+le fichier reste chargé.
 
 ### 5.2 L'aperçu et l'empreinte de la sélection
 
@@ -223,11 +241,12 @@ Refusés avec le code 1 avant toute connexion : `-allow-write`, `-save-query`, `
 Le garde s'applique au texte une fois : un lot qui écrirait est refusé (code 3) même si tous les
 profils choisis sont `readwrite`, puisque `-allow-write` est refusé.
 
-`-saved` : le catalogue est chargé pour chaque profil sélectionné, comme pour un appel simple à
-ce profil, et l'entrée de ce nom y est résolue. Si l'entrée diffère d'un profil à l'autre (source
-ou empreinte du contenu), parce qu'un profil a sa propre version enregistrée, l'appel est refusé
-(code 1) en nommant le nombre de variantes, sans nommer les profils. Lancer chaque variante par
-sa propre sélection. Les notes du catalogue (`messages`) vont dans `messages` au sommet du
+`-saved` : seules les entrées `bundled`, `tsql-scripts` et `personal` de portée `_generic`
+s'exécutent sur un parc. Le catalogue est chargé une fois sans profil, l'entrée y est résolue,
+puis il est chargé pour chaque profil sélectionné : si l'un d'eux résout ce nom en une autre entrée
+(une version enregistrée pour lui, puisque `-save-query` écrit toujours dans le dossier du profil)
+ou ne le résout pas, l'appel est refusé (code 1) avec la consigne de déplacer l'entrée dans
+`_generic` ou de lancer chaque profil séparément, sans nommer les profils. Les notes du catalogue (`messages`) vont dans `messages` au sommet du
 résultat, une fois.
 
 ### 5.4 Exécution
@@ -245,8 +264,12 @@ résultat, une fois.
 - `-timeout`, `-connect-timeout`, `-connect-retries`, `-maxrows`, `-database`, `-dirty-reads`,
   `-statistics`, `-param` et les plafonds s'appliquent à chaque profil.
 - `-deadline S`, défaut 100 s, de 10 à 3600 : durée totale de l'appel multi-profils. À
-  l'échéance, les profils pas encore lancés ne le sont pas, ceux en cours sont abandonnés (leur
-  connexion fermée), et le résultat est imprimé avec ces profils en `category: deadline`. Le
+  l'échéance, les profils pas encore lancés ne le sont pas ; pour ceux en cours, le contexte du lot
+  est annulé, ce qui fait envoyer au pilote une attention qui arrête l'instruction sur le serveur,
+  et la socket n'est fermée qu'après 5 s de grâce (fermer d'abord laisserait une requête lourde
+  tourner sur l'instance avec ses verrous). Le résultat est imprimé avec ces profils en
+  `category: deadline`. Quand `-timeout` plus la pire ouverture dépasse `-deadline`, une ligne de
+  `warnings` au sommet le dit avant le lancement. Le
   défaut reste sous la limite de 2 minutes d'un appel d'outil de Claude Code : un `sqlq` tué
   n'imprime rien, un `sqlq` arrivé à son échéance imprime ce qu'il sait.
 - Le registre `verified` d'une entrée `-saved` est mis à jour une fois, après la fin de tous les
@@ -309,7 +332,7 @@ assumé : le résultat d'un parc n'a pas la forme du résultat d'une instance, e
 | Code | Mode multi-profils |
 |---|---|
 | 0 | tous les profils tentés ont réussi (les profils `skipped` ne comptent pas) |
-| 1 | usage ou empreinte, avant tout lancement |
+| 1 | usage ou empreinte, avant tout lancement ; ou aucun profil tenté, parce que tous les profils choisis sont `skipped` |
 | 3 | refus du garde, avant tout lancement |
 | 5 | au moins un profil tenté a échoué, ou l'échéance `-deadline` est atteinte ; le détail est dans `profiles[].exit_code` |
 
@@ -346,8 +369,10 @@ tests réduisent.
   `-save-query` ; `warnings` vaut `[]` sans avertissement, y compris dans la sortie de `fail`.
 - Ouverture bornée : un faux serveur qui accepte et se tait, un autre qui répond un PRELOGIN valide
   puis se tait, un troisième qui envoie un octet toutes les 500 ms ; avec `-connect-timeout 2` et
-  `-connect-retries 0`, chaque appel rend la main entre 2 et 4 s avec `connect_timeout`, y compris
-  quand le profil a `connectTimeoutSec` à 1.
+  `-connect-retries 0`, chaque appel rend la main entre min(2, `connectTimeoutSec`) et 4 s avec
+  `connect_timeout` ; le serveur au compte-gouttes, que le délai par lecture ne voit jamais, finit à
+  2 s même avec `connectTimeoutSec` à 1. Le test se borne lui-même : un appel encore en cours après
+  6 s le fait échouer au lieu de bloquer la suite.
 - Classement : chaque message de la section 4.1 produit par un faux serveur, pas construit à la
   main, avec sa catégorie attendue ; plus une `mssql.Error` 18456, 4060 suivi de 18456, et un délai
   du lot pendant le préambule (`query_timeout`).
@@ -357,8 +382,11 @@ tests réduisent.
   seule tentative.
 - Non-réessai : un faux serveur qui rend une erreur 18456 au login reçoit une seule connexion TCP,
   quel que soit `-connect-retries`.
-- `disableretry` : la DSN construite contient `disableretry=true` ; un faux serveur qui coupe
-  pendant la réception du lot reçoit une seule connexion.
+- `disableretry` : la DSN construite contient `disableretry=true`. Pas de test de comportement : à
+  travers le `*sql.Conn` de `sqlq`, un faux serveur reçoit une seule connexion avec ou sans le
+  paramètre, si bien qu'un tel test passerait même sans lui (mesuré par la relecture de la
+  révision).
+- Classement : une `mssql.Error` 18456 avec le chien de garde tiré reste `login_failed`.
 - Multi-profils, sans serveur : sélection par motif (dont des noms à un et deux `/`), `-all`, motif
   invalide, aucun profil choisi, profils `unusable` (DPAPI, nom avec CR), empreinte calculée et
   refusée après modification du fichier, empreinte exigée en présence d'un `prod`, refus de
@@ -372,7 +400,15 @@ tests réduisent.
   lot dont le premier profil par nom ne rend aucun jeu ne vide pas `rows` ; un jeu dont les
   colonnes diffèrent selon `-database` donne `profiles_columns_differ: 1`.
 
-## 7. Hors périmètre
+## 7. Documentation à mettre à jour
+
+- `AGENTS.md` : la phrase « there is never a second format to parse » devient vraie pour un
+  appel à un profil et nomme la forme multi-profils ; la liste des codes de sortie gagne le 5 ;
+  les règles des sections 4.5 et 5.7.
+- `plugins/sqlserver-toolkit/skills/live-query/SKILL.md` et `plugins/sqlserver-toolkit/README.md` :
+  les nouvelles options, `warnings`, `category`, la forme multi-profils, les mêmes règles.
+
+## 8. Hors périmètre
 
 - Sortie tabulaire (`-format tsv|md`), lectures répétées et différence : fonctionnalités 4 et 5,
   spec suivante.

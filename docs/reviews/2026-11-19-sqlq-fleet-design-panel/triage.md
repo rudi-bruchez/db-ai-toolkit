@@ -51,3 +51,29 @@ faux serveurs TCP. Aucun n'avait d'instance SQL Server.
 - `disableretry` est un paramètre de la DSN de la v1.11.0 (`msdsn/conn_str.go:83`).
 - `azuread.NewConnector` rend un `*mssql.Connector` : le même `Dialer` vaut pour `entra`.
 - `mssql.go:462` dit lui-même que le contexte ne sert qu'à la numérotation.
+
+## Relecture adverse de la révision
+
+Un sous-agent Claude neuf a relu la révision seule, en visant les correctifs
+(`claude-rev2.md`). Dix défauts, tous retenus :
+
+- `-connect-timeout` ne bornait pas les phases sans socket TCP (navigateur SQL en UDP, numérotation,
+  jeton Entra) : `db.Conn` reçoit un contexte de même échéance ; limites du DNS et du `dial timeout`
+  du pilote écrites (4.2).
+- `-saved` sur un parc ne disait rien d'une entrée absente pour un profil : seules les entrées
+  génériques s'exécutent sur un parc (5.3).
+- Le test d'ouverture bornée échouait sur une implémentation correcte quand `connectTimeoutSec`
+  tire d'abord : fenêtre réécrite (6).
+- Le test de comportement de `disableretry` passait sans le paramètre : remplacé par l'assertion sur
+  la DSN, dit comme tel (6).
+- Une sélection entièrement `skipped` sortait en 0 : code 1 (5.6).
+- La borne d'authentifications oubliait la relance de l'agent, et le chien de garde passait avant
+  une `mssql.Error` : ordre inversé, relance avec `-connect-retries 0`, borne à trois (4.3, 4.4, 4.5).
+- `-deadline` fermait la socket sans annuler le lot : annulation d'abord, 5 s de grâce (5.4).
+- Le CR venait de l'argument, pas du fichier : les arguments sont refusés avec un message clair (5.1).
+- Le préfixe TLS réessaie aussi un refus TLS déterministe : coût écrit et accepté (4.3).
+- `AGENTS.md` contredirait le binaire : section 7 ajoutée.
+
+Vérifié par moi dans le code : `db.Conn` reçoit bien `context.WithTimeout(parent, bound)` dans
+`openOnce`, et le classement met désormais la `mssql.Error` avant le chien de garde
+(`TestServerErrorBeatsTheWatchdog`).
