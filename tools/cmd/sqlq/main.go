@@ -703,8 +703,10 @@ func execute(parent context.Context, profile sqlq.Profile, sqlText string, args 
 
 	db, dialer, err := openDB(driver, dsn)
 	if err != nil {
-		result.Error = &sqlq.SQLError{Message: redact(err.Error(), secret), Category: catConnectFailed}
-		return result, exitConnected
+		// The connector refused the connection string: a profile to fix,
+		// not an instance that is down.
+		result.Error = &sqlq.SQLError{Message: redact(err.Error(), secret), Category: catUsage}
+		return result, exitUsage
 	}
 	defer db.Close()
 	db.SetMaxOpenConns(1)
@@ -739,6 +741,7 @@ func execute(parent context.Context, profile sqlq.Profile, sqlText string, args 
 				continue
 			case <-parent.Done():
 				category = catDeadline
+				result.Warnings = append(result.Warnings, "retry abandoned: the -deadline was reached during the wait")
 			}
 		}
 		result.Error = sqlError(err, secret)

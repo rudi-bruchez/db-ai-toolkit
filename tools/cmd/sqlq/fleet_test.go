@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rudi-bruchez/db-ai-toolkit/tools/internal/sqlq"
 )
@@ -322,5 +323,46 @@ func TestProfileKeyAvoidsEveryServerColumn(t *testing.T) {
 	aggregate(&out, []string{"a"}, results, []int{0}, []bool{true})
 	if out.Rows[0]["sqlq_profile"] != "y" || out.Rows[0][out.Columns[0].Name] != "a" {
 		t.Errorf("columns %v, rows %v", out.Columns, out.Rows)
+	}
+}
+
+// The CR guard of -profile: a name that exists with a trailing CR is still
+// refused, with the reason, rather than run.
+func TestProfileWithCRIsRefused(t *testing.T) {
+	path := writeProfiles(t, "{\"a\\r\": {\"server\": \"x\", \"auth\": \"sql\", \"user\": \"u\", \"passwordEnv\": \"X\"}}")
+	o := fleetOptions(path)
+	o.profileName = "a\r"
+	if out, code := captureRun(t, o); code != exitUsage || !strings.Contains(out, "control character") {
+		t.Fatalf("code %d, %s", code, out)
+	}
+}
+
+// A server the connector cannot parse is a profile to fix: usage, exit 1.
+func TestUnparsableServerIsUsage(t *testing.T) {
+	path := writeProfiles(t, `{"a": {"server": "127.0.0.1,notaport", "auth": "sql", "user": "u", "passwordEnv": "FLEET_PWD"}}`)
+	t.Setenv("FLEET_PWD", "pw")
+	o := fleetOptions(path)
+	o.profileName = "a"
+	out, code := captureRun(t, o)
+	if code != exitUsage || !strings.Contains(out, `"category":"usage"`) {
+		t.Fatalf("code %d, %s", code, out)
+	}
+}
+
+// A deadline during the retry wait says the retry did not happen.
+func TestRetryCutByDeadlineSaysSo(t *testing.T) {
+	old := retryDelay
+	retryDelay = 30 * time.Second
+	t.Cleanup(func() { retryDelay = old })
+	path := fakeFleet(t, closeOnAccept, "g/a")
+	o := fleetOptions(path)
+	o.all = true
+	o.connectRetries = 1
+	o.deadlineSec = 1
+	out, _ := captureRun(t, o)
+	r := fleetJSON(t, out)
+	w := strings.Join(r.Profiles[0].Warnings, "|")
+	if !strings.Contains(w, "retry abandoned") {
+		t.Fatalf("warnings %q", w)
 	}
 }
