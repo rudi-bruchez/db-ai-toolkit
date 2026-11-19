@@ -5,10 +5,16 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 )
+
+// unixPerms is false on Windows, where os.FileMode reports only the read-only
+// attribute (0666, 0444, 0777): the 0600 and 0700 the code asks for cannot be
+// observed there, so the permission checks only run where they mean something.
+var unixPerms = runtime.GOOS != "windows"
 
 func TestRunIDShape(t *testing.T) {
 	shape := regexp.MustCompile(`^[a-z0-9]{8}$`)
@@ -136,7 +142,7 @@ func TestJournalPending(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
+	if perm := info.Mode().Perm(); unixPerms && perm != 0o600 {
 		t.Errorf("journal mode = %o, want 600", perm)
 	}
 }
@@ -213,7 +219,7 @@ func TestWriteReadJSON(t *testing.T) {
 	}
 	if info, err := os.Stat(ws.Root); err != nil {
 		t.Fatal(err)
-	} else if perm := info.Mode().Perm(); perm != 0o700 {
+	} else if perm := info.Mode().Perm(); unixPerms && perm != 0o700 {
 		t.Errorf("root mode = %o, want 700", perm)
 	}
 	dir := ws.DBDir("srv", "db")
@@ -232,7 +238,7 @@ func TestWriteReadJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
+	if perm := info.Mode().Perm(); unixPerms && perm != 0o600 {
 		t.Errorf("file mode = %o, want 600", perm)
 	}
 	if err := os.WriteFile(filepath.Join(filepath.Dir(dir), "escape.json"), []byte("{}"), 0o600); err != nil {

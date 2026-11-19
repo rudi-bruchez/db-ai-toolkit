@@ -3,6 +3,7 @@
 # and the byte-exact golden comparison fails on a fresh clone / CI.
 tools/internal/errorlog/testdata/expected_text.txt text eol=lf
 tools/internal/errorlog/testdata/ERRORLOG_synthetic.txt text eol=lf
+*.golden text eol=lf
 
 # Go sources are canonically LF (gofmt).
 *.go text eol=lf
