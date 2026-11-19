@@ -326,7 +326,7 @@ func run(o options) int {
 	}
 	if code == exitOK && savePath != "" {
 		if err := writeSavedQuery(o, profile, profiles.Names(), savePath, saveContent); err != nil {
-			result.Error = &sqlq.SQLError{Message: "query ran but was not saved: " + err.Error()}
+			result.Error = &sqlq.SQLError{Message: "query ran but was not saved: " + err.Error(), Category: catUsage}
 			_ = emit(result)
 			return exitUsage
 		}

@@ -227,3 +227,100 @@ func TestProfileKeyNeverOverwritesAServerColumn(t *testing.T) {
 		t.Errorf("columns %v, rows %v", out.Columns, out.Rows)
 	}
 }
+
+func fakeFleet(t *testing.T, handle func(int, net.Conn), names ...string) string {
+	t.Helper()
+	f := startFake(t, handle)
+	port := strconv.Itoa(f.ln.Addr().(*net.TCPAddr).Port)
+	t.Setenv("FLEET_PWD", "pw")
+	var parts []string
+	for _, n := range names {
+		parts = append(parts, `"`+n+`": {"server": "127.0.0.1,`+port+`", "auth": "sql", "user": "u", "passwordEnv": "FLEET_PWD", "encrypt": "disable"}`)
+	}
+	return writeProfiles(t, "{"+strings.Join(parts, ",")+"}")
+}
+
+// A refusal before any launch keeps the multi-profile shape.
+func TestFleetRefusalKeepsTheMultiShape(t *testing.T) {
+	path := writeProfiles(t, `{"a": {"server": "x", "auth": "sql", "user": "u", "passwordEnv": "X", "environment": "Prod"}}`)
+	o := fleetOptions(path)
+	o.all = true
+	out, code := captureRun(t, o)
+	r := fleetJSON(t, out)
+	if code != exitUsage || r.Mode != "multi" || r.Profiles == nil || r.Error == nil || r.Error.Category != catUsage {
+		t.Fatalf("code %d, %s; want 1 in the multi shape (and Prod treated as prod)", code, out)
+	}
+}
+
+func TestFleetTakesExactlyOneQuerySource(t *testing.T) {
+	path := writeProfiles(t, `{"a": {"server": "x", "auth": "sql", "user": "u", "passwordEnv": "X"}}`)
+	o := fleetOptions(path)
+	o.all = true
+	o.saved = "cpu-topology"
+	out, code := captureRun(t, o)
+	if code != exitUsage || !strings.Contains(out, "exactly one") {
+		t.Fatalf("-saved with -query: code %d, %s", code, out)
+	}
+}
+
+func TestControlCharacterIsNamed(t *testing.T) {
+	path := writeProfiles(t, `{"a": {"server": "x", "auth": "sql", "user": "u", "passwordEnv": "X"}}`)
+	o := fleetOptions(path)
+	o.profilesMatch = "a\r"
+	if out, code := captureRun(t, o); code != exitUsage || !strings.Contains(out, "control character") {
+		t.Fatalf("code %d, %s", code, out)
+	}
+}
+
+// With -parallel 1 every profile still runs: a slot is given back.
+func TestEveryProfileRunsWithOneSlot(t *testing.T) {
+	path := fakeFleet(t, rejectLogin, "g/a", "g/b", "g/c")
+	o := fleetOptions(path)
+	o.profilesMatch = "g/*"
+	o.parallel = 1
+	out, _ := captureRun(t, o)
+	for _, p := range fleetJSON(t, out).Profiles {
+		if p.Error == nil || p.Error.Category != catLoginFailed {
+			t.Errorf("%s: %+v; want login_failed", p.Profile, p.Error)
+		}
+	}
+}
+
+// Profiles start in name order: those a deadline leaves out are the last.
+func TestDeadlineLeavesOutTheLastByName(t *testing.T) {
+	path := fakeFleet(t, silent, "g/a", "g/b", "g/c")
+	o := fleetOptions(path)
+	o.profilesMatch = "g/*"
+	o.connectTimeoutSec = 30
+	o.deadlineSec = 2
+	o.parallel = 1
+	out, _ := captureRun(t, o)
+	r := fleetJSON(t, out)
+	if r.Profiles[0].ConnectAttempts != 1 || r.Profiles[1].ConnectAttempts != 0 || r.Profiles[2].ConnectAttempts != 0 {
+		t.Fatalf("attempts %d %d %d; want 1 0 0", r.Profiles[0].ConnectAttempts, r.Profiles[1].ConnectAttempts, r.Profiles[2].ConnectAttempts)
+	}
+}
+
+func TestReferenceTieGoesToNameOrder(t *testing.T) {
+	results := []sqlq.Result{
+		{Columns: []sqlq.Column{col("a", "INT")}, Rows: []sqlq.Row{{"a": 1}}, RowCount: 1},
+		{Columns: []sqlq.Column{col("b", "INT")}, Rows: []sqlq.Row{{"b": 1}}, RowCount: 1},
+		{Columns: []sqlq.Column{col("a", "INT")}, Rows: []sqlq.Row{{"a": 1}}, RowCount: 1},
+		{Columns: []sqlq.Column{col("b", "INT")}, Rows: []sqlq.Row{{"b": 1}}, RowCount: 1},
+	}
+	var out fleetResult
+	aggregate(&out, []string{"p1", "p2", "p3", "p4"}, results, []int{0, 0, 0, 0}, []bool{true, true, true, true})
+	if out.Columns[1].Name != "a" {
+		t.Errorf("reference %v; want the schema of p1", out.Columns)
+	}
+}
+
+func TestProfileKeyAvoidsEveryServerColumn(t *testing.T) {
+	results := []sqlq.Result{{Columns: []sqlq.Column{col("profile", "NVARCHAR"), col("sqlq_profile", "NVARCHAR")},
+		Rows: []sqlq.Row{{"profile": "x", "sqlq_profile": "y"}}, RowCount: 1}}
+	var out fleetResult
+	aggregate(&out, []string{"a"}, results, []int{0}, []bool{true})
+	if out.Rows[0]["sqlq_profile"] != "y" || out.Rows[0][out.Columns[0].Name] != "a" {
+		t.Errorf("columns %v, rows %v", out.Columns, out.Rows)
+	}
+}

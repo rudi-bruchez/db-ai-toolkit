@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"io"
 	"net"
@@ -73,6 +74,13 @@ func (d *watchDialer) DialContext(ctx context.Context, network, addr string) (ne
 	return c, nil
 }
 
+// HostName makes watchDialer a mssql.HostDialer, so that the driver hands it
+// "host:port" instead of resolving the name itself with net.LookupIP, which
+// takes no context: the name is then resolved by net.Dialer under the
+// attempt's context, and a stuck DNS lookup is bounded like the rest. The
+// driver does not call the method itself.
+func (d *watchDialer) HostName() string { return "" }
+
 // closeAll closes every socket opened so far; a later attempt may dial again.
 func (d *watchDialer) closeAll() {
 	d.mu.Lock()
@@ -129,6 +137,10 @@ func openOnce(parent context.Context, db *sql.DB, d *watchDialer, bound time.Dur
 	stopped := t.Stop()
 	stopParent()
 	if err == nil && !stopped {
+		// The watchdog closed the socket under a login that had just
+		// succeeded. Close alone would return the dead connection to the pool,
+		// and the next attempt would get it back without dialing: discard it.
+		_ = conn.Raw(func(any) error { return driver.ErrBadConn })
 		conn.Close()
 		return nil, true, errWatchdog
 	}
