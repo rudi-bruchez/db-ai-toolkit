@@ -192,6 +192,54 @@ it, and `sqlq` does not parse it: the text follows the session language, so a
 parser written for English would silently find nothing under French. It counts
 toward `-maxmessages`, with one line per table read.
 
+`error` also carries `category`: `usage`, `refused`, `connect_transient`,
+`connect_timeout`, `connect_failed`, `login_failed`, `database_unavailable`,
+`query_timeout`, `transport`, `sql_error`, or `deadline` (several profiles
+only). sqlq itself retries a `connect_transient` or `connect_timeout` once
+(`-connect-retries`), and says so in `warnings`. After that, do not loop: one
+relaunch a few minutes later, with `-connect-retries 0`, then report. Never
+relaunch `login_failed` or `connect_failed`. `warnings` holds what sqlq has
+to say about its own environment (a stale credential store, a retried
+connection), never server text: read it, and report it when it bears on the
+answer.
+
+### Several profiles in one call
+
+`-profiles-match '<pattern>'` (a `path.Match` pattern: `*` does not cross
+`/`, so `'prd/*'` takes the profiles directly under `prd/` and `'*'` takes
+only names without a group) or `-all` runs the same batch on every chosen
+profile, `-parallel` at a time (default 4) and within `-deadline` seconds in
+all (default 100). `-allow-write`, `-save-query` and `-plan` are refused; a
+`-saved` entry runs only if every chosen profile resolves it to the same
+generic file.
+
+```bash
+sqlq -list-profiles -profiles-match 'prd/*'          # preview: names, environments, selection_fingerprint
+sqlq -profiles-match 'prd/*' -selection-fingerprint <fp> -saved cpu-topology -maxrows 1
+```
+
+- Before the call, run `-list-profiles` with the same selection, just before.
+  If it holds a `"environment": "prod"` profile, show the list to the user and
+  wait for a yes, then pass `-selection-fingerprint` with the fingerprint
+  shown. sqlq refuses a prod selection without it, and refuses a fingerprint
+  that no longer matches: the profiles file changed. Then preview and ask
+  again; never drop the option.
+- A `-saved` entry keeps its single-profile rules on a fleet: read its header,
+  announce `verified: null`, and for `heavy: true` on a selection with a prod
+  profile announce the cost and wait for a separate yes.
+- The output is a different object, `"mode": "multi"`: `rows` gathers the
+  first result set of every profile that shares the majority schema, each row
+  with a `profile` key (`sqlq_profile` when a server column is already called
+  profile), and `profiles[]` gives each profile what a single call would have
+  said, with its `exit_code`.
+- Before reading the rows, read `profiles_failed`, `profiles_columns_differ`,
+  `profiles_no_result_set`, `profiles_skipped`, `truncated` and
+  `deadline_reached`. An instance missing from `rows` is in one of those
+  cases, never "zero rows" without checking `profiles[]`. A conclusion about
+  the fleet says how many instances it covers.
+- Exit code `5`: at least one profile attempted failed, or the deadline was
+  reached. Relaunch the failed ones once, targeted, then report.
+
 ### Seeing the plan
 
 `sqlplan` draws a plan in the default browser: icons of the Microsoft documentation,

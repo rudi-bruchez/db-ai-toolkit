@@ -26,6 +26,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/golang-sql/sqlexp"
 	mssql "github.com/microsoft/go-mssqldb"
@@ -96,6 +97,11 @@ func defineFlags(fs *flag.FlagSet) *options {
 	fs.StringVar(&o.tsqlScriptsDir, "tsql-scripts", "", "local clone of tsql-scripts (default $DB_AI_TOOLKIT_TSQL_SCRIPTS)")
 	fs.StringVar(&o.saveQuery, "save-query", "", "after a successful -query or -file run, save it under that name for this profile")
 	fs.StringVar(&o.summary, "summary", "", "one-line summary written into the header by -save-query (required with it)")
+	fs.StringVar(&o.profilesMatch, "profiles-match", "", "run on every profile whose name matches this path.Match pattern ('*' does not cross '/'); with -list-profiles, preview the selection")
+	fs.BoolVar(&o.all, "all", false, "run on every profile; with -list-profiles, preview the selection")
+	fs.IntVar(&o.parallel, "parallel", 4, "profiles run at the same time with -profiles-match or -all (1 to 16)")
+	fs.IntVar(&o.deadlineSec, "deadline", 100, "total seconds of a -profiles-match or -all run; profiles not done by then end as deadline (10 to 3600)")
+	fs.StringVar(&o.selectionFingerprint, "selection-fingerprint", "", "the selection_fingerprint of the -list-profiles preview; required when the selection holds a prod profile")
 	return o
 }
 
@@ -153,6 +159,14 @@ func (o options) validate() error {
 	if o.connectRetries < 0 || o.connectRetries > 3 {
 		return fmt.Errorf("-connect-retries must be from 0 to 3, got %d", o.connectRetries)
 	}
+	if fleetMode(o) {
+		if o.parallel < 1 || o.parallel > 16 {
+			return fmt.Errorf("-parallel must be from 1 to 16, got %d", o.parallel)
+		}
+		if o.deadlineSec < 10 || o.deadlineSec > 3600 {
+			return fmt.Errorf("-deadline must be from 10 to 3600 seconds, got %d", o.deadlineSec)
+		}
+	}
 	return nil
 }
 
@@ -186,11 +200,27 @@ type options struct {
 	tsqlScriptsDir string
 	saveQuery      string
 	summary        string
+
+	profilesMatch        string
+	all                  bool
+	parallel             int
+	deadlineSec          int
+	selectionFingerprint string
 }
 
 func run(o options) int {
 	if err := flagConflicts(o); err != nil {
 		return fail(exitUsage, err)
+	}
+	for _, a := range [][2]string{{"-profile", o.profileName}, {"-profiles-match", o.profilesMatch}} {
+		if err := controlCharacter(a[0], a[1]); err != nil {
+			return fail(exitUsage, err)
+		}
+	}
+	if fleetMode(o) {
+		if err := checkFleetFlags(o); err != nil {
+			return fail(exitUsage, err)
+		}
 	}
 	if o.listQueries {
 		return listQueries(o)
@@ -201,7 +231,13 @@ func run(o options) int {
 	}
 
 	if o.listProfiles {
+		if fleetMode(o) {
+			return listSelection(profiles, o)
+		}
 		return emit(map[string]any{"profiles": describeProfiles(profiles)})
+	}
+	if fleetMode(o) {
+		return runFleet(o, profiles)
 	}
 
 	if o.profileName == "" {
@@ -1286,6 +1322,9 @@ func adviseOn(e *sqlq.SQLError) *sqlq.SQLError {
 // returns "" when it can. A DPAPI-backed profile is Windows-only, and saying so
 // in the listing is what lets the rest of the file stay usable elsewhere.
 func unusableHere(p sqlq.Profile) string {
+	if strings.IndexFunc(p.Name, unicode.IsControl) >= 0 || strings.TrimSpace(p.Name) != p.Name {
+		return "the name holds a control character or starts or ends with a space; rename the profile"
+	}
 	if p.PasswordDpapi != "" && runtime.GOOS != "windows" {
 		return "needs DPAPI, which is Windows-only; this is " + runtime.GOOS
 	}
